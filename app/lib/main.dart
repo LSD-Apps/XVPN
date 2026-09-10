@@ -8,6 +8,7 @@ import 'package:flutter/services.dart';
 import 'app_state.dart';
 import 'core/android_vpn_core.dart';
 import 'core/singbox_runner.dart';
+import 'core/store.dart';
 import 'core/system_proxy.dart';
 import 'core/vpn_core.dart';
 import 'protocols/parsed_profile.dart';
@@ -18,8 +19,31 @@ import 'theme_controller.dart';
 
 /// 入口。桌面端支持把配置文件路径作为启动参数传入，
 /// 这样就实现了「双击配置文件直接用 XVPN 打开」。
-void main(List<String> args) {
-  runApp(XvpnApp(launchConfPath: _confPathFromArgs(args)));
+///
+/// main 必须是 async：持久化目录在安卓上要问原生要（`filesDir`），
+/// 而配置必须在第一帧之前恢复好，否则界面会先闪一下空状态。
+Future<void> main(List<String> args) async {
+  WidgetsFlutterBinding.ensureInitialized();
+  final store = await _resolveStore();
+  runApp(XvpnApp(launchConfPath: _confPathFromArgs(args), store: store));
+}
+
+/// 安卓侧的原生通道。桌面端用不到——桌面走命令行参数打开配置文件。
+const MethodChannel _androidChannel = MethodChannel('com.xvpn.xvpn/vpn');
+
+/// 解析持久化目录。拿不到时返回 null：不落盘也比起不来强。
+Future<AppStore?> _resolveStore() async {
+  try {
+    // 安卓的沙箱目录名不固定，只能问原生侧要；桌面端用固定的本地目录。
+    if (defaultTargetPlatform == TargetPlatform.android) {
+      final dir = await _androidChannel.invokeMethod<String>('filesDir');
+      if (dir == null || dir.isEmpty) return null;
+      return AppStore(Directory(dir));
+    }
+    return AppStore(AppStore.defaultDesktopDir());
+  } on Object {
+    return null;
+  }
 }
 
 /// 从命令行参数里挑出第一个指向受支持配置文件的路径。
@@ -43,10 +67,13 @@ String _basename(String path) => path.split(RegExp(r'[\\/]')).last;
 
 /// 应用入口。全局状态与主题控制器在这里创建，向下传给外壳与各页面。
 class XvpnApp extends StatefulWidget {
-  const XvpnApp({super.key, this.launchConfPath});
+  const XvpnApp({super.key, this.launchConfPath, this.store});
 
-  /// 启动时自动导入的 .conf 路径（可选）。
+  /// 启动时自动导入的配置文件路径（可选）。
   final String? launchConfPath;
+
+  /// 本地持久化。为 null 时本次运行不落盘。
+  final AppStore? store;
 
   @override
   State<XvpnApp> createState() => _XvpnAppState();
@@ -67,12 +94,9 @@ class _XvpnAppState extends State<XvpnApp> {
     };
   }
 
-  late final AppState _state = AppState(coreFactory: _coreFactory);
+  late final AppState _state = AppState(coreFactory: _coreFactory, store: widget.store);
 
   final ThemeController _theme = ThemeController();
-
-  /// 安卓侧的通道。桌面端用不到——桌面走命令行参数打开 .conf。
-  static const MethodChannel _androidChannel = MethodChannel('com.xvpn.xvpn/vpn');
 
   @override
   void initState() {
@@ -80,20 +104,26 @@ class _XvpnAppState extends State<XvpnApp> {
     // 上次若被强杀，系统代理可能还指着已经退出的内核，先恢复回去。
     unawaited(SystemProxy.recoverIfNeeded());
     _listenSharedConfig();
-    // 安卓的隧道跑在前台服务里，界面被回收后隧道仍在运行，这里把状态接回来。
-    unawaited(_state.adoptRunningCore());
 
+    // 启动参数里的配置优先导入（「双击配置文件打开」的场景）。
     final path = widget.launchConfPath;
-    if (path == null) return;
-    try {
-      _state.importConf(text: File(path).readAsStringSync(), fileName: _basename(path));
-    } on VpnConfigException catch (e) {
-      // 解析器抛出的已经是面向用户的中文说明，直接用。
-      _state.reportError('无法导入 $path：${e.message}');
-    } on Object catch (e) {
-      // 读文件失败等其它情况，不能影响界面可用性，只提示原因。
-      _state.reportError('无法导入 $path：$e');
+    if (path != null) {
+      try {
+        _state.importConf(text: File(path).readAsStringSync(), fileName: _basename(path));
+      } on VpnConfigException catch (e) {
+        // 解析器抛出的已经是面向用户的中文说明，直接用。
+        _state.reportError('无法导入 $path：${e.message}');
+      } on Object catch (e) {
+        // 读文件失败等其它情况，不能影响界面可用性，只提示原因。
+        _state.reportError('无法导入 $path：$e');
+      }
+      return;
     }
+
+    // 没有新配置时恢复上次的状态：先看内核是不是还在跑（安卓的隧道活在前台
+    // 服务里，界面被回收后它仍然在运行），否则按用户离开时的意图重新拨号。
+    // 走启动参数的分支不做这件事——那说明用户刚导入了一份新配置。
+    unawaited(_state.restoreConnection());
   }
 
   /// 处理安卓从文件管理器「打开 / 分享」进来的配置。

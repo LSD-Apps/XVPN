@@ -3,9 +3,11 @@ package com.xvpn.xvpn
 import android.app.Activity
 import android.content.Intent
 import android.net.VpnService
+import android.util.Log
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
+import java.io.File
 
 /**
  * 界面进程。
@@ -23,6 +25,7 @@ class MainActivity : FlutterActivity() {
 
     companion object {
         const val CHANNEL = "com.xvpn.xvpn/vpn"
+        private const val TAG = "XvpnMainActivity"
         private const val REQUEST_VPN_PERMISSION = 0x5650
     }
 
@@ -101,26 +104,48 @@ class MainActivity : FlutterActivity() {
         val action = intent.action
         if (action != Intent.ACTION_VIEW && action != Intent.ACTION_SEND) return
 
+        val uri = intent.data
+            ?: @Suppress("DEPRECATION") intent.getParcelableExtra<android.net.Uri>(Intent.EXTRA_STREAM)
+        Log.i(TAG, "收到配置分享/打开：action=$action uri=$uri")
         try {
-            val uri = intent.data
-                ?: @Suppress("DEPRECATION") intent.getParcelableExtra<android.net.Uri>(Intent.EXTRA_STREAM)
             val text = when {
-                uri != null -> contentResolver.openInputStream(uri)
-                    ?.bufferedReader()
-                    ?.use { it.readText() }
+                uri != null -> readUri(uri)
                 action == Intent.ACTION_SEND -> intent.getStringExtra(Intent.EXTRA_TEXT)
                 else -> null
             }
-            if (text.isNullOrBlank()) return
+            if (text.isNullOrBlank()) {
+                // 读到了空内容同样要留下痕迹，否则用户只看到「什么都没发生」。
+                Log.w(TAG, "分享进来的配置内容为空：uri=$uri")
+                XvpnVpnService.reportError("分享进来的配置是空的，或无法读取该文件")
+                return
+            }
 
             val name = uri?.lastPathSegment?.substringAfterLast('/')?.takeIf { it.isNotBlank() }
                 ?: "shared.conf"
             pendingSharedConfig = mapOf("name" to name, "text" to text)
+            Log.i(TAG, "已暂存分享的配置：$name（${text.length} 字符）")
             // 通知 Dart：界面已经在运行时也能立刻响应。
             channel?.invokeMethod("sharedConfigAvailable", null)
         } catch (e: Throwable) {
+            // 失败必须落日志：界面上的提示会自动消失，出问题时只能靠这里定位。
+            Log.e(TAG, "读取分享的配置失败：uri=$uri", e)
             XvpnVpnService.reportError("读取分享的配置失败：${e.message}")
         }
+    }
+
+    /**
+     * 读取分享进来的 URI。
+     *
+     * `content://` 走 ContentResolver；`file://` 直接用路径读——
+     * 文件管理器与 adb 传进来的多半是后者，而 ContentResolver 对 file:// 的
+     * 处理在不同版本上并不一致，直接读反而更可靠。
+     */
+    private fun readUri(uri: android.net.Uri): String? {
+        if (uri.scheme == "file") {
+            val path = uri.path ?: return null
+            return File(path).takeIf { it.canRead() }?.readText()
+        }
+        return contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
     }
 
     /**

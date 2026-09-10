@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 
 import 'core/core_log.dart';
 import 'core/rulesets.dart';
+import 'core/store.dart';
 import 'core/vpn_core.dart';
 import 'format.dart';
 import 'models.dart';
@@ -15,10 +16,31 @@ import 'protocols/protocol_adapter.dart';
 /// 内核通过构造函数注入：默认使用演示内核，接入 sing-box 后换成真实实现，
 /// 界面与状态层的代码不需要改动。
 class AppState extends ChangeNotifier implements VpnCoreListener {
-  AppState({this.coreFactory});
+  AppState({this.coreFactory, this.store}) {
+    // 恢复必须在构造里同步做完：界面第一次 build 时就应该拿到已保存的配置，
+    // 否则会先闪一下「导入配置」的空状态。
+    _restore();
+  }
 
   /// 内核工厂。默认使用演示内核，接入 sing-box 后由外部注入真实实现。
   final VpnCore Function(VpnCoreListener listener)? coreFactory;
+
+  /// 本地持久化。为 null 时不落盘（测试与演示内核用）。
+  final AppStore? store;
+
+  /// 导入配置的原文，按 id 保存。
+  ///
+  /// 只存原文不存解析结果：解析结果是从原文推导出来的，存派生数据会在
+  /// 解析器升级后变成一个需要迁移的历史包袱。
+  final Map<String, String> _profileTexts = <String, String>{};
+  final Map<String, ({String? username, String? password})> _profileCredentials =
+      <String, ({String? username, String? password})>{};
+
+  /// 用户期望的连接状态。
+  ///
+  /// 记的是「意图」而不是「事实」：重开应用时据此恢复到用户离开时的样子，
+  /// 而不是每次都要手动点一次圆环。
+  bool _wantConnected = false;
 
   late final VpnCore _core = coreFactory?.call(this) ?? DemoVpnCore(this);
 
@@ -142,8 +164,11 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
       _profiles.add(profile);
     }
     _activeProfileId = id;
+    _profileTexts[id] = text;
+    _profileCredentials[id] = (username: username, password: password);
     _lastError = null;
     notifyListeners();
+    _persist();
 
     if (_settings.autoConnectOnImport && _status == VpnStatus.disconnected) {
       unawaited(connect());
@@ -154,6 +179,7 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
     if (_activeProfileId == id) return;
     _activeProfileId = id;
     notifyListeners();
+    _persist();
     if (_status != VpnStatus.disconnected) {
       // 切换配置意味着重建隧道，直接重连到新配置。
       unawaited(connect());
@@ -164,6 +190,8 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
     final wasActive = _activeProfileId == id;
     final wasRunning = _status != VpnStatus.disconnected;
     _profiles.removeWhere((p) => p.id == id);
+    _profileTexts.remove(id);
+    _profileCredentials.remove(id);
     if (wasActive) {
       _activeProfileId = _profiles.isEmpty ? null : _profiles.first.id;
       if (_profiles.isEmpty) {
@@ -175,6 +203,7 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
       }
     }
     notifyListeners();
+    _persist();
   }
 
   // ---------------------------------------------------------------- 连接控制
@@ -187,20 +216,30 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
       return;
     }
     _lastError = null;
+    // 先记意图再拨号：中途失败时下次启动会重试，符合用户「我要连着」的预期。
+    _wantConnected = true;
+    _persist();
     await _core.connect(profile, _settings);
   }
 
-  Future<void> disconnect() => _core.disconnect();
+  Future<void> disconnect() async {
+    _wantConnected = false;
+    _persist();
+    await _core.disconnect();
+  }
 
   /// 启动时尝试接管一个仍在运行的内核（目前只有安卓会命中）。
   ///
   /// 安卓的隧道活在前台服务里，界面进程被回收后隧道仍然在跑；不接管的话界面会
   /// 显示「未连接」而流量其实还在走隧道。
-  Future<void> adoptRunningCore() async {
+  ///
+  /// 返回 true 表示确实接管到了一个正在运行的内核。
+  Future<bool> adoptRunningCore() async {
     try {
-      await _core.resumeIfRunning();
+      return await _core.resumeIfRunning();
     } on Object {
       // 接管失败不影响界面可用性，用户仍可手动连接。
+      return false;
     }
   }
 
@@ -238,6 +277,123 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
       _records.clear();
     }
     notifyListeners();
+    _persist();
+  }
+
+  // ---------------------------------------------------------------- 持久化
+
+  /// 从磁盘恢复配置与设置。
+  ///
+  /// 逐份重新解析而不是存解析结果：解析器升级后旧数据依然可用，
+  /// 也不会因为模型字段变化就需要写迁移。单份解析失败只跳过这一份，
+  /// 不影响其余配置——一份坏配置不该让用户丢掉全部配置。
+  void _restore() {
+    final data = store?.load();
+    if (data == null || data.isEmpty) return;
+
+    final savedProfiles = data['profiles'];
+    if (savedProfiles is List) {
+      for (final item in savedProfiles) {
+        if (item is! Map) continue;
+        final name = item['name'];
+        final text = item['text'];
+        if (name is! String || text is! String || text.isEmpty) continue;
+        final username = item['username'] as String?;
+        final password = item['password'] as String?;
+        try {
+          final parsed = VpnProtocolFactory.parse(
+            text,
+            name,
+            username: username,
+            password: password,
+          );
+          final id = stableHash('${parsed.protocol.name}|$text');
+          _profiles.add(VpnProfile(id: id, name: name, parsed: parsed));
+          _profileTexts[id] = text;
+          _profileCredentials[id] = (username: username, password: password);
+        } on Object {
+          continue;
+        }
+      }
+    }
+
+    final activeId = data['activeProfileId'];
+    if (activeId is String && _profiles.any((VpnProfile p) => p.id == activeId)) {
+      _activeProfileId = activeId;
+    } else if (_profiles.isNotEmpty) {
+      _activeProfileId = _profiles.first.id;
+    }
+
+    final settings = data['settings'];
+    if (settings is Map) {
+      try {
+        _settings = AppSettings(
+          autoConnectOnImport: settings['autoConnectOnImport'] as bool? ?? true,
+          launchAtStartup: settings['launchAtStartup'] as bool? ?? false,
+          // 枚举按下标存：名字改了也不会让用户的选择失效。
+          takeoverMode: _enumAt(TakeoverMode.values, settings['takeoverMode'],
+              TakeoverMode.systemProxy),
+          splitMode:
+              _enumAt(SplitMode.values, settings['splitMode'], SplitMode.smart),
+          logSplits: settings['logSplits'] as bool? ?? true,
+          ruleSetUpdatedAt: DateTime.tryParse(
+            settings['ruleSetUpdatedAt'] as String? ?? '',
+          ),
+        );
+      } on Object {
+        _settings = const AppSettings();
+      }
+    }
+
+    _wantConnected = data['wantConnected'] as bool? ?? false;
+  }
+
+  /// 按下标取枚举，越界或类型不对时回退到默认值。
+  static T _enumAt<T>(List<T> values, Object? raw, T fallback) {
+    if (raw is int && raw >= 0 && raw < values.length) return values[raw];
+    return fallback;
+  }
+
+  /// 落盘。任何一处失败都不影响界面，只是这次不持久化。
+  void _persist() {
+    final target = store;
+    if (target == null) return;
+    target.save(<String, Object?>{
+      'profiles': <Object?>[
+        for (final VpnProfile p in _profiles)
+          if (_profileTexts[p.id] case final String text)
+            <String, Object?>{
+              'name': p.name,
+              'text': text,
+              if (_profileCredentials[p.id]?.username != null)
+                'username': _profileCredentials[p.id]!.username,
+              if (_profileCredentials[p.id]?.password != null)
+                'password': _profileCredentials[p.id]!.password,
+            },
+      ],
+      'activeProfileId': _activeProfileId,
+      'wantConnected': _wantConnected,
+      'settings': <String, Object?>{
+        'autoConnectOnImport': _settings.autoConnectOnImport,
+        'launchAtStartup': _settings.launchAtStartup,
+        'takeoverMode': _settings.takeoverMode.index,
+        'splitMode': _settings.splitMode.index,
+        'logSplits': _settings.logSplits,
+        'ruleSetUpdatedAt': _settings.ruleSetUpdatedAt?.toIso8601String(),
+      },
+    });
+  }
+
+  /// 启动时把用户离开时的连接状态接回来。
+  ///
+  /// 顺序很重要：先看内核是不是还在跑（安卓的隧道活在前台服务里），
+  /// 只有在没有现成内核可用、而用户上次是连着的时候才重新拨号。
+  Future<void> restoreConnection() async {
+    final adopted = await adoptRunningCore();
+    if (adopted) return;
+    if (_wantConnected && activeProfile != null) {
+      await connect();
+    }
   }
 
   void dismissError() {
