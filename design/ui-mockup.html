@@ -1,0 +1,837 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>XVPN 界面原型 v1 · 桌面端 / 移动端</title>
+<style>
+  :root{
+    --bg:#06080c; --panel:#121722; --panel2:#161c29; --panel3:#1b2231;
+    --line:#232b3a; --line2:#1b2230;
+    --text:#e7ebf3; --muted:#8a93a6; --muted2:#5f6879;
+    --green:#2ee6a8; --violet:#a274ff; --blue:#4c8dff; --amber:#ffb443; --red:#ff6b6b;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{
+    background:var(--bg); color:var(--text);
+    font-family:system-ui,"Segoe UI","Microsoft YaHei","PingFang SC",sans-serif;
+    -webkit-font-smoothing:antialiased;
+    padding:34px 30px 90px;
+  }
+  .page{max-width:1260px;margin:0 auto}
+
+  /* ---------- 页面说明 ---------- */
+  .doc-head{border-bottom:1px solid var(--line);padding-bottom:22px;margin-bottom:30px}
+  .doc-head h1{font-size:25px;letter-spacing:-.3px}
+  .doc-head h1 span{color:var(--muted2);font-weight:400;font-size:15px;margin-left:10px}
+  .doc-head p{color:var(--muted);font-size:13.5px;line-height:1.75;margin-top:12px;max-width:900px}
+  .doc-head p b{color:var(--text);font-weight:600}
+  .qa{margin-top:20px;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px 20px}
+  .qa h3{font-size:13px;color:var(--amber);font-weight:600;letter-spacing:.3px;margin-bottom:12px}
+  .qa ol{margin-left:18px;color:var(--muted);font-size:13px;line-height:1.9}
+  .qa ol b{color:var(--text);font-weight:600}
+  .qa code{background:#0c1017;border:1px solid var(--line);border-radius:4px;padding:1px 5px;font-size:12px;color:#a8b3c7}
+
+  .sec-title{font-size:14px;color:var(--muted);letter-spacing:1.5px;margin:44px 0 16px;font-weight:600}
+  .sec-title:first-of-type{margin-top:0}
+  .frames{display:flex;flex-wrap:wrap;gap:24px;align-items:flex-start}
+  .cap{font-size:12.5px;color:var(--muted2);margin:10px 0 0 2px}
+  .cap b{color:var(--muted);font-weight:600}
+  .stack{display:flex;flex-direction:column}
+
+  /* ---------- 通用组件 ---------- */
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:13px;padding:16px}
+  .card h4{font-size:12px;color:var(--muted);font-weight:600;letter-spacing:.4px;margin-bottom:12px}
+  .tag{font-size:11px;padding:3px 8px;border-radius:6px;white-space:nowrap;font-weight:600}
+  .tag.proxy{background:rgba(162,116,255,.14);color:#c2a5ff;border:1px solid rgba(162,116,255,.3)}
+  .tag.direct{background:rgba(76,141,255,.12);color:#8fb6ff;border:1px solid rgba(76,141,255,.28)}
+  .tag.warn{background:rgba(255,180,67,.12);color:#ffcd80;border:1px solid rgba(255,180,67,.28)}
+  .mono{font-family:ui-monospace,"Cascadia Mono",Consolas,monospace;font-size:12px;color:#9aa5ba}
+  .sw{width:40px;height:22px;border-radius:11px;background:#2a3242;position:relative;flex:0 0 auto}
+  .sw::after{content:'';position:absolute;top:3px;left:3px;width:16px;height:16px;border-radius:50%;background:#fff;opacity:.85}
+  .sw.on{background:var(--green)}
+  .sw.on::after{left:21px;opacity:1}
+  .radio{width:16px;height:16px;border-radius:50%;border:1.5px solid #39435a;flex:0 0 auto}
+  .radio.on{border-color:var(--green);background:radial-gradient(circle,var(--green) 0 4px,transparent 4.5px)}
+  /* ---------- 统一按钮 ----------
+     三种变体，高度固定 36px，圆角/字号/字重一致；hover 叠一层极淡前景，
+     按下轻微缩小。全应用只用这三种，避免样式发散。 */
+  .btn{height:36px;padding:0 16px;border-radius:9px;font-size:13px;font-weight:600;
+       letter-spacing:.1px;cursor:default;font-family:inherit;box-sizing:border-box;
+       display:inline-flex;align-items:center;justify-content:center;gap:7px;
+       background:var(--panel3);color:var(--text);border:1px solid var(--line);
+       transition:background .14s ease-out, border-color .14s ease-out}
+  .btn:hover{background:color-mix(in srgb, var(--panel3) 94%, #fff)}
+  .btn.primary{background:var(--green);color:#04231a;border-color:transparent}
+  .btn.primary:hover{background:color-mix(in srgb, var(--green) 94%, #fff)}
+  .btn.danger{background:rgba(255,107,107,.10);color:#ff9a9a;border:1px solid rgba(255,107,107,.28)}
+  .btn.danger:hover{background:rgba(255,107,107,.16)}
+  .btn svg{width:15px;height:15px;stroke-width:1.8}
+  svg{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+  .tbl{width:100%;border-collapse:collapse}
+  .tbl th{text-align:left;color:var(--muted2);font-weight:600;font-size:11px;letter-spacing:.4px;
+          padding:0 10px 9px;border-bottom:1px solid var(--line)}
+  .tbl td{padding:9px 10px;border-bottom:1px solid var(--line2);font-size:12.5px}
+  .tbl tr:last-child td{border-bottom:none}
+  .tbl .dom{color:var(--text);font-size:12.5px}
+  .tbl .rule{color:var(--muted);font-size:11.5px}
+  .tbl .time{color:var(--muted2);font-size:11.5px}
+
+  /* ---------- 桌面端窗口 ---------- */
+  .frame.d{width:1180px;height:788px;background:var(--panel);border:1px solid var(--line);
+           border-radius:13px;overflow:hidden;display:flex;flex-direction:column;
+           box-shadow:0 24px 60px -20px rgba(0,0,0,.7)}
+
+  /* 自绘标题栏。原生标题栏已被移除，这一条由界面绘制：
+     比系统标题栏更高，底色与侧边栏完全相同，两者视觉上连成一体。
+     品牌标识只在这里出现一次，侧边栏不再重复。 */
+  .titlebar{height:46px;flex:0 0 46px;background:var(--field);border-bottom:1px solid var(--line);
+            display:flex;align-items:center;padding-left:16px}
+  .tb-brand{display:flex;align-items:center;gap:10px;flex:1;height:100%;cursor:default}
+  .tb-logo{width:24px;height:24px;border-radius:6px;color:#fff;
+           background:linear-gradient(140deg,#E24B93,#D4237A);
+           display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:800}
+  .tb-name{font-size:14px;font-weight:700;letter-spacing:.4px}
+  .tb-theme{height:30px;padding:0 11px;border-radius:8px;display:inline-flex;align-items:center;
+            gap:8px;font-size:12px;color:var(--muted)}
+  .tb-theme svg{width:15px;height:15px}
+  .tb-sep{width:1px;height:20px;background:var(--line);margin:0 4px}
+  .tb-btn{width:46px;height:46px;display:flex;align-items:center;justify-content:center;
+          color:var(--muted)}
+  .tb-btn.close{color:var(--muted)}
+  /* 窗口按钮图形自绘，笔画比字体内置图标更粗，辨识度更高 */
+  .tb-btn svg{width:15px;height:15px;stroke:currentColor;fill:none;stroke-width:1.7;
+              stroke-linecap:square}
+
+  .app{flex:1;display:flex;min-height:0}
+  .side{width:196px;flex:0 0 196px;background:var(--field);border-right:1px solid var(--line);
+        display:flex;flex-direction:column;padding:12px 12px 14px}
+  .brand{display:flex;align-items:center;gap:10px;padding:0 6px 20px}
+  .logo{width:34px;height:34px;border-radius:10px;flex:0 0 auto;
+        background:linear-gradient(140deg,var(--green),#1f9d74);color:#052a1f;
+        display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:800;letter-spacing:-.5px}
+  .brand b{display:block;font-size:14px;letter-spacing:.2px}
+  .brand span{display:block;font-size:10.5px;color:var(--muted2);margin-top:1px}
+  nav{display:flex;flex-direction:column;gap:3px}
+  .nav{position:relative;display:flex;align-items:center;gap:11px;padding:9px 11px 9px 14px;
+       border-radius:9px;font-size:13px;color:var(--muted);text-decoration:none}
+  .nav.active{background:var(--panel3);color:var(--text);font-weight:600}
+  .nav.active svg{color:var(--green)}
+  /* 选中指示条：比整块底色更克制，一眼看出当前位置 */
+  .nav.active::before{content:'';position:absolute;left:3px;top:8px;bottom:8px;width:3px;
+       border-radius:2px;background:var(--green)}
+  .side-foot{margin-top:auto;padding:12px 10px 0;border-top:1px solid var(--line);display:flex;flex-direction:column;gap:8px}
+  .pill-on{display:inline-flex;align-items:center;gap:7px;font-size:11.5px;color:#8ef0cd;
+           background:rgba(46,230,168,.09);border:1px solid rgba(46,230,168,.22);
+           border-radius:20px;padding:4px 11px;width:fit-content}
+  .pill-on i{width:6px;height:6px;border-radius:50%;background:var(--green);
+             box-shadow:0 0 8px var(--green);display:block}
+  .side-foot>span{font-size:10.5px;color:var(--muted2)}
+  .main{flex:1;padding:20px 22px;overflow:hidden;display:flex;flex-direction:column;gap:13px;min-width:0}
+  .main-head{display:flex;align-items:center;justify-content:space-between}
+  .main-head h2{font-size:17px;letter-spacing:-.2px}
+  .main-head p{font-size:12px;color:var(--muted2);margin-top:4px}
+  .row{display:flex;gap:13px}
+  .row>*{flex:1;min-width:0}
+
+  /* 连接环 */
+  .hero{display:flex;align-items:center;gap:26px;padding:20px 24px}
+  .ring{width:158px;height:158px;flex:0 0 158px;border-radius:50%;padding:3px;
+        background:conic-gradient(from 200deg,var(--green),#17795a 55%,var(--green));
+        box-shadow:0 0 46px -8px rgba(46,230,168,.35);position:relative}
+  .ring::before{content:'';position:absolute;inset:9px;border-radius:50%;
+        border:1px solid rgba(46,230,168,.16)}
+  .ring-in{width:100%;height:100%;border-radius:50%;background:
+        radial-gradient(circle at 50% 42%,rgba(46,230,168,.16),transparent 62%),#0f1520;
+        display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px}
+  .ring-in svg{width:32px;height:32px;stroke-width:1.7;color:var(--green)}
+  .ring-in span{font-size:12px;color:#8ef0cd;font-weight:600}
+  .hero-info{flex:1;min-width:0}
+  .hero-info h2{font-size:25px;letter-spacing:-.4px;display:flex;align-items:center;gap:10px}
+  .hero-info h2 em{font-style:normal;font-size:11px;color:#8ef0cd;background:rgba(46,230,168,.1);
+        border:1px solid rgba(46,230,168,.22);border-radius:6px;padding:3px 8px;font-weight:600}
+  .meta{display:flex;flex-wrap:wrap;gap:9px 20px;margin:12px 0 16px;font-size:12.5px;color:var(--muted)}
+  .meta b{color:var(--text);font-weight:600}
+  .meta .k{color:var(--muted2);margin-right:5px}
+  .hero-actions{display:flex;gap:10px;align-items:center}
+  .timer{font-family:ui-monospace,Consolas,monospace;font-size:13px;color:var(--muted);
+         background:#0e131d;border:1px solid var(--line);border-radius:8px;padding:9px 13px}
+
+  /* 统计 */
+  .stat{padding:14px 16px}
+  .stat .lbl{font-size:11.5px;color:var(--muted2);display:flex;align-items:center;gap:6px}
+  .stat .val{font-size:20px;font-weight:600;margin-top:8px;letter-spacing:-.5px}
+  .stat .val small{font-size:12px;color:var(--muted);font-weight:500;margin-left:3px}
+  .spark{display:flex;align-items:flex-end;gap:2px;height:22px;margin-top:9px}
+  .spark i{flex:1;background:linear-gradient(180deg,var(--green),rgba(46,230,168,.25));border-radius:2px;display:block}
+
+  /* 零配置校验卡 */
+  .checks{display:flex;flex-direction:column;gap:11px}
+  .check{display:flex;align-items:flex-start;gap:11px;font-size:12.5px}
+  .check .ico{width:17px;height:17px;flex:0 0 auto;border-radius:50%;background:rgba(46,230,168,.12);
+        border:1px solid rgba(46,230,168,.3);color:var(--green);display:flex;align-items:center;
+        justify-content:center;font-size:10px;margin-top:1px}
+  .check b{font-weight:600}
+  .check small{display:block;color:var(--muted2);font-size:11.5px;margin-top:3px}
+
+  /* 分段控件 */
+  .seg{display:inline-flex;background:#0e131d;border:1px solid var(--line);border-radius:9px;padding:3px;gap:2px}
+  .seg span{font-size:12px;color:var(--muted);padding:6px 14px;border-radius:7px}
+  .seg span.on{background:var(--panel3);color:var(--text);font-weight:600}
+  .search{flex:1;background:#0e131d;border:1px solid var(--line);border-radius:9px;padding:8px 12px;
+          font-size:12.5px;color:var(--muted2);display:flex;align-items:center;gap:8px}
+
+  /* 设置行 */
+  .set-row{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:13px 0;
+           border-bottom:1px solid var(--line2)}
+  .set-row:last-child{border-bottom:none;padding-bottom:2px}
+  .set-row .t{font-size:13px}
+  .set-row .d{font-size:11.5px;color:var(--muted2);margin-top:4px;line-height:1.55}
+  .set-row .ctrl{flex:0 0 auto}
+  .opt{display:flex;align-items:flex-start;gap:10px;padding:11px 13px;border-radius:10px;
+       background:#0e131d;border:1px solid var(--line)}
+  .opt.on{border-color:rgba(46,230,168,.35);background:rgba(46,230,168,.05)}
+  .opt .t{font-size:12.5px;font-weight:600}
+  .opt .d{font-size:11.5px;color:var(--muted2);margin-top:4px;line-height:1.5}
+
+  /* 空状态 */
+  .empty{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:0;text-align:center}
+  .empty .icon{width:60px;height:60px;border-radius:17px;background:var(--panel3);border:1px solid var(--line);
+        display:flex;align-items:center;justify-content:center;color:var(--muted);margin-bottom:20px}
+  .empty .icon svg{width:27px;height:27px}
+  .empty h2{font-size:20px;letter-spacing:-.2px}
+  .empty p{font-size:13px;color:var(--muted);line-height:1.8;margin:11px 0 26px;max-width:430px}
+  .drop{width:100%;max-width:520px;border:1.5px dashed #2f3a4d;border-radius:14px;padding:30px 20px;
+        display:flex;flex-direction:column;align-items:center;gap:9px;background:rgba(18,23,34,.5)}
+  .drop.hover{border-color:var(--green);background:rgba(46,230,168,.04)}
+  .drop b{font-size:14px}
+  .drop span{font-size:12px;color:var(--muted2)}
+  .drop .ext{font-family:ui-monospace,Consolas,monospace;font-size:11px;color:var(--green);
+        background:rgba(46,230,168,.08);border:1px solid rgba(46,230,168,.2);border-radius:5px;padding:2px 7px}
+  .foot-note{margin-top:22px;font-size:11.5px;color:var(--muted2);line-height:1.8}
+
+  /* ---------- 移动端 ---------- */
+  .frame.m{width:390px;height:788px;background:var(--panel);border:1px solid #2b3446;
+           border-radius:36px;overflow:hidden;position:relative;display:flex;flex-direction:column;
+           box-shadow:0 24px 60px -20px rgba(0,0,0,.75)}
+  .notch{position:absolute;top:9px;left:50%;transform:translateX(-50%);width:104px;height:24px;
+         background:#05070b;border-radius:14px;z-index:3}
+  .statusbar{height:42px;flex:0 0 42px;display:flex;align-items:center;justify-content:space-between;
+        padding:0 22px;font-size:11.5px;color:var(--muted);position:relative;z-index:2}
+  .statusbar .r{display:flex;gap:6px;align-items:center}
+  .m-body{flex:1;padding:6px 18px 0;display:flex;flex-direction:column;gap:12px;overflow:hidden}
+  .m-head{display:flex;align-items:center;justify-content:space-between;padding:6px 0 2px}
+  .m-head b{font-size:16px;letter-spacing:-.2px}
+  .m-head .st{display:flex;align-items:center;gap:6px;font-size:11.5px;color:#8ef0cd}
+  .m-head .st i{width:6px;height:6px;border-radius:50%;background:var(--green);box-shadow:0 0 8px var(--green);display:block}
+  .m-ring-wrap{display:flex;flex-direction:column;align-items:center;gap:14px;padding:14px 0 6px}
+  .m-ring{width:176px;height:176px;border-radius:50%;padding:3px;
+        background:conic-gradient(from 200deg,var(--green),#17795a 55%,var(--green));
+        box-shadow:0 0 50px -8px rgba(46,230,168,.4)}
+  .m-ring-in{width:100%;height:100%;border-radius:50%;background:
+        radial-gradient(circle at 50% 42%,rgba(46,230,168,.16),transparent 62%),#0f1520;
+        display:flex;flex-direction:column;align-items:center;justify-content:center;gap:7px}
+  .m-ring-in svg{width:36px;height:36px;color:var(--green);stroke-width:1.7}
+  .m-ring-in b{font-size:15px;color:#8ef0cd}
+  .m-ring-in span{font-size:11px;color:var(--muted2)}
+  .m-node{text-align:center}
+  .m-node b{font-size:14.5px;display:block}
+  .m-node span{font-size:11.5px;color:var(--muted2);display:block;margin-top:5px}
+  .m-stats{display:flex;gap:10px}
+  .m-stat{flex:1;background:var(--panel2);border:1px solid var(--line);border-radius:12px;padding:12px 13px}
+  .m-stat .l{font-size:10.5px;color:var(--muted2)}
+  .m-stat .v{font-size:16px;font-weight:600;margin-top:6px;letter-spacing:-.4px}
+  .m-stat .v small{font-size:10.5px;color:var(--muted);font-weight:500}
+  .m-card{background:var(--panel2);border:1px solid var(--line);border-radius:12px;padding:13px 14px}
+  .m-card .ct{font-size:11px;color:var(--muted2);display:flex;align-items:center;justify-content:space-between;margin-bottom:11px}
+  .m-line{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 0;
+        border-bottom:1px solid var(--line2);font-size:12.5px}
+  .m-line:last-child{border-bottom:none;padding-bottom:0}
+  .m-line .l{display:flex;align-items:center;gap:9px;min-width:0}
+  .m-line .l span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .m-line .dot-s{width:6px;height:6px;border-radius:50%;flex:0 0 auto}
+  .tabbar{flex:0 0 62px;border-top:1px solid var(--line);background:#0e131d;display:flex;
+        align-items:center;padding:0 8px 8px}
+  .tab{flex:1;display:flex;flex-direction:column;align-items:center;gap:5px;font-size:10.5px;color:var(--muted2);padding-top:9px}
+  .tab.on{color:var(--green)}
+  .tab.on svg{stroke-width:2}
+  .m-empty{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;gap:0;padding-bottom:30px}
+  .m-empty .icon{width:66px;height:66px;border-radius:20px;background:var(--panel3);border:1px solid var(--line);
+        display:flex;align-items:center;justify-content:center;color:var(--muted);margin-bottom:20px}
+  .m-empty .icon svg{width:29px;height:29px}
+  .m-empty h3{font-size:17.5px}
+  .m-empty p{font-size:12.5px;color:var(--muted);line-height:1.85;margin:10px 0 24px}
+  .m-empty .btn{width:100%;padding:14px}
+  .m-note{font-size:11px;color:var(--muted2);line-height:1.75;text-align:center}
+</style>
+</head>
+<body>
+<div class="page">
+
+  <header class="doc-head">
+    <h1>XVPN 界面原型 <span>v1 · 桌面端 + 移动端 · 静态稿</span></h1>
+    <p>
+      产品定位：<b>导入一个 .conf，点一下连接，其他什么都不用管。</b>
+      所有分流判断（国内直连 / 国外走隧道）由 App 内置的规则库自动完成，界面上不出现任何需要用户填写的规则、IP 段或路由表。
+    </p>
+    <p>
+      界面设计的核心不只是"一个开关"，而是让<b>自动识别这件事变得可见可验证</b>：用户能随时看到某个域名是被判为直连还是走代理、命中了哪条规则，从而在"某网站打不开"时立刻判断是分流判错还是节点问题。
+    </p>
+
+    <div class="qa">
+      <h3>需要你确认的 7 个设计假设</h3>
+      <ol>
+        <li><b>默认深色主题</b>，暂不做浅色（工具类应用惯例，也省一半设计量）。</li>
+        <li><b>连接态用绿色</b>、<b>代理路径用紫色</b>、<b>直连路径用蓝色</b>。分流记录靠这两色一眼区分。</li>
+        <li><b>"分流模式"默认智能分流且不暴露给普通用户</b>；是否要保留"全局代理 / 全局直连"给高级用户？（现稿在设置页里放）</li>
+        <li><b>Windows 默认走"系统代理"接管</b>，免管理员权限、开箱即用；<b>TUN 模式</b>作为可选项（需管理员，但能接管所有程序，包括不认系统代理的游戏）。</li>
+        <li><b>分流记录默认开启</b>。它有隐私含义（会记录访问过的域名），是否需要默认关闭或只保留最近 N 条？</li>
+        <li><b>多配置管理</b>：是否允许导入多个 .conf 并在侧栏切换？（现稿按"支持"设计）</li>
+        <li><b>Android 是否需要"按应用分流"</b>（指定某几个 App 走 / 不走代理）？这会显著增加界面复杂度，现稿未放入。</li>
+      </ol>
+    </div>
+  </header>
+
+  <!-- ================= 桌面端 ================= -->
+  <div class="sec-title">桌面端 · DESKTOP</div>
+  <div class="frames">
+
+    <!-- D1 空状态 -->
+    <div class="stack">
+      <div class="frame d">
+        <div class="titlebar">
+          <div class="tb-brand">
+            <div class="tb-logo">VPN</div>
+            <span class="tb-name">XVPN</span>
+          </div>
+          <div class="tb-theme">
+            <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v2.2M12 19.3v2.2M2.5 12h2.2M19.3 12h2.2M5.2 5.2l1.6 1.6M17.2 17.2l1.6 1.6M18.8 5.2l-1.6 1.6M6.8 17.2l-1.6 1.6"/></svg>
+            跟随系统
+          </div>
+          <div class="tb-sep"></div>
+          <div class="tb-btn"><svg viewBox="0 0 15 15"><path d="M2 11.5h11"/></svg></div>
+          <div class="tb-btn"><svg viewBox="0 0 15 15"><rect x="2" y="2" width="11" height="11" rx="1.5"/></svg></div>
+          <div class="tb-btn close"><svg viewBox="0 0 15 15"><path d="M2.5 2.5l10 10M12.5 2.5l-10 10"/></svg></div>
+        </div>
+        <div class="app">
+          <aside class="side">
+            <nav>
+              <a class="nav active"><svg viewBox="0 0 24 24"><path d="M12 3v9"/><path d="M6.5 7.2a8 8 0 1 0 11 0"/></svg>连接</a>
+              <a class="nav"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></svg>分流记录</a>
+              <a class="nav"><svg viewBox="0 0 24 24"><path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4"/></svg>配置文件</a>
+              <a class="nav"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1"/></svg>设置</a>
+            </nav>
+            <div class="side-foot">
+              <span class="pill-on" style="background:rgba(138,147,166,.08);border-color:var(--line);color:var(--muted)"><i style="background:#4a5468;box-shadow:none"></i>未连接</span>
+              <span>v0.1.0 · Windows</span>
+            </div>
+          </aside>
+          <main class="main">
+            <div class="empty">
+              <div class="icon"><svg viewBox="0 0 24 24"><path d="M12 16V4"/><path d="M8 8l4-4 4 4"/><path d="M4 16v2.5A1.5 1.5 0 0 0 5.5 20h13a1.5 1.5 0 0 0 1.5-1.5V16"/></svg></div>
+              <h2>导入你的 WireGuard 配置</h2>
+              <p>把 .conf 文件拖进来就行。分流规则已经内置，<b>不需要填写任何 IP 段、规则或路由表</b>。</p>
+              <div class="drop hover">
+                <b>把 .conf 文件拖到这里</b>
+                <span class="ext">.conf</span>
+                <span>或点击下方按钮选择文件</span>
+              </div>
+              <div class="foot-note">
+                支持标准 WireGuard 客户端导出的 .conf（含 wg-quick 生成的配置）<br>
+                配置只保存在本机，不会上传；导入后自动连接并完成分流
+              </div>
+            </div>
+          </main>
+        </div>
+      </div>
+      <p class="cap"><b>D1 首次启动 / 空状态</b> — 只做一件事：让用户把文件弄进来。</p>
+    </div>
+
+    <!-- D2 已连接 -->
+    <div class="stack">
+      <div class="frame d">
+        <div class="titlebar">
+          <div class="tb-brand">
+            <div class="tb-logo">VPN</div>
+            <span class="tb-name">XVPN</span>
+          </div>
+          <div class="tb-theme">
+            <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v2.2M12 19.3v2.2M2.5 12h2.2M19.3 12h2.2M5.2 5.2l1.6 1.6M17.2 17.2l1.6 1.6M18.8 5.2l-1.6 1.6M6.8 17.2l-1.6 1.6"/></svg>
+            跟随系统
+          </div>
+          <div class="tb-sep"></div>
+          <div class="tb-btn"><svg viewBox="0 0 15 15"><path d="M2 11.5h11"/></svg></div>
+          <div class="tb-btn"><svg viewBox="0 0 15 15"><rect x="2" y="2" width="11" height="11" rx="1.5"/></svg></div>
+          <div class="tb-btn close"><svg viewBox="0 0 15 15"><path d="M2.5 2.5l10 10M12.5 2.5l-10 10"/></svg></div>
+        </div>
+        <div class="app">
+          <aside class="side">
+            <nav>
+              <a class="nav active"><svg viewBox="0 0 24 24"><path d="M12 3v9"/><path d="M6.5 7.2a8 8 0 1 0 11 0"/></svg>连接</a>
+              <a class="nav"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></svg>分流记录</a>
+              <a class="nav"><svg viewBox="0 0 24 24"><path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4"/></svg>配置文件</a>
+              <a class="nav"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1"/></svg>设置</a>
+            </nav>
+            <div class="side-foot">
+              <span class="pill-on"><i></i>已连接</span>
+              <span>v0.1.0 · Windows</span>
+            </div>
+          </aside>
+          <main class="main">
+            <div class="main-head">
+              <div>
+                <h2>连接</h2>
+                <p>分流规则由内置规则库自动应用，无需手动维护</p>
+              </div>
+              <div class="timer">01:23:45</div>
+            </div>
+
+            <section class="card hero">
+              <div class="ring">
+                <div class="ring-in">
+                  <svg viewBox="0 0 24 24"><path d="M12 3v9"/><path d="M6.5 7.2a8 8 0 1 0 11 0"/></svg>
+                  <span>已连接</span>
+                </div>
+              </div>
+              <div class="hero-info">
+                <h2>wg-hk-01.conf<em>延迟 42 ms</em></h2>
+                <div class="meta">
+                  <span><span class="k">服务器</span><b>203.0.113.42:51820</b></span>
+                  <span><span class="k">隧道地址</span><b>10.7.0.2</b></span>
+                  <span><span class="k">分流</span><b>国内直连 · 国外走代理</b></span>
+                </div>
+                <div class="hero-actions">
+                  <button class="btn ghost-danger">断开连接</button>
+                  <button class="btn">切换配置</button>
+                </div>
+              </div>
+            </section>
+
+            <div class="row">
+              <section class="card stat">
+                <div class="lbl">↓ 下载</div>
+                <div class="val">1.24<small>MB/s</small></div>
+                <div class="spark"><i style="height:30%"></i><i style="height:55%"></i><i style="height:40%"></i><i style="height:80%"></i><i style="height:62%"></i><i style="height:95%"></i><i style="height:70%"></i><i style="height:48%"></i><i style="height:88%"></i><i style="height:66%"></i><i style="height:100%"></i><i style="height:74%"></i></div>
+              </section>
+              <section class="card stat">
+                <div class="lbl">↑ 上传</div>
+                <div class="val">340<small>KB/s</small></div>
+                <div class="spark"><i style="height:20%"></i><i style="height:35%"></i><i style="height:28%"></i><i style="height:52%"></i><i style="height:44%"></i><i style="height:38%"></i><i style="height:60%"></i><i style="height:34%"></i><i style="height:50%"></i><i style="height:42%"></i><i style="height:58%"></i><i style="height:46%"></i></div>
+              </section>
+              <section class="card stat">
+                <div class="lbl">本次累计</div>
+                <div class="val">1.86<small>GB</small></div>
+                <div class="spark"><i style="height:12%;background:linear-gradient(180deg,#4c8dff,rgba(76,141,255,.2))"></i><i style="height:26%;background:linear-gradient(180deg,#4c8dff,rgba(76,141,255,.2))"></i><i style="height:38%;background:linear-gradient(180deg,#4c8dff,rgba(76,141,255,.2))"></i><i style="height:50%;background:linear-gradient(180deg,#4c8dff,rgba(76,141,255,.2))"></i><i style="height:58%;background:linear-gradient(180deg,#4c8dff,rgba(76,141,255,.2))"></i><i style="height:66%;background:linear-gradient(180deg,#4c8dff,rgba(76,141,255,.2))"></i><i style="height:72%;background:linear-gradient(180deg,#4c8dff,rgba(76,141,255,.2))"></i><i style="height:80%;background:linear-gradient(180deg,#4c8dff,rgba(76,141,255,.2))"></i><i style="height:86%;background:linear-gradient(180deg,#4c8dff,rgba(76,141,255,.2))"></i><i style="height:92%;background:linear-gradient(180deg,#4c8dff,rgba(76,141,255,.2))"></i><i style="height:96%;background:linear-gradient(180deg,#4c8dff,rgba(76,141,255,.2))"></i><i style="height:100%;background:linear-gradient(180deg,#4c8dff,rgba(76,141,255,.2))"></i></div>
+              </section>
+            </div>
+
+            <div class="row">
+              <section class="card" style="flex:1.05">
+                <h4>零配置接管状态</h4>
+                <div class="checks">
+                  <div class="check">
+                    <div class="ico">✓</div>
+                    <div><b>已导入 1 个 WireGuard 配置</b><small>wg-hk-01.conf · 自动解析，无需填写参数</small></div>
+                  </div>
+                  <div class="check">
+                    <div class="ico">✓</div>
+                    <div><b>智能分流已生效</b><small>国内域名与 IP 直连，其余走隧道（规则库 2 项）</small></div>
+                  </div>
+                  <div class="check">
+                    <div class="ico">✓</div>
+                    <div><b>系统代理已自动设置</b><small class="mono">127.0.0.1:2080 · 断开时自动还原</small></div>
+                  </div>
+                </div>
+              </section>
+              <section class="card" style="flex:1">
+                <h4>最近分流</h4>
+                <table class="tbl">
+                  <tr>
+                    <td class="dom">github.com</td>
+                    <td style="width:64px"><span class="tag proxy">代理</span></td>
+                    <td class="rule">默认规则</td>
+                  </tr>
+                  <tr>
+                    <td class="dom">www.baidu.com</td>
+                    <td><span class="tag direct">直连</span></td>
+                    <td class="rule">geosite-cn</td>
+                  </tr>
+                  <tr>
+                    <td class="dom">api.openai.com</td>
+                    <td><span class="tag proxy">代理</span></td>
+                    <td class="rule">默认规则</td>
+                  </tr>
+                  <tr>
+                    <td class="dom">taobao.com</td>
+                    <td><span class="tag direct">直连</span></td>
+                    <td class="rule">geosite-cn</td>
+                  </tr>
+                </table>
+              </section>
+            </div>
+          </main>
+        </div>
+      </div>
+      <p class="cap"><b>D2 已连接（主界面）</b> — 三张卡回答三个问题：连上没有 / 走对没有 / 它在替我做什么。</p>
+    </div>
+
+    <!-- D3 分流记录 -->
+    <div class="stack">
+      <div class="frame d">
+        <div class="titlebar">
+          <div class="tb-brand">
+            <div class="tb-logo">VPN</div>
+            <span class="tb-name">XVPN</span>
+          </div>
+          <div class="tb-theme">
+            <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v2.2M12 19.3v2.2M2.5 12h2.2M19.3 12h2.2M5.2 5.2l1.6 1.6M17.2 17.2l1.6 1.6M18.8 5.2l-1.6 1.6M6.8 17.2l-1.6 1.6"/></svg>
+            跟随系统
+          </div>
+          <div class="tb-sep"></div>
+          <div class="tb-btn"><svg viewBox="0 0 15 15"><path d="M2 11.5h11"/></svg></div>
+          <div class="tb-btn"><svg viewBox="0 0 15 15"><rect x="2" y="2" width="11" height="11" rx="1.5"/></svg></div>
+          <div class="tb-btn close"><svg viewBox="0 0 15 15"><path d="M2.5 2.5l10 10M12.5 2.5l-10 10"/></svg></div>
+        </div>
+        <div class="app">
+          <aside class="side">
+            <nav>
+              <a class="nav"><svg viewBox="0 0 24 24"><path d="M12 3v9"/><path d="M6.5 7.2a8 8 0 1 0 11 0"/></svg>连接</a>
+              <a class="nav active"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></svg>分流记录</a>
+              <a class="nav"><svg viewBox="0 0 24 24"><path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4"/></svg>配置文件</a>
+              <a class="nav"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1"/></svg>设置</a>
+            </nav>
+            <div class="side-foot">
+              <span class="pill-on"><i></i>已连接</span>
+              <span>v0.1.0 · Windows</span>
+            </div>
+          </aside>
+          <main class="main">
+            <div class="main-head">
+              <div>
+                <h2>分流记录</h2>
+                <p>每一条连接走了哪条路、为什么走这条路，都在这里</p>
+              </div>
+              <div style="display:flex;gap:10px;align-items:center">
+                <div class="seg"><span class="on">全部</span><span>走代理</span><span>直连</span></div>
+                <button class="btn">清空</button>
+              </div>
+            </div>
+
+            <div class="search">
+              <svg viewBox="0 0 24 24" style="width:14px;height:14px"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+              搜索域名或 IP…
+            </div>
+
+            <section class="card" style="padding:16px 16px 8px">
+              <table class="tbl">
+                <thead>
+                  <tr><th style="width:82px">时间</th><th>目标</th><th style="width:84px">判定</th><th>命中规则</th><th style="width:88px">出站</th></tr>
+                </thead>
+                <tbody>
+                  <tr><td class="time">14:32:07</td><td class="dom">www.youtube.com</td><td><span class="tag proxy">代理</span></td><td class="rule">默认规则（最终）</td><td class="rule mono">vpn</td></tr>
+                  <tr><td class="time">14:32:05</td><td class="dom">www.baidu.com</td><td><span class="tag direct">直连</span></td><td class="rule">geosite-cn</td><td class="rule mono">direct</td></tr>
+                  <tr><td class="time">14:32:02</td><td class="dom">api.openai.com</td><td><span class="tag proxy">代理</span></td><td class="rule">默认规则（最终）</td><td class="rule mono">vpn</td></tr>
+                  <tr><td class="time">14:31:58</td><td class="dom">220.181.38.148</td><td><span class="tag direct">直连</span></td><td class="rule">geoip-cn</td><td class="rule mono">direct</td></tr>
+                  <tr><td class="time">14:31:55</td><td class="dom">github.com</td><td><span class="tag proxy">代理</span></td><td class="rule">默认规则（最终）</td><td class="rule mono">vpn</td></tr>
+                  <tr><td class="time">14:31:51</td><td class="dom">npmmirror.com</td><td><span class="tag direct">直连</span></td><td class="rule">geosite-cn</td><td class="rule mono">direct</td></tr>
+                  <tr><td class="time">14:31:47</td><td class="dom">192.168.1.1</td><td><span class="tag direct">直连</span></td><td class="rule">局域网地址</td><td class="rule mono">direct</td></tr>
+                  <tr><td class="time">14:31:44</td><td class="dom">cdn.jsdelivr.net</td><td><span class="tag warn">代理</span></td><td class="rule">默认规则（最终）</td><td class="rule mono">vpn</td></tr>
+                </tbody>
+              </table>
+              <p style="font-size:11.5px;color:var(--muted2);padding:12px 10px 4px;line-height:1.7">
+                只记录域名与判定结果，不记录任何请求内容。默认保留最近 500 条，可在设置中关闭。
+              </p>
+            </section>
+          </main>
+        </div>
+      </div>
+      <p class="cap"><b>D3 分流记录</b> — 这是"傻瓜式"的兜底：出问题时用户能自己看出是判错了，还是节点本身不通。</p>
+    </div>
+
+    <!-- D4 设置 -->
+    <div class="stack">
+      <div class="frame d">
+        <div class="titlebar">
+          <div class="tb-brand">
+            <div class="tb-logo">VPN</div>
+            <span class="tb-name">XVPN</span>
+          </div>
+          <div class="tb-theme">
+            <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v2.2M12 19.3v2.2M2.5 12h2.2M19.3 12h2.2M5.2 5.2l1.6 1.6M17.2 17.2l1.6 1.6M18.8 5.2l-1.6 1.6M6.8 17.2l-1.6 1.6"/></svg>
+            跟随系统
+          </div>
+          <div class="tb-sep"></div>
+          <div class="tb-btn"><svg viewBox="0 0 15 15"><path d="M2 11.5h11"/></svg></div>
+          <div class="tb-btn"><svg viewBox="0 0 15 15"><rect x="2" y="2" width="11" height="11" rx="1.5"/></svg></div>
+          <div class="tb-btn close"><svg viewBox="0 0 15 15"><path d="M2.5 2.5l10 10M12.5 2.5l-10 10"/></svg></div>
+        </div>
+        <div class="app">
+          <aside class="side">
+            <nav>
+              <a class="nav"><svg viewBox="0 0 24 24"><path d="M12 3v9"/><path d="M6.5 7.2a8 8 0 1 0 11 0"/></svg>连接</a>
+              <a class="nav"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></svg>分流记录</a>
+              <a class="nav"><svg viewBox="0 0 24 24"><path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4"/></svg>配置文件</a>
+              <a class="nav active"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1"/></svg>设置</a>
+            </nav>
+            <div class="side-foot">
+              <span class="pill-on"><i></i>已连接</span>
+              <span>v0.1.0 · Windows</span>
+            </div>
+          </aside>
+          <main class="main" style="gap:13px">
+            <div class="main-head">
+              <div>
+                <h2>设置</h2>
+                <p>这里的每一项都有合理默认值，不改也能正常用</p>
+              </div>
+            </div>
+
+            <section class="card">
+              <h4>启动</h4>
+              <div class="set-row">
+                <div><div class="t">导入配置后自动连接</div><div class="d">免去点一次连接的步骤</div></div>
+                <div class="ctrl"><div class="sw on"></div></div>
+              </div>
+              <div class="set-row">
+                <div><div class="t">开机自动启动并连接</div><div class="d">开机后静默建立隧道</div></div>
+                <div class="ctrl"><div class="sw"></div></div>
+              </div>
+            </section>
+
+            <section class="card">
+              <h4>流量接管方式</h4>
+              <div class="row" style="gap:12px">
+                <div class="opt on">
+                  <div class="radio on"></div>
+                  <div>
+                    <div class="t">系统代理（推荐）</div>
+                    <div class="d">免管理员权限，浏览器与绝大多数软件立即生效；断开时自动还原系统设置。</div>
+                  </div>
+                </div>
+                <div class="opt">
+                  <div class="radio"></div>
+                  <div>
+                    <div class="t">TUN 虚拟网卡</div>
+                    <div class="d">接管全部程序（含不认系统代理的游戏、命令行工具），需要管理员权限。</div>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <section class="card">
+              <h4>分流</h4>
+              <div class="set-row">
+                <div><div class="t">分流模式</div><div class="d">智能分流：国内域名与 IP 直连，其余走隧道</div></div>
+                <div class="ctrl"><div class="seg"><span class="on">智能分流</span><span>全局代理</span><span>全局直连</span></div></div>
+              </div>
+              <div class="set-row">
+                <div>
+                  <div class="t">规则库</div>
+                  <div class="d">国内域名 <span class="mono">geosite-cn</span> · 国内 IP <span class="mono">geoip-cn</span> · 更新于 2026-02-14</div>
+                </div>
+                <div class="ctrl"><button class="btn">检查更新</button></div>
+              </div>
+              <div class="set-row">
+                <div><div class="t">记录分流日志</div><div class="d">关闭后不再记录任何域名</div></div>
+                <div class="ctrl"><div class="sw on"></div></div>
+              </div>
+            </section>
+          </main>
+        </div>
+      </div>
+      <p class="cap"><b>D4 设置</b> — 设置项刻意压在 8 项以内；高级能力收在"规则库 / 接管方式"里，不干扰主流程。</p>
+    </div>
+
+  </div>
+
+  <!-- ================= 移动端 ================= -->
+  <div class="sec-title">移动端 · ANDROID</div>
+  <div class="frames">
+
+    <!-- M1 -->
+    <div class="stack">
+      <div class="frame m">
+        <div class="notch"></div>
+        <div class="statusbar"><span>9:41</span><span class="r">▮▮▮ ⌁ 86%</span></div>
+        <div class="m-body">
+          <div class="m-head">
+            <b>XVPN</b>
+            <span class="st" style="color:var(--muted2)"><i style="background:#4a5468;box-shadow:none"></i>未连接</span>
+          </div>
+          <div class="m-empty">
+            <div class="icon"><svg viewBox="0 0 24 24"><path d="M12 16V4"/><path d="M8 8l4-4 4 4"/><path d="M4 16v2.5A1.5 1.5 0 0 0 5.5 20h13a1.5 1.5 0 0 0 1.5-1.5V16"/></svg></div>
+            <h3>导入配置</h3>
+            <p>选择一个 WireGuard .conf 文件<br>其余设置已经内置好了</p>
+            <button class="btn primary">选择 .conf 文件</button>
+            <p class="m-note" style="margin-top:20px">
+              也可以从文件管理器"分享"到 XVPN<br>
+              首次连接时系统会询问 VPN 授权，允许即可
+            </p>
+          </div>
+        </div>
+        <div class="tabbar">
+          <div class="tab on"><svg viewBox="0 0 24 24"><path d="M12 3v9"/><path d="M6.5 7.2a8 8 0 1 0 11 0"/></svg>连接</div>
+          <div class="tab"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></svg>分流</div>
+          <div class="tab"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1"/></svg>设置</div>
+        </div>
+      </div>
+      <p class="cap"><b>M1 首次启动</b> — 一个按钮，一句话解释。</p>
+    </div>
+
+    <!-- M2 -->
+    <div class="stack">
+      <div class="frame m">
+        <div class="notch"></div>
+        <div class="statusbar"><span>9:41</span><span class="r">▮▮▮ ⌁ 86%</span></div>
+        <div class="m-body">
+          <div class="m-head">
+            <b>XVPN</b>
+            <span class="st"><i></i>已连接</span>
+          </div>
+
+          <div class="m-ring-wrap">
+            <div class="m-ring">
+              <div class="m-ring-in">
+                <svg viewBox="0 0 24 24"><path d="M12 3v9"/><path d="M6.5 7.2a8 8 0 1 0 11 0"/></svg>
+                <b>已连接</b>
+                <span>01:23:45</span>
+              </div>
+            </div>
+            <div class="m-node">
+              <b>wg-hk-01.conf</b>
+              <span>203.0.113.42:51820 · 42 ms</span>
+            </div>
+          </div>
+
+          <div class="m-stats">
+            <div class="m-stat"><div class="l">↓ 下载</div><div class="v">1.24<small> MB/s</small></div></div>
+            <div class="m-stat"><div class="l">↑ 上传</div><div class="v">340<small> KB/s</small></div></div>
+          </div>
+
+          <div class="m-card">
+            <div class="ct">
+              <span>智能分流 · 已启用</span>
+              <span class="tag direct">国内直连</span>
+            </div>
+            <div class="m-line">
+              <div class="l"><i class="dot-s" style="background:var(--blue)"></i><span>www.baidu.com</span></div>
+              <span class="tag direct">直连</span>
+            </div>
+            <div class="m-line">
+              <div class="l"><i class="dot-s" style="background:var(--violet)"></i><span>github.com</span></div>
+              <span class="tag proxy">代理</span>
+            </div>
+            <div class="m-line">
+              <div class="l"><i class="dot-s" style="background:var(--blue)"></i><span>taobao.com</span></div>
+              <span class="tag direct">直连</span>
+            </div>
+          </div>
+        </div>
+        <div class="tabbar">
+          <div class="tab on"><svg viewBox="0 0 24 24"><path d="M12 3v9"/><path d="M6.5 7.2a8 8 0 1 0 11 0"/></svg>连接</div>
+          <div class="tab"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></svg>分流</div>
+          <div class="tab"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1"/></svg>设置</div>
+        </div>
+      </div>
+      <p class="cap"><b>M2 已连接</b> — 大圆环即开关，点一下断开；分流结果直接露出在主屏。</p>
+    </div>
+
+    <!-- M3 -->
+    <div class="stack">
+      <div class="frame m">
+        <div class="notch"></div>
+        <div class="statusbar"><span>9:41</span><span class="r">▮▮▮ ⌁ 86%</span></div>
+        <div class="m-body">
+          <div class="m-head">
+            <b>分流</b>
+            <span class="st"><i></i>已连接</span>
+          </div>
+
+          <div class="seg" style="width:100%;display:flex">
+            <span class="on" style="flex:1;text-align:center">全部</span>
+            <span style="flex:1;text-align:center">代理</span>
+            <span style="flex:1;text-align:center">直连</span>
+          </div>
+
+          <div class="m-card" style="padding:6px 14px">
+            <div class="m-line"><div class="l"><span>www.youtube.com</span></div><span class="tag proxy">代理</span></div>
+            <div class="m-line"><div class="l"><span>www.baidu.com</span></div><span class="tag direct">直连</span></div>
+            <div class="m-line"><div class="l"><span>api.openai.com</span></div><span class="tag proxy">代理</span></div>
+            <div class="m-line"><div class="l"><span>220.181.38.148</span></div><span class="tag direct">直连</span></div>
+            <div class="m-line"><div class="l"><span>github.com</span></div><span class="tag proxy">代理</span></div>
+            <div class="m-line"><div class="l"><span>npmmirror.com</span></div><span class="tag direct">直连</span></div>
+            <div class="m-line"><div class="l"><span>192.168.1.1</span></div><span class="tag direct">直连</span></div>
+          </div>
+
+          <p class="m-note">只记录域名与判定结果，不记录请求内容<br>最多保留最近 500 条</p>
+        </div>
+        <div class="tabbar">
+          <div class="tab"><svg viewBox="0 0 24 24"><path d="M12 3v9"/><path d="M6.5 7.2a8 8 0 1 0 11 0"/></svg>连接</div>
+          <div class="tab on"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></svg>分流</div>
+          <div class="tab"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1"/></svg>设置</div>
+        </div>
+      </div>
+      <p class="cap"><b>M3 分流记录</b> — 桌面端表格在手机上降级为列表，只保留"目标 + 判定"两个信息。</p>
+    </div>
+
+    <!-- M4 -->
+    <div class="stack">
+      <div class="frame m">
+        <div class="notch"></div>
+        <div class="statusbar"><span>9:41</span><span class="r">▮▮▮ ⌁ 86%</span></div>
+        <div class="m-body">
+          <div class="m-head"><b>设置</b></div>
+
+          <div class="m-card">
+            <div class="ct"><span>启动</span></div>
+            <div class="m-line">
+              <div class="l"><span>导入后自动连接</span></div>
+              <div class="sw on"></div>
+            </div>
+            <div class="m-line">
+              <div class="l"><span>开机自动连接</span></div>
+              <div class="sw"></div>
+            </div>
+          </div>
+
+          <div class="m-card">
+            <div class="ct"><span>分流</span><span class="tag direct">国内直连</span></div>
+            <div class="m-line">
+              <div class="l"><span>分流模式</span></div>
+              <span style="font-size:12.5px;color:var(--muted)">智能分流 ›</span>
+            </div>
+            <div class="m-line">
+              <div class="l"><span>规则库</span></div>
+              <span style="font-size:12px;color:var(--muted2)">2026-02-14 ›</span>
+            </div>
+            <div class="m-line">
+              <div class="l"><span>记录分流日志</span></div>
+              <div class="sw on"></div>
+            </div>
+          </div>
+
+          <div class="m-card">
+            <div class="ct"><span>配置</span></div>
+            <div class="m-line">
+              <div class="l"><span>wg-hk-01.conf</span></div>
+              <span class="tag direct" style="background:rgba(46,230,168,.1);color:#8ef0cd;border-color:rgba(46,230,168,.25)">当前</span>
+            </div>
+            <div class="m-line">
+              <div class="l"><span style="color:var(--muted)">导入新配置…</span></div>
+              <span style="color:var(--muted2)">＋</span>
+            </div>
+          </div>
+        </div>
+        <div class="tabbar">
+          <div class="tab"><svg viewBox="0 0 24 24"><path d="M12 3v9"/><path d="M6.5 7.2a8 8 0 1 0 11 0"/></svg>连接</div>
+          <div class="tab"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></svg>分流</div>
+          <div class="tab on"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1"/></svg>设置</div>
+        </div>
+      </div>
+      <p class="cap"><b>M4 设置</b> — 移动端无"接管方式"选项（TUN 是唯一方式），设置更少。</p>
+    </div>
+
+  </div>
+
+</div>
+</body>
+</html>
