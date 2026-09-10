@@ -85,6 +85,50 @@ void main() {
     expect(find.text('配置文件'), findsNothing);
   });
 
+  testWidgets('横屏等矮屏下移动端页面不溢出', (WidgetTester tester) async {
+    // 手机横屏时可用高度只剩 300 上下，空状态与连接页都必须能滚，
+    // 否则会直接抛 RenderFlex overflow。
+    tester.view.physicalSize = const Size(780, 360);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    await tester.pumpWidget(const XvpnApp());
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+    expect(find.text('导入配置'), findsOneWidget);
+  });
+
+  testWidgets('横屏下三个标签页都不溢出（已导入配置且有记录）', (WidgetTester tester) async {
+    final state = AppState();
+    addTearDown(state.dispose);
+    tester.view.physicalSize = const Size(780, 360);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildXvTheme(XvPalette.dark),
+        home: XvShell(state: state, theme: ThemeController()),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    state.importConf(text: _conf, fileName: 'wg-hk-01.conf');
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 1));
+    await tester.pump(const Duration(seconds: 6));
+    await tester.pump();
+    expect(state.records, isNotEmpty);
+    expect(tester.takeException(), isNull, reason: '连接页在矮屏下不应溢出');
+
+    for (final String tab in <String>['分流', '设置']) {
+      await tester.tap(find.text(tab));
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull, reason: '$tab 页在矮屏下不应溢出');
+    }
+
+    await _stopCore(tester, state);
+  });
+
   // ------------------------------------------------------------ 导入与连接
 
   test('导入合法 .conf 后会成为当前配置', () {

@@ -823,9 +823,15 @@ class _EmptyStateState extends State<_EmptyState> {
       children: <Widget>[
         const MobileHeader(title: '连接', statusLabel: '未连接'),
         Expanded(
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: <Widget>[
+          // 空间够时垂直居中，不够时（手机横屏、分屏、大字号）可以滚。
+          // 直接放 Column 会在矮屏上抛 RenderFlex overflow。
+          child: LayoutBuilder(
+            builder: (BuildContext context, BoxConstraints constraints) => SingleChildScrollView(
+              child: ConstrainedBox(
+                constraints: BoxConstraints(minHeight: constraints.maxHeight),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: <Widget>[
               Container(
                 width: 66,
                 height: 66,
@@ -867,7 +873,10 @@ class _EmptyStateState extends State<_EmptyState> {
                   style: TextStyle(fontSize: 11, color: XV.muted2, height: 1.75),
                 ),
               ),
-            ],
+                  ],
+                ),
+              ),
+            ),
           ),
         ),
       ],

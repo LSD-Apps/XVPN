@@ -10,21 +10,30 @@ import 'core/android_vpn_core.dart';
 import 'core/singbox_runner.dart';
 import 'core/system_proxy.dart';
 import 'core/vpn_core.dart';
+import 'protocols/parsed_profile.dart';
+import 'protocols/vpn_protocol.dart';
 import 'screens/shell.dart';
 import 'theme.dart';
 import 'theme_controller.dart';
 
-/// 入口。桌面端支持把 .conf 路径作为启动参数传入，
-/// 这样就实现了「双击 .conf 直接用 XVPN 打开」。
+/// 入口。桌面端支持把配置文件路径作为启动参数传入，
+/// 这样就实现了「双击配置文件直接用 XVPN 打开」。
 void main(List<String> args) {
   runApp(XvpnApp(launchConfPath: _confPathFromArgs(args)));
 }
 
-/// 从命令行参数里挑出第一个指向 .conf 文件的路径。
+/// 从命令行参数里挑出第一个指向受支持配置文件的路径。
+///
+/// 扩展名取自协议注册表而不是写死 `.conf`：OpenVPN 的 `.ovpn`
+/// 同样要能双击打开，否则「打开方式」里选了 XVPN 却没反应。
+/// 协议最终仍由内容识别，这里只负责把明显不是配置文件的参数挡掉。
 String? _confPathFromArgs(List<String> args) {
   for (final arg in args) {
     if (arg.startsWith('-')) continue;
-    if (!arg.toLowerCase().endsWith('.conf')) continue;
+    final lower = arg.toLowerCase();
+    if (!allSupportedExtensions.any((String ext) => lower.endsWith('.$ext'))) {
+      continue;
+    }
     if (File(arg).existsSync()) return arg;
   }
   return null;
@@ -78,11 +87,12 @@ class _XvpnAppState extends State<XvpnApp> {
     if (path == null) return;
     try {
       _state.importConf(text: File(path).readAsStringSync(), fileName: _basename(path));
+    } on VpnConfigException catch (e) {
+      // 解析器抛出的已经是面向用户的中文说明，直接用。
+      _state.reportError('无法导入 $path：${e.message}');
     } on Object catch (e) {
-      // 启动参数里的配置有问题时不能影响界面可用性，只提示失败原因。
-      _state.reportError(
-        '无法导入 $path：${e.toString().replaceFirst('WireGuardConfException: ', '')}',
-      );
+      // 读文件失败等其它情况，不能影响界面可用性，只提示原因。
+      _state.reportError('无法导入 $path：$e');
     }
   }
 
