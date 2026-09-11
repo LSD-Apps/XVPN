@@ -143,6 +143,58 @@ class XvCard extends StatelessWidget {
   }
 }
 
+/// 卡片内的纵向内容：空间够时就是普通 [Column]，不够时可滚动并给出滚动条。
+///
+/// 为什么需要它：卡片的高度由布局决定，不一定等于内容的自然高度——
+/// 桌面端连接页底部两张卡按剩余高度拉伸，手机横屏时整页可用高度只剩 200 上下。
+/// 直接把 [Column] 塞进去，内容一多就抛 RenderFlex overflow（实测在
+/// 1280×720 窗口下溢出 79px）。
+///
+/// [SingleChildScrollView] 在高度约束充足时会让子节点保持自然高度、自身缩到
+/// 同样高，因此「够就正常显示、不够就滚动」用同一个组件就够，不需要先量高度。
+/// 滚动条始终可见，否则用户不知道这里还能往下滚。
+///
+/// 注意 `Scrollbar.thumbVisibility` 要求显式提供 [ScrollController]，
+/// 因此这里必须是有状态组件，由它自己持有并释放控制器。
+class XvScrollableColumn extends StatefulWidget {
+  const XvScrollableColumn({
+    super.key,
+    required this.children,
+    this.crossAxisAlignment = CrossAxisAlignment.stretch,
+  });
+
+  final List<Widget> children;
+  final CrossAxisAlignment crossAxisAlignment;
+
+  @override
+  State<XvScrollableColumn> createState() => _XvScrollableColumnState();
+}
+
+class _XvScrollableColumnState extends State<XvScrollableColumn> {
+  final ScrollController _controller = ScrollController();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scrollbar(
+      controller: _controller,
+      thumbVisibility: true,
+      child: SingleChildScrollView(
+        controller: _controller,
+        child: Column(
+          crossAxisAlignment: widget.crossAxisAlignment,
+          children: widget.children,
+        ),
+      ),
+    );
+  }
+}
+
 /// 卡片标题：原型中的 .card h4
 class XvCardTitle extends StatelessWidget {
   const XvCardTitle(this.text, {super.key, this.trailing});
@@ -415,7 +467,13 @@ class AppSparkPoints {
 
 /// 校验项：原型中的 .check
 class CheckRow extends StatelessWidget {
-  const CheckRow({super.key, required this.title, required this.detail, this.mono = false});
+  const CheckRow({
+    super.key,
+    required this.title,
+    required this.detail,
+    this.mono = false,
+    this.warn = false,
+  });
 
   final String title;
   final String detail;
@@ -423,8 +481,17 @@ class CheckRow extends StatelessWidget {
   /// 详情用等宽字体（例如 127.0.0.1:2080）。
   final bool mono;
 
+  /// 这条不是「一切正常」，而是「需要注意」。
+  ///
+  /// 原先这里恒为绿色对勾，于是 DNS 异常、自检发现某条腿不通时，
+  /// 界面上仍然是一片绿色——用户看到的全是「✓」，自然以为没问题。
+  /// 检查行的颜色必须反映它自己报告的结论。
+  final bool warn;
+
   @override
   Widget build(BuildContext context) {
+    final accent = warn ? XV.amber : XV.green;
+    final foreground = warn ? XV.amberSoft : XV.green;
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: <Widget>[
@@ -434,11 +501,14 @@ class CheckRow extends StatelessWidget {
           margin: const EdgeInsets.only(top: 1),
           decoration: BoxDecoration(
             shape: BoxShape.circle,
-            color: XV.green.withValues(alpha: 0.12),
-            border: Border.all(color: XV.green.withValues(alpha: 0.3)),
+            color: accent.withValues(alpha: 0.12),
+            border: Border.all(color: accent.withValues(alpha: 0.3)),
           ),
           child: Center(
-            child: Text('✓', style: TextStyle(fontSize: 10, height: 1, color: XV.green)),
+            child: Text(
+              warn ? '!' : '✓',
+              style: TextStyle(fontSize: 10, height: 1, color: foreground),
+            ),
           ),
         ),
         const SizedBox(width: 11),
@@ -448,7 +518,10 @@ class CheckRow extends StatelessWidget {
             children: <Widget>[
               Text(title, style: XvText.bodyMuted.copyWith(color: XV.text, fontWeight: FontWeight.w600)),
               const SizedBox(height: 3),
-              Text(detail, style: mono ? XvText.monoSmall : XvText.caption),
+              Text(
+                detail,
+                style: mono ? XvText.monoSmall : XvText.caption,
+              ),
             ],
           ),
         ),
@@ -865,11 +938,18 @@ class XvSearchField extends StatelessWidget {
     required this.hint,
     this.controller,
     this.onChanged,
+    this.onClear,
   });
 
   final String hint;
   final TextEditingController? controller;
   final ValueChanged<String>? onChanged;
+
+  /// 非空时在右侧显示一个清除按钮。
+  ///
+  /// 搜索框默认没有回退入口：用户打完字想恢复完整列表，只能一个个删。
+  /// 记录多达几百条时，这个缺口会让人以为「记录丢了」。
+  final VoidCallback? onClear;
 
   @override
   Widget build(BuildContext context) {
@@ -899,6 +979,8 @@ class XvSearchField extends StatelessWidget {
               ),
             ),
           ),
+          if (onClear != null)
+            TapAction(label: '清除', onTap: onClear!),
         ],
       ),
     );

@@ -7,9 +7,6 @@ enum VpnStatus { disconnected, connecting, connected }
 /// 一条连接被判定的结果。UI 用它渲染「代理 / 直连」标签。
 enum RouteKind { proxy, direct }
 
-/// 流量接管方式。Windows 两种都支持；Android 只能走 TUN。
-enum TakeoverMode { systemProxy, tun }
-
 /// 分流模式。默认智能分流即「国内直连、国外走代理」。
 enum SplitMode { smart, globalProxy, globalDirect }
 
@@ -88,32 +85,24 @@ class SplitRecord {
 class AppSettings {
   const AppSettings({
     this.autoConnectOnImport = true,
-    this.launchAtStartup = false,
-    this.takeoverMode = TakeoverMode.systemProxy,
     this.splitMode = SplitMode.smart,
     this.logSplits = true,
     this.ruleSetUpdatedAt,
   });
 
   final bool autoConnectOnImport;
-  final bool launchAtStartup;
-  final TakeoverMode takeoverMode;
   final SplitMode splitMode;
   final bool logSplits;
   final DateTime? ruleSetUpdatedAt;
 
   AppSettings copyWith({
     bool? autoConnectOnImport,
-    bool? launchAtStartup,
-    TakeoverMode? takeoverMode,
     SplitMode? splitMode,
     bool? logSplits,
     DateTime? ruleSetUpdatedAt,
   }) {
     return AppSettings(
       autoConnectOnImport: autoConnectOnImport ?? this.autoConnectOnImport,
-      launchAtStartup: launchAtStartup ?? this.launchAtStartup,
-      takeoverMode: takeoverMode ?? this.takeoverMode,
       splitMode: splitMode ?? this.splitMode,
       logSplits: logSplits ?? this.logSplits,
       ruleSetUpdatedAt: ruleSetUpdatedAt ?? this.ruleSetUpdatedAt,

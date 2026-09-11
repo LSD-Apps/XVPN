@@ -20,6 +20,18 @@ class SplitScreen extends StatefulWidget {
 class _SplitScreenState extends State<SplitScreen> {
   RouteFilter _filter = RouteFilter.all;
   String _query = '';
+  final TextEditingController _searchController = TextEditingController();
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  void _clearSearch() {
+    _searchController.clear();
+    setState(() => _query = '');
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -58,7 +70,9 @@ class _SplitScreenState extends State<SplitScreen> {
         const SizedBox(height: 13),
         XvSearchField(
           hint: '搜索域名或 IP…',
+          controller: _searchController,
           onChanged: (String v) => setState(() => _query = v),
+          onClear: _query.isEmpty ? null : _clearSearch,
         ),
         const SizedBox(height: 13),
         Expanded(
@@ -72,6 +86,7 @@ class _SplitScreenState extends State<SplitScreen> {
   }
 
   Widget _buildTable(List<SplitRecord> rows) {
+    final truncated = widget.state.isFilterTruncated(_filter, _query);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: <Widget>[
@@ -92,19 +107,27 @@ class _SplitScreenState extends State<SplitScreen> {
           child: rows.isEmpty
               ? Center(
                   child: Text(
-                    '还没有分流记录',
+                    _query.isEmpty ? '还没有分流记录' : '没有匹配「$_query」的记录',
                     style: TextStyle(fontSize: 12.5, color: XV.muted2),
                   ),
                 )
               : ListView.builder(
                   padding: EdgeInsets.zero,
+                  // 列表按「最新的在最前」插入，因此缓存范围要以第 0 项为锚点，
+                  // 否则每秒插入新记录都会让可见区域的缓存整体失效，
+                  // 表现为滚动时不停重建。
                   itemCount: rows.length + 1,
                   itemBuilder: (BuildContext context, int index) {
                     if (index == rows.length) {
                       return Padding(
                         padding: EdgeInsets.fromLTRB(10, 12, 10, 8),
                         child: Text(
-                          '只记录域名与判定结果，不记录任何请求内容。默认保留最近 500 条，可在设置中关闭。',
+                          truncated
+                              ? '结果较多，只显示前 ${AppState.searchResultLimit} 条；'
+                                  '输入关键字可以缩小范围。\n'
+                                  '只记录域名与判定结果，不记录任何请求内容。'
+                              : '只记录域名与判定结果，不记录任何请求内容。'
+                                  '默认保留最近 ${AppState.recordLimit} 条，可在设置中关闭。',
                           style: TextStyle(fontSize: 11.5, color: XV.muted2, height: 1.7),
                         ),
                       );
@@ -119,6 +142,9 @@ class _SplitScreenState extends State<SplitScreen> {
 
   Widget _buildTableRow(SplitRecord r) {
     return Container(
+      // 稳定 Key 而不是按位置复用：记录是插在最前面的，按位置复用会让
+      // 每一行的内容整体下移一格，Flutter 无法复用任何已有元素。
+      key: ValueKey<String>('${r.time.microsecondsSinceEpoch}|${r.target}'),
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
       decoration: BoxDecoration(
         border: Border(bottom: BorderSide(color: XV.line2)),
@@ -151,6 +177,7 @@ class _SplitScreenState extends State<SplitScreen> {
 
   Widget _buildMobile() {
     final rows = widget.state.filteredRecords(_filter, _query);
+    final truncated = widget.state.isFilterTruncated(_filter, _query);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: <Widget>[
@@ -166,7 +193,9 @@ class _SplitScreenState extends State<SplitScreen> {
         const SizedBox(height: 12),
         XvSearchField(
           hint: '搜索域名或 IP…',
+          controller: _searchController,
           onChanged: (String v) => setState(() => _query = v),
+          onClear: _query.isEmpty ? null : _clearSearch,
         ),
         const SizedBox(height: 10),
         Row(
@@ -195,7 +224,10 @@ class _SplitScreenState extends State<SplitScreen> {
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
             child: rows.isEmpty
                 ? Center(
-                    child: Text('还没有分流记录', style: TextStyle(fontSize: 12.5, color: XV.muted2)),
+                    child: Text(
+                      _query.isEmpty ? '还没有分流记录' : '没有匹配的记录',
+                      style: TextStyle(fontSize: 12.5, color: XV.muted2),
+                    ),
                   )
                 : ListView.separated(
                     padding: const EdgeInsets.symmetric(vertical: 6),
@@ -204,6 +236,7 @@ class _SplitScreenState extends State<SplitScreen> {
                     itemBuilder: (BuildContext context, int i) {
                       final r = rows[i];
                       return Padding(
+                        key: ValueKey<String>('${r.time.microsecondsSinceEpoch}|${r.target}'),
                         padding: const EdgeInsets.symmetric(vertical: 12),
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
@@ -242,7 +275,11 @@ class _SplitScreenState extends State<SplitScreen> {
         Padding(
           padding: EdgeInsets.only(top: 12, bottom: 14),
           child: Text(
-            '只记录域名与判定结果，不记录请求内容\n最多保留最近 500 条',
+            truncated
+                ? '结果较多，只显示前 ${AppState.searchResultLimit} 条\n'
+                    '只记录域名与判定结果，不记录请求内容'
+                : '只记录域名与判定结果，不记录请求内容\n'
+                    '最多保留最近 ${AppState.recordLimit} 条',
             textAlign: TextAlign.center,
             style: TextStyle(fontSize: 11, color: XV.muted2, height: 1.75),
           ),

@@ -127,7 +127,6 @@ void main() {
         autoConnectOnImport: false,
         splitMode: SplitMode.globalProxy,
         logSplits: false,
-        launchAtStartup: true,
       ));
       first.dispose();
 
@@ -136,7 +135,23 @@ void main() {
       expect(second.settings.autoConnectOnImport, isFalse);
       expect(second.settings.splitMode, SplitMode.globalProxy);
       expect(second.settings.logSplits, isFalse);
-      expect(second.settings.launchAtStartup, isTrue);
+    });
+
+    test('旧存档里已移除的设置项不会让恢复失败', () {
+      // 设置项只增不减地留在存档里是常态：用户升级后，旧文件里仍然有
+      // 早已移除的字段。恢复逻辑必须忽略它们，而不是抛异常退回默认值——
+      // 那会让用户的其他设置一起丢光。
+      dir.createSync(recursive: true);
+      File('${dir.path}${Platform.pathSeparator}${AppStore.fileName}').writeAsStringSync(
+        '{"version":1,"settings":{"autoConnectOnImport":false,'
+        '"splitMode":1,"logSplits":false,"launchAtStartup":true,"takeoverMode":1}}',
+      );
+      final state = AppState(store: store);
+      addTearDown(state.dispose);
+
+      expect(state.settings.autoConnectOnImport, isFalse);
+      expect(state.settings.splitMode, SplitMode.globalProxy);
+      expect(state.settings.logSplits, isFalse);
     });
 
     test('存档损坏时退回空状态，而不是崩溃', () {

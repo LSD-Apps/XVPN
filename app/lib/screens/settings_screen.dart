@@ -5,6 +5,7 @@ import '../format.dart';
 import '../models.dart';
 import '../theme.dart';
 import '../theme_controller.dart';
+import '../widgets/auto_route_card.dart';
 import '../widgets/common.dart';
 import 'profiles_screen.dart';
 
@@ -27,6 +28,9 @@ class SettingsScreen extends StatelessWidget {
   static const _splitLabels = <String>['智能分流', '全局代理', '全局直连'];
   static const _themeLabels = <String>['跟随系统', '亮色', '深色'];
 
+  /// 桌面端页面级滚动容器的 Key。
+  static const Key desktopScrollKey = Key('settings-desktop-scroll');
+
   @override
   Widget build(BuildContext context) {
     return compact ? _buildMobile(context) : _buildDesktop(context);
@@ -36,6 +40,9 @@ class SettingsScreen extends StatelessWidget {
 
   Widget _buildDesktop(BuildContext context) {
     return SingleChildScrollView(
+      // 具名 Key：设置页在矮窗口下必然需要滚动，而测试与自动化要能稳定地
+      // 定位到这个滚动容器（页面上还有卡片内部的滚动区域，按类型找会歧义）。
+      key: desktopScrollKey,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: <Widget>[
@@ -55,6 +62,8 @@ class SettingsScreen extends StatelessWidget {
           _buildTakeoverCard(),
           const SizedBox(height: 13),
           _buildSplitCard(compact: false),
+          const SizedBox(height: 13),
+          AutoRouteCard(state: state, compact: false),
         ],
       ),
     );
@@ -119,7 +128,17 @@ class SettingsScreen extends StatelessWidget {
     );
   }
 
-  Widget _buildStartupCard() {    return XvCard(
+  /// 启动相关设置。
+  ///
+  /// 这里**只有**「导入后自动连接」一项——它是真的：`AppState.importConf`
+  /// 在导入成功且当前未连接时会立刻拨号。
+  ///
+  /// 原先还有一项「开机自动启动并连接」。它只是把一个布尔值存进设置文件，
+  /// 从来没有任何代码把它落到系统的启动项里（Windows 需要写注册表 Run 键，
+  /// 安卓需要 BOOT_COMPLETED 接收器），开关拨过去不会产生任何效果。
+  /// 一个拨了没反应的开关比没有这个开关更糟，因此去掉，等真正能兑现时再加回来。
+  Widget _buildStartupCard() {
+    return XvCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: <Widget>[
@@ -127,19 +146,11 @@ class SettingsScreen extends StatelessWidget {
           SettingRow(
             title: '导入配置后自动连接',
             description: '免去点一次连接的步骤',
+            isLast: true,
             control: XvSwitch(
               value: state.settings.autoConnectOnImport,
               onChanged: (bool v) =>
                   state.updateSettings(state.settings.copyWith(autoConnectOnImport: v)),
-            ),
-          ),
-          SettingRow(
-            title: '开机自动启动并连接',
-            description: '开机后静默建立隧道',
-            isLast: true,
-            control: XvSwitch(
-              value: state.settings.launchAtStartup,
-              onChanged: (bool v) => state.updateSettings(state.settings.copyWith(launchAtStartup: v)),
             ),
           ),
         ],
@@ -147,38 +158,34 @@ class SettingsScreen extends StatelessWidget {
     );
   }
 
+  /// 流量接管方式。
+  ///
+  /// 桌面端目前只有「系统代理」这一条可用路径，因此这里**不再提供 TUN 选项**。
+  /// 原先两个选项并排摆着，选了 TUN 也不会生效：sing-box 的 tun 入站需要
+  /// wintun 驱动与管理员权限，而两者都不具备，最终仍然只建 mixed 入站。
+  /// 那是一个安静的假承诺——用户选了「接管全部程序」，实际只有认系统代理的
+  /// 程序走隧道，界面上却看不出来。
+  ///
+  /// 安卓端不显示这张卡片：VpnService 的 TUN 是唯一方式，没有可选之处。
   Widget _buildTakeoverCard() {
     return XvCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: <Widget>[
           const XvCardTitle('流量接管方式'),
-          IntrinsicHeight(
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: <Widget>[
-                Expanded(
-                  child: OptionCard(
-                    selected: state.settings.takeoverMode == TakeoverMode.systemProxy,
-                    title: '系统代理（推荐）',
-                    description: '免管理员权限，浏览器与绝大多数软件立即生效；断开时自动还原系统设置。',
-                    onTap: () => state.updateSettings(
-                      state.settings.copyWith(takeoverMode: TakeoverMode.systemProxy),
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: OptionCard(
-                    selected: state.settings.takeoverMode == TakeoverMode.tun,
-                    title: 'TUN 虚拟网卡',
-                    description: '接管全部程序（含不认系统代理的游戏、命令行工具），需要管理员权限。',
-                    onTap: () => state.updateSettings(
-                      state.settings.copyWith(takeoverMode: TakeoverMode.tun),
-                    ),
-                  ),
-                ),
-              ],
+          SettingRow(
+            title: '系统代理',
+            description: '免管理员权限，浏览器与绝大多数软件立即生效；断开时自动还原系统设置。',
+            isLast: true,
+            control: RouteTag.green('已启用'),
+          ),
+          Padding(
+            padding: const EdgeInsets.only(top: 10),
+            child: Text(
+              '暂不支持 TUN 虚拟网卡：它需要 wintun 驱动与管理员权限，'
+              '当前版本未内置。需要接管游戏、命令行工具等不认系统代理的程序时，'
+              '请等待后续版本。',
+              style: XvText.caption,
             ),
           ),
         ],
@@ -291,21 +298,11 @@ class SettingsScreen extends StatelessWidget {
                       SettingRow(
                         title: '导入后自动连接',
                         description: '导入 .conf 后直接建立隧道',
+                        isLast: true,
                         control: XvSwitch(
                           value: state.settings.autoConnectOnImport,
                           onChanged: (bool v) => state.updateSettings(
                             state.settings.copyWith(autoConnectOnImport: v),
-                          ),
-                        ),
-                      ),
-                      SettingRow(
-                        title: '开机自动连接',
-                        description: '开机后静默建立隧道',
-                        isLast: true,
-                        control: XvSwitch(
-                          value: state.settings.launchAtStartup,
-                          onChanged: (bool v) => state.updateSettings(
-                            state.settings.copyWith(launchAtStartup: v),
                           ),
                         ),
                       ),
@@ -314,6 +311,8 @@ class SettingsScreen extends StatelessWidget {
                 ),
                 const SizedBox(height: 12),
                 _buildSplitCard(compact: true),
+                const SizedBox(height: 12),
+                AutoRouteCard(state: state, compact: true),
                 const SizedBox(height: 12),
                 ProfilesScreen(state: state, embedded: true),
                 const SizedBox(height: 24),

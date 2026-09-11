@@ -7,6 +7,7 @@ import 'package:xvpn/app_state.dart';
 import 'package:xvpn/core/core_log.dart';
 import 'package:xvpn/main.dart';
 import 'package:xvpn/models.dart';
+import 'package:xvpn/screens/settings_screen.dart';
 import 'package:xvpn/screens/shell.dart';
 import 'package:xvpn/theme.dart';
 import 'package:xvpn/theme_controller.dart';
@@ -218,19 +219,55 @@ void main() {
     await tester.pump(const Duration(seconds: 8));
     await tester.pump();
 
+    // 不依赖演示内核的定时器刚好轮到哪一条目标，直接喂入两条记录。
+    // 否则这个用例会随定时器步进变得时灵时不灵。
+    state.onSplitRecord(
+      SplitRecord(
+        time: DateTime.now(),
+        target: 'npmmirror.com',
+        kind: RouteKind.direct,
+        rule: 'geosite-cn + geoip-cn',
+        outbound: 'direct',
+      ),
+    );
+    state.onSplitRecord(
+      SplitRecord(
+        time: DateTime.now(),
+        target: 'www.youtube.com',
+        kind: RouteKind.proxy,
+        rule: '默认规则',
+        outbound: 'vpn',
+      ),
+    );
+    await tester.pump();
+
     // 切到「分流记录」页
     await tester.tap(find.text('分流记录'));
     await tester.pumpAndSettle();
 
     expect(find.text('搜索域名或 IP…'), findsOneWidget);
     expect(find.text('命中规则'), findsOneWidget);
-    // 国内直连的域名应命中 geosite-cn
-    expect(find.text('geosite-cn'), findsWidgets);
+    // 国内直连的域名应命中 geosite-cn。
+    //
+    // 这里期望的是**归一化之后**的名字：内核返回的 rule 是一整句描述
+    // （`rule_set=[geosite-cn geoip-cn] => route`，且 rulePayload 恒为空），
+    // 界面必须把它翻译成人话，而不是把内核术语原样丢给用户。
+    expect(find.text('geosite-cn + geoip-cn'), findsWidgets);
+    expect(
+      find.textContaining('rule_set='),
+      findsNothing,
+      reason: '内核术语不该出现在界面上',
+    );
 
-    // 只看直连
+    // 只看走代理
     await tester.tap(find.text('走代理'));
     await tester.pumpAndSettle();
-    expect(state.filteredRecords(RouteFilter.proxy, '').every((SplitRecord r) => r.kind == RouteKind.proxy), isTrue);
+    final proxies = state.filteredRecords(RouteFilter.proxy, '');
+    expect(proxies, isNotEmpty);
+    expect(
+      proxies.every((SplitRecord r) => r.kind == RouteKind.proxy),
+      isTrue,
+    );
 
     await _stopCore(tester, state);
   });
@@ -674,6 +711,62 @@ void main() {
     } finally {
       debugDefaultTargetPlatformOverride = null;
     }
+  });
+
+  testWidgets('桌面端设置页在较矮窗口下不溢出，且自动纠正卡片可渲染', (WidgetTester tester) async {
+    // 桌面设置页是「卡片纵向堆叠 + 整体滚动」，内容比窗口高是常态。
+    // 这里特意用小窗口（1280×720 是常见的笔记本可用高度）压一遍：
+    // 只要有一处忘了放进滚动容器，就会抛 RenderFlex overflow。
+    final state = AppState();
+    addTearDown(state.dispose);
+    await _pumpShell(tester, state, size: const Size(1280, 720));
+
+    state.importConf(text: _conf, fileName: 'wg-hk-01.conf');
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 1));
+    await tester.pump(const Duration(seconds: 2));
+
+    await tester.tap(find.text('设置'));
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull, reason: '桌面设置页在 720 高度下不应溢出');
+
+    // 自动纠正卡片在页面底部，需要滚动到它才会被构建。
+    //
+    // 这里手写拖拽循环而不用 dragUntilVisible：那需要精确挑出正确的可滚动
+    // 节点，而页面上同时存在页面级滚动与卡片内部滚动，按类型找很容易选错，
+    // 失败信息也只是 "Bad state: No element"，排查成本高于直接写循环。
+    //
+    // 本用例用演示内核（不接真实 sing-box），因此这张卡片走的是「不支持」
+    // 分支——接上真实内核的表单渲染由 diagnostics_ui_test 覆盖。
+    final settingsScroll = find.byKey(SettingsScreen.desktopScrollKey);
+    var scrolled = 0;
+    while (find.text('自动纠正').evaluate().isEmpty && scrolled < 20) {
+      await tester.drag(settingsScroll, const Offset(0, -200));
+      await tester.pumpAndSettle();
+      scrolled++;
+    }
+    expect(find.text('自动纠正'), findsOneWidget, reason: '自动纠正卡片应当存在于设置页');
+    expect(tester.takeException(), isNull, reason: '滚到底部也不应溢出');
+
+    await _stopCore(tester, state);
+  });
+
+  testWidgets('设置页不再提供无法兑现的 TUN 选项，并说明原因', (WidgetTester tester) async {
+    // 桌面端只有系统代理一条可用路径（TUN 需要 wintun 驱动与管理员权限，
+    // 当前版本未内置）。此前界面上并排摆着「TUN 虚拟网卡」选项，选了却不生效，
+    // 属于安静的假承诺。这个用例锁住「不再提供该选项、且说明原因」。
+    final state = AppState();
+    addTearDown(state.dispose);
+    await _pumpShell(tester, state, size: const Size(1400, 1100));
+
+    await tester.tap(find.text('设置'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('流量接管方式'), findsOneWidget);
+    expect(find.text('TUN 虚拟网卡'), findsNothing, reason: '不能提供无法兑现的选项');
+    expect(find.textContaining('暂不支持 TUN'), findsOneWidget, reason: '要说明为什么没有');
+
+    await _stopCore(tester, state);
   });
 }
 

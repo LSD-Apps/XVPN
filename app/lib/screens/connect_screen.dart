@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 
 import '../app_state.dart';
 import '../core/core_log.dart';
+import '../core/dns_monitor.dart';
 import '../format.dart';
 import '../models.dart';
 import '../protocols/vpn_protocol.dart';
@@ -369,44 +370,149 @@ class ConnectScreen extends StatelessWidget {
   /// 「接管方式」这一项，因此这里必须写 TUN，不能跟着桌面端的设置走——
   /// 否则手机上会显示一行根本不存在的「系统代理」。
   Widget _checksBody({required bool forceTun}) {
+    // 行数随状态变化（未连接 3 行、已连接最多 7 行），而卡片高度由布局决定，
+    // 两者不一定匹配，因此统一走可滚动容器：够高就正常显示，不够就在卡片内
+    // 滚动，而不是抛 RenderFlex overflow 或把内容裁掉。
+    return XvScrollableColumn(children: _checksContent(forceTun: forceTun));
+  }
+
+  List<Widget> _checksContent({required bool forceTun}) {
     final profile = state.activeProfile!;
     final connected = state.isConnected;
     final digest = state.failureDigest;
-    final systemProxy = !forceTun && state.settings.takeoverMode == TakeoverMode.systemProxy;
 
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: <Widget>[
-        const XvCardTitle('零配置接管状态'),
+    return <Widget>[
+      const XvCardTitle('零配置接管状态'),
+      CheckRow(
+        // 已支持多种协议，这里跟随实际导入的配置，不再写死 WireGuard。
+        title: '已导入 ${state.profiles.length} 个配置',
+        detail: '${profile.name} · ${profile.protocolType.label} · 自动解析，无需填写参数',
+      ),
+      const SizedBox(height: 11),
+      CheckRow(
+        title: connected ? '智能分流已生效' : '智能分流已就绪',
+        detail: '国内域名与 IP 直连，其余走隧道（规则库 2 项）',
+      ),
+      const SizedBox(height: 11),
+      // 两端各只有一条接管路径，因此这里直接按平台写明，不再跟随设置项——
+      // 桌面端此前有一个「TUN」选项，选了也不会生效（见设置页的说明）。
+      if (forceTun)
+        const CheckRow(
+          title: 'TUN 虚拟网卡接管',
+          detail: '由 VpnService 提供，接管全部程序',
+        )
+      else
         CheckRow(
-          // 已支持多种协议，这里跟随实际导入的配置，不再写死 WireGuard。
-          title: '已导入 ${state.profiles.length} 个配置',
-          detail: '${profile.name} · ${profile.protocolType.label} · 自动解析，无需填写参数',
+          title: connected ? '系统代理已自动设置' : '系统代理将在连接后设置',
+          detail: '127.0.0.1:2080 · 断开时自动还原',
+          mono: true,
         ),
+      // 出现失败时把归因结论摆到最显眼的位置：
+      // 用户看到的是「网站打不开」，需要被告知是规则问题还是节点问题。
+      if (digest.hasProblems) ...<Widget>[
         const SizedBox(height: 11),
-        CheckRow(
-          title: connected ? '智能分流已生效' : '智能分流已就绪',
-          detail: '国内域名与 IP 直连，其余走隧道（规则库 2 项）',
-        ),
-        const SizedBox(height: 11),
-        if (systemProxy)
-          CheckRow(
-            title: connected ? '系统代理已自动设置' : '系统代理将在连接后设置',
-            detail: '127.0.0.1:2080 · 断开时自动还原',
-            mono: true,
-          )
-        else
-          const CheckRow(
-            title: 'TUN 虚拟网卡接管',
-            detail: '接管全部程序，需要管理员权限',
-          ),
-        // 出现失败时把归因结论摆到最显眼的位置：
-        // 用户看到的是「网站打不开」，需要被告知是规则问题还是节点问题。
-        if (digest.hasProblems) ...<Widget>[
-          const SizedBox(height: 11),
-          _DiagnosisRow(digest: digest),
-        ],
+        _DiagnosisRow(digest: digest),
       ],
+      // 以下三块是「检测能力」的可见出口。
+      //
+      // 它们的共同作用是回答用户真正的疑问——「为什么有的网站打不开」。
+      // 只在连上之后显示：未连接时这些探测没有意义，显示出来只会是
+      // 一排「待检测」的噪音。
+      if (connected) ...<Widget>[
+        const SizedBox(height: 11),
+        _splitVolumeRow(),
+        const SizedBox(height: 11),
+        _selfCheckRow(),
+        const SizedBox(height: 11),
+        _dnsRow(),
+        _learnedRow(),
+      ],
+    ];
+  }
+
+  /// 分流占比：本次已传输的流量里有多少真的走了隧道。
+  ///
+  /// 这是判断「分流是否按预期工作」最直接的数字。原先界面上只有一个
+  /// 「本次累计」，用户无法回答「这些流量到底走没走隧道」。
+  ///
+  /// 顺带带上活连接数与内核内存：前者反映当前负载，后者是「大数据量下
+  /// 是否真的顺畅」最直接的自查指标（连接数上千时它会明显上涨）。
+  Widget _splitVolumeRow() {
+    final proxied = state.proxiedBytes;
+    final direct = state.directBytes;
+    final total = proxied + direct;
+    if (total == 0) {
+      return const SizedBox.shrink();
+    }
+    final percent = (proxied * 100 / total).round();
+    final proxiedText = fmtBytes(proxied);
+    final directText = fmtBytes(direct);
+    final memory = fmtBytes(state.kernelMemory);
+    return Padding(
+      padding: const EdgeInsets.only(top: 11),
+      child: CheckRow(
+        title: '流量分布：$percent% 走隧道',
+        detail: '隧道 ${proxiedText.value}${proxiedText.unit} · '
+            '直连 ${directText.value}${directText.unit} · '
+            '活连接 ${state.connectionCount} 条'
+            '${state.kernelMemory > 0 ? ' · 内核内存 ${memory.value}${memory.unit}' : ''}',
+        mono: true,
+      ),
+    );
+  }
+
+  /// 启动自检结论。
+  ///
+  /// 它回答的是「连上了但打不开网站」时最容易搞错的那个问题：
+  /// 到底是本地网络的事，还是节点的事。两者表现一样，处置方式相反。
+  Widget _selfCheckRow() {
+    final report = state.selfCheckReport;
+    if (report == null) {
+      return CheckRow(
+        title: '正在自检两条路径…',
+        detail: '分别验证国内直连与隧道出口是否可用',
+      );
+    }
+    return CheckRow(
+      title: report.hasFailures ? report.conclusion : '自检通过 · ${report.conclusion}',
+      detail: report.advice,
+      warn: report.hasFailures,
+    );
+  }
+
+  /// DNS 健康状况。
+  Widget _dnsRow() {
+    final report = state.dnsReport;
+    if (report == null || report.isEmpty) {
+      return const CheckRow(
+        title: '正在探测 DNS…',
+        detail: '国内解析器与隧道解析器分别计时，并交叉校验解析结果',
+      );
+    }
+    final abnormal = report.resolvers.any((ResolverHealth h) => h.consecutiveFailures > 0);
+    return CheckRow(
+      title: 'DNS · ${report.verdict.label}',
+      detail: '${report.summary} · ${report.verdict.advice}',
+      warn: abnormal || report.verdict == DnsVerdict.suspectPoisoning,
+      mono: true,
+    );
+  }
+
+  /// 「程序自己学会了什么」。
+  ///
+  /// 自动纠正是在背后改路由的，如果不告诉用户，他只会觉得
+  /// 「有时候能连有时候不能」。这里把学到的判断摆出来，并允许一键撤销。
+  Widget _learnedRow() {
+    final learned = state.learnedDecisions;
+    if (learned.isEmpty) return const SizedBox.shrink();
+    final first = learned.first;
+    return Padding(
+      padding: const EdgeInsets.only(top: 11),
+      child: CheckRow(
+        title: '已自动纠正 ${learned.length} 个域名的分流',
+        detail: '${first.domain}：${first.reason}',
+        warn: true,
+      ),
     );
   }
 

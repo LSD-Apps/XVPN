@@ -1,9 +1,14 @@
 import 'dart:async';
+import 'dart:collection';
 
 import 'package:flutter/foundation.dart';
 
+import 'core/auto_route.dart';
 import 'core/core_log.dart';
+import 'core/dns_monitor.dart';
+import 'core/record_buffer.dart';
 import 'core/rulesets.dart';
+import 'core/startup_self_check.dart';
 import 'core/store.dart';
 import 'core/vpn_core.dart';
 import 'format.dart';
@@ -15,6 +20,10 @@ import 'protocols/protocol_adapter.dart';
 ///
 /// 内核通过构造函数注入：默认使用演示内核，接入 sing-box 后换成真实实现，
 /// 界面与状态层的代码不需要改动。
+///
+/// 关于性能：分流记录是唯一「每秒都在变、又可能很长」的数据，
+/// 因此它的存储与筛选都做了专门处理——见 [_recordsRing] 与 [filteredRecords]。
+/// 这里的原则是：**每帧的构建里不做与数据量成正比的分配**。
 class AppState extends ChangeNotifier implements VpnCoreListener {
   AppState({this.coreFactory, this.store}) {
     // 恢复必须在构造里同步做完：界面第一次 build 时就应该拿到已保存的配置，
@@ -53,12 +62,51 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
   /// 迷你折线保留的采样点数量，对应设计稿统计卡里的 12 根柱子。
   static const sparkPoints = 12;
 
+  /// 分流记录页在搜索时最多返回多少条。
+  ///
+  /// 列表本身是懒构建的，卡顿不来自「渲染多少行」，而来自「筛选要分配多少」。
+  /// 500 条全量筛选其实很快，这个上限是为了给「记录上限被调大」留出余量，
+  /// 并且向用户明确「还有更多结果」，而不是悄悄截断。
+  static const searchResultLimit = 300;
+
   final List<VpnProfile> _profiles = <VpnProfile>[];
-  final List<SplitRecord> _records = <SplitRecord>[];
+
+  /// 分流记录。环形缓冲，最新的在索引 0。
+  ///
+  /// 原实现是 `List.insert(0, record)` + `removeRange`：每次插入都要把
+  /// 已存在的 500 条整体后移一格。每秒来几条连接时这不明显，但内核在
+  /// 首次连接或批量请求时会一次推来大量连接，那时每插入一条都是一次
+  /// 500 元素的搬移，界面直接卡住。环形缓冲把插入变成 O(1)。
+  late final RingBuffer<SplitRecord> _recordsRing =
+      RingBuffer<SplitRecord>(recordLimit);
+
+  /// 筛选结果的缓存。
+  ///
+  /// 界面每次重建（每秒一次，外加任意次 setState）都会调用 [filteredRecords]。
+  /// 原实现每次都全量遍历并新建列表，500 条时每秒产生 500 次字符串比较与
+  /// 一个 500 元素的列表——纯浪费。这里按 (筛选条件, 查询串, 记录版本号)
+  /// 缓存，只有记录真的变了才重算。
+  List<SplitRecord>? _filteredCache;
+  RouteFilter? _cachedFilter;
+  String? _cachedQuery;
+  int _cachedVersion = -1;
+
+  /// 记录版本号。每次记录变化自增，用来让筛选缓存失效。
+  int _recordsVersion = 0;
 
   /// 连接失败记录。这是「检测能力」的载体：把用户看到的「打不开」
   /// 翻译成「规则判错了」还是「节点不通了」。
-  final List<ConnectionFailure> _failures = <ConnectionFailure>[];
+  ///
+  /// 同样用环形缓冲：失败在故障时会成批出现（例如节点掉线），
+  /// 而它参与 [failureDigest] 的统计，那个统计也在每帧被调用。
+  late final RingBuffer<ConnectionFailure> _failuresRing =
+      RingBuffer<ConnectionFailure>(failureLimit);
+
+  /// 失败归因摘要的缓存，理由与筛选缓存相同。
+  FailureDigest? _digestCache;
+  int _failuresVersion = 0;
+  int _cachedDigestVersion = -1;
+
   final List<double> _downHistory = <double>[];
   final List<double> _upHistory = <double>[];
   final List<double> _totalHistory = <double>[];
@@ -72,9 +120,25 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
   double _downBps = 0;
   double _upBps = 0;
   int _totalBytes = 0;
+  int _directBytes = 0;
+  int _proxiedBytes = 0;
+  int _connectionCount = 0;
+  int _kernelMemory = 0;
   int? _latencyMs;
   Timer? _ticker;
   bool _disposed = false;
+
+  /// 最近一次 DNS 监测报告。
+  DnsReport? _dnsReport;
+
+  /// 最近一次启动自检报告。
+  StartupSelfCheckReport? _selfCheckReport;
+
+  /// 程序自动纠正过的域名，最新的在前。仅用于界面展示「它学会了什么」。
+  final List<AutoRouteDecision> _learnedDecisions = <AutoRouteDecision>[];
+
+  /// 保留多少条「最近学会的」记录用于展示。
+  static const learnedDisplayLimit = 20;
 
   // ---------------------------------------------------------------- 只读视图
 
@@ -82,11 +146,32 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
   VpnStatus get status => _status;
   AppSettings get settings => _settings;
   List<VpnProfile> get profiles => List<VpnProfile>.unmodifiable(_profiles);
-  List<SplitRecord> get records => List<SplitRecord>.unmodifiable(_records);
-  List<ConnectionFailure> get failures => List<ConnectionFailure>.unmodifiable(_failures);
+
+  /// 分流记录视图。
+  ///
+  /// 返回的是缓冲区的**只读包装**而不是复制：这个 getter 在每次界面重建时
+  /// 都会被调用，复制 500 条元素的列表本身就是每秒一次的固定开销。
+  /// 调用方只做遍历与索引访问，不修改。
+  List<SplitRecord> get records => _recordsView;
+
+  late final List<SplitRecord> _recordsView = _RingView<SplitRecord>(_recordsRing);
+
+  List<ConnectionFailure> get failures => _failuresView;
+
+  late final List<ConnectionFailure> _failuresView =
+      _RingView<ConnectionFailure>(_failuresRing);
 
   /// 失败归因摘要：界面用它给出「该做什么」而不是只报「出错了」。
-  FailureDigest get failureDigest => digestFailures(_failures);
+  ///
+  /// 结果带缓存：摘要要对全部失败做一次遍历与去重，而界面每帧都会读它。
+  FailureDigest get failureDigest {
+    if (_cachedDigestVersion != _failuresVersion) {
+      _digestCache = digestFailures(_failuresView);
+      _cachedDigestVersion = _failuresVersion;
+    }
+    return _digestCache!;
+  }
+
   List<double> get downHistory => List<double>.unmodifiable(_downHistory);
   List<double> get upHistory => List<double>.unmodifiable(_upHistory);
   List<double> get totalHistory => List<double>.unmodifiable(_totalHistory);
@@ -95,7 +180,33 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
   double get downBps => _downBps;
   double get upBps => _upBps;
   int get totalBytes => _totalBytes;
+
+  /// 走隧道 / 走直连的已传输字节。用来回答「这些流量里有多少真的进了隧道」——
+  /// 这是判断分流是否按预期工作的唯一依据。
+  int get directBytes => _directBytes;
+  int get proxiedBytes => _proxiedBytes;
+
+  /// 当前活连接数。
+  int get connectionCount => _connectionCount;
+
+  /// 内核报告的常驻内存字节数（0 表示尚未拿到）。
+  int get kernelMemory => _kernelMemory;
+
   int? get latencyMs => _latencyMs;
+
+  /// 最近一次 DNS 监测报告。尚未探测时为 null。
+  DnsReport? get dnsReport => _dnsReport;
+
+  /// 最近一次启动自检报告。尚未跑完时为 null。
+  StartupSelfCheckReport? get selfCheckReport => _selfCheckReport;
+
+  /// 最近自动纠正的域名记录。
+  List<AutoRouteDecision> get learnedDecisions =>
+      List<AutoRouteDecision>.unmodifiable(_learnedDecisions);
+
+  /// 自动纠正表。为 null 表示当前内核不做学习（演示内核）。
+  AutoRouteTable? get autoRoute => _core.autoRoute;
+
   bool get hasProfiles => _profiles.isNotEmpty;
   bool get isConnected => _status == VpnStatus.connected;
   bool get isConnecting => _status == VpnStatus.connecting;
@@ -114,22 +225,65 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
     return DateTime.now().difference(since);
   }
 
-  int get proxyCount => _records.where((r) => r.kind == RouteKind.proxy).length;
-  int get directCount => _records.where((r) => r.kind == RouteKind.direct).length;
+  /// 走隧道的记录条数。
+  ///
+  /// 保留 O(n) 的实现，但调用方（连接页的统计行）已经不再用它——
+  /// 它被替换成了按字节聚合的 [proxiedBytes]，后者才是用户真正想知道的。
+  /// 这里留着是为了兼容旧调用方与测试。
+  int get proxyCount => _countKind(RouteKind.proxy);
 
+  int get directCount => _countKind(RouteKind.direct);
+
+  int _countKind(RouteKind kind) {
+    var count = 0;
+    final ring = _recordsRing;
+    for (var i = 0; i < ring.length; i++) {
+      if (ring[i]!.kind == kind) count++;
+    }
+    return count;
+  }
+
+  /// 按筛选条件取记录。
+  ///
+  /// 结果按 (筛选, 查询, 版本号) 缓存。界面在每次重建时调用它，
+  /// 而重建频率是每秒一次加上任意次 setState，因此不能每次都全量重算。
   List<SplitRecord> filteredRecords(RouteFilter filter, String query) {
-    final q = query.trim().toLowerCase();
-    return _records.where((r) {
+    if (_filteredCache != null &&
+        _cachedFilter == filter &&
+        _cachedQuery == query &&
+        _cachedVersion == _recordsVersion) {
+      return _filteredCache!;
+    }
+
+    final normalized = query.trim().toLowerCase();
+    final ring = _recordsRing;
+    final result = <SplitRecord>[];
+    for (var i = 0; i < ring.length; i++) {
+      final record = ring[i]!;
       final matchesFilter = switch (filter) {
         RouteFilter.all => true,
-        RouteFilter.proxy => r.kind == RouteKind.proxy,
-        RouteFilter.direct => r.kind == RouteKind.direct,
+        RouteFilter.proxy => record.kind == RouteKind.proxy,
+        RouteFilter.direct => record.kind == RouteKind.direct,
       };
-      if (!matchesFilter) return false;
-      if (q.isEmpty) return true;
-      return r.target.toLowerCase().contains(q);
-    }).toList(growable: false);
+      if (!matchesFilter) continue;
+      if (normalized.isNotEmpty &&
+          !record.target.toLowerCase().contains(normalized)) {
+        continue;
+      }
+      result.add(record);
+      if (result.length >= searchResultLimit) break;
+    }
+
+    _filteredCache = List<SplitRecord>.unmodifiable(result);
+    _cachedFilter = filter;
+    _cachedQuery = query;
+    _cachedVersion = _recordsVersion;
+    return _filteredCache!;
   }
+
+  /// 本次筛选结果是否被上限截断。界面据此提示「还有更多」。
+  bool isFilterTruncated(RouteFilter filter, String query) =>
+      filteredRecords(filter, query).length >= searchResultLimit;
 
   // ---------------------------------------------------------------- 配置导入
 
@@ -259,22 +413,75 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
   // ---------------------------------------------------------------- 界面维护
 
   void clearRecords() {
-    _records.clear();
-    _failures.clear();
+    _recordsRing.clear();
+    _failuresRing.clear();
+    _recordsVersion++;
+    _failuresVersion++;
+    // 「最近学会的」也跟着清掉：它展示的是本次会话观察到的结论，
+    // 用户点了清空却还留着十几条记录，会让人以为没清干净。
+    _learnedDecisions.clear();
     notifyListeners();
   }
 
-  /// 只清空失败记录，保留分流记录。
-  void clearFailures() {
-    _failures.clear();
+  /// 清空一条自动纠正规则。用户可以撤销程序学到的判断。
+  void clearAutoRouteRule(String domain) {
+    final table = _core.autoRoute;
+    if (table == null || !table.remove(domain)) return;
+    _learnedDecisions.removeWhere((AutoRouteDecision d) => d.domain == domain);
     notifyListeners();
+    _persist();
+  }
+
+  /// 手工指定某个域名走代理或直连。这是用户对自动判断的最终否决权。
+  ///
+  /// 返回是否真的写入了规则。界面据此给出反馈——用户点了「添加」却什么都没
+  /// 发生（例如输入的是一个 IP，而 IP 不参与按域名的分流规则），是必须说清楚的。
+  bool setDomainPreference(String domain, RoutePreference preference) {
+    final table = _core.autoRoute;
+    if (table == null) return false;
+    // 真正的有效性判断在这里：归一化会把 IP、单标签主机名、空串都变成空串。
+    if (AutoRouteTable.normalizeDomain(domain).isEmpty) return false;
+
+    final decision = table.setUserRule(domain, preference);
+    _rememberDecision(decision);
+    notifyListeners();
+    _persist();
+    return true;
+  }
+
+  /// 淘汰长期没有新证据的学习规则。返回被淘汰的域名。
+  ///
+  /// 平时由内核在每次连接时自动做，这里给界面一个手工入口：
+  /// 用户想立刻清理掉一批久未命中的规则时不必等到下次重连。
+  List<String> pruneAutoRoute() {
+    final table = _core.autoRoute;
+    if (table == null) return const <String>[];
+    final removed = table.evictStale();
+    if (removed.isEmpty) return removed;
+    _learnedDecisions.removeWhere(
+      (AutoRouteDecision d) => removed.contains(d.domain),
+    );
+    notifyListeners();
+    _persist();
+    return removed;
+  }
+
+  /// 主动触发一次 DNS 监测（界面上的「重新检测」）。
+  Future<void> refreshDns() async {
+    await _core.refreshDns();
+  }
+
+  /// 主动触发一次启动自检。
+  Future<void> runSelfCheck() async {
+    await _core.runSelfCheck();
   }
 
   void updateSettings(AppSettings next) {
     final previous = _settings;
     _settings = next;
     if (!next.logSplits && previous.logSplits) {
-      _records.clear();
+      _recordsRing.clear();
+      _recordsVersion++;
     }
     notifyListeners();
     _persist();
@@ -329,10 +536,7 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
       try {
         _settings = AppSettings(
           autoConnectOnImport: settings['autoConnectOnImport'] as bool? ?? true,
-          launchAtStartup: settings['launchAtStartup'] as bool? ?? false,
           // 枚举按下标存：名字改了也不会让用户的选择失效。
-          takeoverMode: _enumAt(TakeoverMode.values, settings['takeoverMode'],
-              TakeoverMode.systemProxy),
           splitMode:
               _enumAt(SplitMode.values, settings['splitMode'], SplitMode.smart),
           logSplits: settings['logSplits'] as bool? ?? true,
@@ -346,6 +550,10 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
     }
 
     _wantConnected = data['wantConnected'] as bool? ?? false;
+
+    // 自动纠正表交给内核侧恢复：它是内核的行为，不是界面的状态。
+    // 放在最后，因为此时内核实例一定已经建好了。
+    _core.initAutoRoute(data['autoRoute']);
   }
 
   /// 按下标取枚举，越界或类型不对时回退到默认值。
@@ -375,12 +583,13 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
       'wantConnected': _wantConnected,
       'settings': <String, Object?>{
         'autoConnectOnImport': _settings.autoConnectOnImport,
-        'launchAtStartup': _settings.launchAtStartup,
-        'takeoverMode': _settings.takeoverMode.index,
         'splitMode': _settings.splitMode.index,
         'logSplits': _settings.logSplits,
         'ruleSetUpdatedAt': _settings.ruleSetUpdatedAt?.toIso8601String(),
       },
+      // 自动纠正表随设置一起落盘。它的价值是「学一次，以后都记得」，
+      // 每次重启就忘掉会让用户觉得分流时好时坏。
+      'autoRoute': _core.exportAutoRoute(),
     });
   }
 
@@ -438,23 +647,43 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
         _stopTicker();
         // 每次重新连接都从干净的失败记录开始，避免旧失败误导判断。
         if (status == VpnStatus.connecting) {
-          _failures.clear();
+          _failuresRing.clear();
+          _failuresVersion++;
         }
         if (status == VpnStatus.disconnected) {
           _downBps = 0;
           _upBps = 0;
           _latencyMs = null;
+          _directBytes = 0;
+          _proxiedBytes = 0;
+          _connectionCount = 0;
           _pushSpark(0, 0);
+          // 断开后 DNS 与自检的结论已经过期，留着会误导。
+          // 自动纠正表不清：那是学到的长期结论，与本次会话无关。
+          _dnsReport = null;
+          _selfCheckReport = null;
         }
     }
     notifyListeners();
   }
 
   @override
-  void onTraffic({required double downBps, required double upBps, required int totalBytes}) {
+  void onTraffic({
+    required double downBps,
+    required double upBps,
+    required int totalBytes,
+    int directBytes = 0,
+    int proxiedBytes = 0,
+    int connectionCount = 0,
+    int kernelMemory = 0,
+  }) {
     _downBps = downBps;
     _upBps = upBps;
     _totalBytes = totalBytes;
+    _directBytes = directBytes;
+    _proxiedBytes = proxiedBytes;
+    _connectionCount = connectionCount;
+    _kernelMemory = kernelMemory;
     _pushSpark(downBps, upBps);
     notifyListeners();
   }
@@ -468,20 +697,50 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
   @override
   void onSplitRecord(SplitRecord record) {
     if (!_settings.logSplits) return;
-    _records.insert(0, record);
-    if (_records.length > recordLimit) {
-      _records.removeRange(recordLimit, _records.length);
-    }
+    _recordsRing.push(record);
+    _recordsVersion++;
     notifyListeners();
   }
 
   @override
   void onConnectionFailure(ConnectionFailure failure) {
-    _failures.insert(0, failure);
-    if (_failures.length > failureLimit) {
-      _failures.removeRange(failureLimit, _failures.length);
-    }
+    _failuresRing.push(failure);
+    _failuresVersion++;
     notifyListeners();
+  }
+
+  @override
+  void onDnsReport(DnsReport report) {
+    _dnsReport = report;
+    notifyListeners();
+  }
+
+  @override
+  void onSelfCheck(StartupSelfCheckReport report) {
+    _selfCheckReport = report;
+    notifyListeners();
+  }
+
+  @override
+  void onAutoRouteLearned(AutoRouteDecision decision) {
+    _rememberDecision(decision);
+    notifyListeners();
+    // 学到的规则要尽快落盘：它决定下一次连接的路由表。
+    _persist();
+  }
+
+  @override
+  void onAutoRouteChanged(AutoRouteTable table) {
+    notifyListeners();
+  }
+
+  /// 记下一条自动纠正结论，供界面展示。只保留最近若干条。
+  void _rememberDecision(AutoRouteDecision decision) {
+    _learnedDecisions.removeWhere((AutoRouteDecision d) => d.domain == decision.domain);
+    _learnedDecisions.insert(0, decision);
+    if (_learnedDecisions.length > learnedDisplayLimit) {
+      _learnedDecisions.removeRange(learnedDisplayLimit, _learnedDecisions.length);
+    }
   }
 
   @override
@@ -536,4 +795,38 @@ extension RouteFilterX on RouteFilter {
         RouteFilter.proxy => '走代理',
         RouteFilter.direct => '直连',
       };
+}
+
+/// 把 [RingBuffer] 包装成只读的 `List`。
+///
+/// 界面代码（`ListView.builder`、`records.take(3)`、测试里的 `records[0]`）
+/// 都按 `List` 使用记录，因此这里保持同一个接口，只在背后换成环形缓冲。
+/// 写操作一律抛出——记录只能通过 `onSplitRecord` 进来，这样版本号才不会被绕过。
+///
+/// 之所以不直接返回 `List.unmodifiable(ring.values.toList())`：那会在每次读取时
+/// 复制一遍，而 `records` 在每次界面重建时都会被读到，复制就成了每秒一次的固定开销。
+class _RingView<T> extends ListBase<T> {
+  _RingView(this._ring);
+
+  final RingBuffer<T> _ring;
+
+  @override
+  int get length => _ring.length;
+
+  @override
+  set length(int value) =>
+      throw UnsupportedError('记录视图是只读的');
+
+  @override
+  T operator [](int index) {
+    final value = _ring[index];
+    if (value == null) {
+      throw RangeError.index(index, this, 'index', null, _ring.length);
+    }
+    return value;
+  }
+
+  @override
+  void operator []=(int index, T value) =>
+      throw UnsupportedError('记录视图是只读的');
 }
