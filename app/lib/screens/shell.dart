@@ -6,6 +6,7 @@ import '../core/window_controls.dart';
 import '../models.dart';
 import '../theme.dart';
 import '../theme_controller.dart';
+import '../version.dart';
 import '../widgets/common.dart';
 import '../widgets/title_bar.dart';
 import '../widgets/window_frame.dart';
@@ -205,7 +206,9 @@ class _XvShellState extends State<XvShell> {
                   const SizedBox(height: 11),
                 ],
                 Text(
-                  'v0.1.0 · ${switch (defaultTargetPlatform) {
+                  // 版本号来自 version.dart（构建期注入，回落到与 pubspec 同步的
+                  // 常量）。这里此前硬编码 'v0.1.0'，与 pubspec 的 1.0.0 不一致。
+                  'v$appVersion · ${switch (defaultTargetPlatform) {
                     TargetPlatform.windows => 'Windows',
                     TargetPlatform.android => 'Android',
                     TargetPlatform.iOS => 'iOS',
