@@ -871,7 +871,8 @@ enum XvButtonKind {
 /// 统一按钮。
 ///
 /// 三条硬性约束，保证全应用观感一致：
-///   * 高度固定（默认 36），不随内容变化——按钮排在同一行时基线必然对齐；
+///   * 高度固定（默认 [XvControlMetrics.height]，与输入框、分段控件同高），
+///     不随内容变化——同一行的控件基线必然对齐；
 ///   * 圆角、字号、字重、内边距全部取自这里，调用点不覆盖；
 ///   * 具备 hover / 按下 / 禁用三态，且过渡时长与其它交互元素一致。
 class XvButton extends StatefulWidget {
@@ -882,7 +883,7 @@ class XvButton extends StatefulWidget {
     this.kind = XvButtonKind.secondary,
     this.icon,
     this.expand = false,
-    this.height = 36,
+    this.height = XvControlMetrics.height,
     this.minWidth = 88,
   });
 
@@ -1189,6 +1190,67 @@ class TimerChip extends StatelessWidget {
 }
 
 /// 搜索框：原型中的 .search
+/// 控件的统一尺寸基准。
+///
+/// 分量式控件（输入框、按钮、分段选择器、下拉等）必须共用同一套高度，
+/// 否则一行里摆在一起就会参差不齐。这不是审美问题：实测「手工指定」那一行
+/// 曾经是**输入框 41px、按钮 36px、分段选择器 32px**三种高度，看起来像三套
+/// 互不相干的控件被硬凑在一行。
+///
+/// 那个 41px 也不是谁定的，而是 `TextField` 在当前字号下的自然高度——
+/// 也就是说「高度」此前根本没有被决定过，只是各处内容恰好撑出多少算多少。
+/// 这里把它显式定成一个常量，所有分量式控件都必须落在同一个高度上。
+class XvControlMetrics {
+  XvControlMetrics._();
+
+  /// 分量式控件的标准高度。
+  ///
+  /// 36 是原按钮高度：它本就是这套界面里出现最多、也最像「规范」的值
+  /// （`XvButton` 的默认 height 与 minWidth 都围绕它），因此以它为准，
+  /// 让输入框向它看齐，而不是反过来把按钮撑到 41。
+  static const double height = 36;
+}
+
+/// 输入类控件底色（搜索框、计时条、分段控件）的统一容器。
+///
+/// 存在的意义是把「高度」这件事收口：[TextField] 的自然高度随字号与行高变化，
+/// 各个调用点各写各的内边距，最终高度就取决于内容碰巧撑出多少。
+/// 这里统一用 [XvControlMetrics.height] 约束，保证同类控件永远等高。
+class XvControlBox extends StatelessWidget {
+  const XvControlBox({
+    super.key,
+    required this.child,
+    this.padding = const EdgeInsets.symmetric(horizontal: 12),
+    this.highlighted = false,
+  });
+
+  /// 通常是一个横向排列的 Row（图标 + 输入框 / 按钮内容）。
+  final Widget child;
+
+  final EdgeInsetsGeometry padding;
+
+  /// 聚焦态描边（输入框用）。
+  final bool highlighted;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: XvControlMetrics.height,
+      child: Container(
+        padding: padding,
+        decoration: BoxDecoration(
+          color: XV.field,
+          border: Border.all(color: highlighted ? XV.green.withValues(alpha: 0.45) : XV.line),
+          borderRadius: BorderRadius.circular(XV.rCtl),
+        ),
+        // 纵向居中：高度被定死之后，不同的内容高度不会让它们在框内上下偏移。
+        child: Align(alignment: Alignment.centerLeft, child: child),
+      ),
+    );
+  }
+}
+
+/// 搜索框 / 文本输入框。
 class XvSearchField extends StatelessWidget {
   const XvSearchField({
     super.key,
@@ -1196,6 +1258,7 @@ class XvSearchField extends StatelessWidget {
     this.controller,
     this.onChanged,
     this.onClear,
+    this.focused = false,
   });
 
   final String hint;
@@ -1208,15 +1271,13 @@ class XvSearchField extends StatelessWidget {
   /// 记录多达几百条时，这个缺口会让人以为「记录丢了」。
   final VoidCallback? onClear;
 
+  /// 聚焦态：描边提亮。
+  final bool focused;
+
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12),
-      decoration: BoxDecoration(
-        color: XV.field,
-        border: Border.all(color: XV.line),
-        borderRadius: BorderRadius.circular(XV.rCtl),
-      ),
+    return XvControlBox(
+      highlighted: focused,
       child: Row(
         children: <Widget>[
           Icon(Icons.search, size: 14, color: XV.muted2),
@@ -1230,7 +1291,8 @@ class XvSearchField extends StatelessWidget {
               decoration: InputDecoration(
                 isDense: true,
                 border: InputBorder.none,
-                contentPadding: const EdgeInsets.symmetric(vertical: 10),
+                // 高度已由 XvControlBox 定死，这里不再用纵向内边距去撑。
+                contentPadding: EdgeInsets.zero,
                 hintText: hint,
                 hintStyle: TextStyle(fontSize: 12.5, color: XV.muted2),
               ),

@@ -574,6 +574,36 @@ void main() {
 
       await _stop(tester, state);
     });
+
+    testWidgets('同一行里输入框、选择器、按钮三者等高', (WidgetTester tester) async {
+      // 回归用例：这三者此前分别是 41 / 32 / 36 三种高度，摆在一行里参差不齐。
+      // 41 也不是谁定的，而是 TextField 在当前字号下的自然高度——「高度」此前
+      // 根本没有被决定过。现在统一由 XvControlMetrics.height 收口。
+      final state = stateWithRealCore();
+      addTearDown(state.dispose);
+      await renderDesktopWithCore(tester, state);
+
+      const expected = XvControlMetrics.height;
+      final fieldHeight = tester.getSize(inputBox()).height;
+      final buttonHeight = tester.getSize(find.widgetWithText(XvButton, '添加')).height;
+      final pickerHeight = tester.getSize(
+        find.descendant(
+          of: find.byType(AutoRouteCard),
+          matching: find.byType(XvSegmented),
+        ),
+      ).height;
+
+      expect(fieldHeight, expected, reason: '输入框高度应为标准控件高度');
+      expect(buttonHeight, expected, reason: '按钮高度应为标准控件高度');
+      expect(pickerHeight, expected, reason: '选择器高度应为标准控件高度');
+
+      // 顶边也要对齐：等高但错位一样难看。
+      final fieldTop = tester.getTopLeft(inputBox()).dy;
+      final buttonTop = tester.getTopLeft(find.widgetWithText(XvButton, '添加')).dy;
+      expect(buttonTop, closeTo(fieldTop, 1), reason: '同一行控件顶边应对齐');
+
+      await _stop(tester, state);
+    });
   });
 
   group('配置模块的导入入口', () {

@@ -231,15 +231,21 @@ class _AutoRouteCardState extends State<AutoRouteCard> {
             !constraints.hasBoundedWidth || constraints.maxWidth >= breakpoint;
 
         if (roomy) {
-          return Row(
-            children: <Widget>[
-              // 输入框占据全部剩余宽度，定宽控件不参与分配。
-              Expanded(child: field),
-              const SizedBox(width: 8),
-              _buildPreferencePicker(expand: false),
-              const SizedBox(width: 8),
-              _buildAddButton(),
-            ],
+          // IntrinsicHeight + stretch：让三者在同行内被拉伸到同一高度。
+          // 只靠各自的高度常量还不够——输入框、按钮、分段控件的边框与基线
+          // 处理略有差异，拉伸一行到齐是最稳的做法，也是「同高」的最终保证。
+          return IntrinsicHeight(
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: <Widget>[
+                // 输入框占据全部剩余宽度，定宽控件不参与分配。
+                Expanded(child: field),
+                const SizedBox(width: 8),
+                _buildPreferencePicker(expand: false),
+                const SizedBox(width: 8),
+                _buildAddButton(),
+              ],
+            ),
           );
         }
 
@@ -249,12 +255,15 @@ class _AutoRouteCardState extends State<AutoRouteCard> {
             // 选择器铺满整行：它自己的点击热区也变大，比挤在角落更好点。
             _buildPreferencePicker(expand: true),
             const SizedBox(height: 8),
-            Row(
-              children: <Widget>[
-                Expanded(child: field),
-                const SizedBox(width: 8),
-                _buildAddButton(),
-              ],
+            IntrinsicHeight(
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: <Widget>[
+                  Expanded(child: field),
+                  const SizedBox(width: 8),
+                  _buildAddButton(),
+                ],
+              ),
             ),
           ],
         );
@@ -263,8 +272,12 @@ class _AutoRouteCardState extends State<AutoRouteCard> {
   }
 
   /// 走向选择器。窄排布下铺满整行。
+  ///
+  /// 高度统一用 [XvControlMetrics.height]：与输入框、按钮同高。
+  /// 分段控件的自然高度是 32（内容 26 + 上下各 3 的内边距），
+  /// 不约束的话它比同行的按钮还矮 4px。
   Widget _buildPreferencePicker({required bool expand}) => SizedBox(
-        height: 36,
+        height: XvControlMetrics.height,
         child: XvSegmented(
           labels: const <String>['走代理', '直连'],
           index: _preference == RoutePreference.forceProxy ? 0 : 1,
@@ -276,11 +289,12 @@ class _AutoRouteCardState extends State<AutoRouteCard> {
         ),
       );
 
-  /// 「添加」按钮。两种排布共用，高度与输入框对齐。
-  Widget _buildAddButton() => SizedBox(
-        height: 36,
-        child: XvButton(label: '添加', onPressed: _submit),
-      );
+  /// 「添加」按钮。
+  ///
+  /// 高度不在这里指定：它取自 [XvControlMetrics.height]，与输入框同高。
+  /// 原先这里写死 `SizedBox(height: 36)`，而输入框的自然高度是 41（见量测注释），
+  /// 于是同一行里按钮比输入框矮 5px——参差就是从这里来的。
+  Widget _buildAddButton() => XvButton(label: '添加', onPressed: _submit);
 
   Widget _buildEntry(AutoRouteEntry entry) {
     final isUser = entry.source == RouteRuleSource.user;
