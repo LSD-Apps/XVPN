@@ -61,6 +61,75 @@ lib/protocols/
 * TLS 模式下**不支持**顶层 `static_key` 与 `cipher`，加密套件统一写
   `data_ciphers`（老式 `cipher` 需要并入其中）。
 
+## 三点五、参数规范化：几个会让内核直接起不来的坑
+
+协议适配器除了「翻译字段」，还要做一层**参数规范化**。原因是这些坑的共同点：
+失败信息完全面向开发者，而用户看到的是「连不上」，没有任何线索。
+实现见 `lib/protocols/protocol_tuning.dart`，每条都有对应的
+`test/protocol_tuning_test.dart` 用例锁定。
+
+复核方式（内核版本以随包分发为准）：
+
+```powershell
+cd app
+dart run tool/build_singbox_config.dart ..\testdata\sample.ovpn build\ovpn.json
+assets/bin/sing-box.exe check -c build\ovpn.json
+```
+
+### 3.5.1 加密套件名必须是大写规范名
+
+**实测**：`data_ciphers` / `data_ciphers_fallback` 里写小写会得到
+
+```
+FATAL initialize endpoint[0]: ClientOptions.DataChannel.Ciphers[0]
+      must use a canonical OpenVPN cipher name
+```
+
+`auth` 同理（`sha256` → `SHA256` 才行）。也就是说：一份 `data-ciphers
+AES-256-GCM` 的配置能用，而写成 `aes-256-gcm` 会让**内核整体启动失败**。
+
+处置：认识的名字统一成规范写法；**不认识的名字直接剔除**而不是原样传下去——
+剔除最多让协商范围变小，原样传会让内核起不来。
+
+### 3.5.2 fallback 必须与协商列表分开
+
+OpenVPN 2.4+ 用 `data-ciphers` 协商，`data-ciphers-fallback` 是给
+「服务端只支持老套件」时的兜底。把 `cipher` 直接并进 `data_ciphers` 会让客户端
+主动提议一个服务端根本不会选的套件，严格服务端会因此拒绝协商。
+现在两者分别下发。
+
+### 3.5.3 `remote-cert-tls server` 要映射成服务端证书校验
+
+这条指令几乎必然出现在客户端配置里（主流向导都会写），含义是「只接受服务端证书」。
+映射到 sing-box 是 `tls.remote_certificate_tls: "server"`。原实现把它归到
+「无需翻译」的指令里丢掉了——那等于悄悄放弃了服务端身份校验，属于
+「看起来能连、实际不安全」的降级。`verify-x509-name` 同样处理。
+
+### 3.5.4 WireGuard 的保活不替用户决定
+
+原实现写的是 `peer.persistentKeepalive ?? 25`，也就是给**没有声明**保活的配置
+硬塞一个 25 秒。这有两个反效果：
+
+* 25 秒一次的握手包在移动网络上是实打实的耗电与流量，而配置作者显然不需要它
+  ——否则他会写上；
+* 内核自己的默认值是 0（不主动发包，靠上层流量自然维持 NAT 映射），
+  这也正是 WireGuard 官方的推荐默认。
+
+现在只在配置显式声明时才下发。
+
+### 3.5.5 MTU 做合理性校验
+
+低于 1280 违反 IPv6 的最小 MTU 要求，高于 1500 超出以太网帧。两者都会让隧道
+时通时断且完全看不出原因。超出 `[1280, 1500]` 的值会被换成默认值 1420
+（wg-quick 的默认值，也是 1500 字节以太网上不会分片的保守取值）。
+
+### 3.5.6 AmneziaWG 配置明确告知
+
+AmneziaWG 是 WireGuard 的非标准分支，靠 `Jc` / `Jmin` / `Jmax` / `S1` / `S2` /
+`H1`~`H4` 把握手包伪装成随机数据。sing-box 的 WireGuard 端点**不支持**这些参数，
+因此这类配置导入后会「看着正常但连不上」。现在识别出来并明确提示，
+而不是让用户对着一个连不上的隧道猜。
+
 ## 四、后续协议
 
 ### 4.1 Shadowsocks（优先级最高，成本最低）
@@ -112,8 +181,12 @@ lib/protocols/
 
 ## 五、暂不支持的方向
 
-* **TUN 模式以外的全局接管**：当前 Windows 走系统代理，不改路由表、不需要
+* **桌面端的 TUN 全局接管**：当前 Windows 走系统代理，不改路由表、不需要
   管理员权限。若要做真正的全局接管（游戏、命令行工具），需要另开一条
   「TUN 接管」的工作线，与协议支持解耦。
+  设置页**刻意不提供**这个选项：它需要 wintun 驱动与管理员权限，两者当前都
+  不具备。原先摆着一个「TUN 虚拟网卡」选项而实际不生效，是一个安静的假承诺
+  ——用户选了「接管全部程序」，实际只有认系统代理的程序走隧道，界面上完全
+  看不出区别。宁可不给，也不要给一个兑现不了的。
 * **自定义规则**：产品定位是零配置，因此不打算开放规则编辑。若确有需求，
   应做成「高级模式」，默认隐藏。

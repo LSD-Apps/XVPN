@@ -87,19 +87,6 @@ class RuleSetStore {
     );
   }
 
-  /// 读取当前规则库的落盘时间，用于界面展示。
-  static DateTime? lastModified() {
-    final target = writableDir();
-    DateTime? newest;
-    for (final name in sources.keys) {
-      final f = File('${target.path}${Platform.pathSeparator}$name');
-      if (!f.existsSync()) continue;
-      final t = f.lastModifiedSync();
-      if (newest == null || t.isAfter(newest)) newest = t;
-    }
-    return newest;
-  }
-
   static Future<List<int>?> _download(String url) async {
     try {
       final response = await http
