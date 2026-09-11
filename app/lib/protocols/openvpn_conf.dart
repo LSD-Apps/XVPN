@@ -15,6 +15,7 @@ class OpenVpnConf {
     required this.network,
     required this.cipher,
     required this.dataCiphers,
+    required this.dataCiphersFallback,
     required this.auth,
     required this.ca,
     required this.cert,
@@ -22,6 +23,7 @@ class OpenVpnConf {
     required this.tlsAuth,
     required this.tlsCrypt,
     required this.keyDirection,
+    required this.requiresServerCert,
     required this.requiresCredentials,
     required this.username,
     required this.password,
@@ -34,8 +36,18 @@ class OpenVpnConf {
   /// `udp` 或 `tcp`。OpenVPN 的 `udp4` / `tcp-client` 等写法会被归一化。
   final String network;
 
+  /// 老式的 `cipher` 指令（OpenVPN 2.3 及以前）。
   final String? cipher;
+
+  /// `data-ciphers`（OpenVPN 2.4+ 的协商列表）。
   final List<String> dataCiphers;
+
+  /// `data-ciphers-fallback`：服务端只支持老套件时的兜底。
+  ///
+  /// 必须与 [dataCiphers] **分开**下发：把兜底套件并进协商列表，
+  /// 会让客户端主动提议一个服务端不会选的套件，严格服务端会直接拒绝协商。
+  final String? dataCiphersFallback;
+
   final String? auth;
 
   /// 内联的根证书（PEM）。
@@ -49,6 +61,12 @@ class OpenVpnConf {
   final String? tlsAuth;
   final String? tlsCrypt;
   final int? keyDirection;
+
+  /// 配置声明了 `remote-cert-tls server`，要求校验服务端证书身份。
+  ///
+  /// 主流向导生成的客户端配置几乎都会带这一条。不映射到内核就等于
+  /// 悄悄放弃了服务端身份校验——一个「看起来能连、实际不安全」的降级。
+  final bool requiresServerCert;
 
   /// 配置声明了 `auth-user-pass`，需要用户额外提供账号密码。
   final bool requiresCredentials;
@@ -76,6 +94,7 @@ class OpenVpnConf {
     String network = 'udp';
     String? cipher;
     final dataCiphers = <String>[];
+    String? dataCiphersFallback;
     String? auth;
     String? ca;
     String? cert;
@@ -83,6 +102,7 @@ class OpenVpnConf {
     String? tlsAuth;
     String? tlsCrypt;
     int? keyDirection;
+    var requiresServerCert = false;
     var requiresCredentials = false;
     final ignored = <String>[];
 
@@ -117,10 +137,21 @@ class OpenVpnConf {
           dataCiphers
             ..clear()
             ..addAll(value.split(':').map((e) => e.trim()).where((e) => e.isNotEmpty));
+        case 'data-ciphers-fallback':
+          dataCiphersFallback = value;
         case 'auth':
           auth = value.toUpperCase();
         case 'key-direction':
           keyDirection = int.tryParse(value);
+        case 'remote-cert-tls':
+          // `remote-cert-tls server` 要求服务端证书具备 server 用途。
+          // 这是客户端配置里最重要的身份校验开关之一，必须映射到内核。
+          if (value.toLowerCase().split(RegExp(r'\s+')).contains('server')) {
+            requiresServerCert = true;
+          }
+        case 'verify-x509-name':
+          // 指定服务端证书里必须出现的主体名，同样是身份校验。
+          requiresServerCert = true;
         case 'auth-user-pass':
           // 可能不带参数（交互输入），也可能指向一个文件。
           // 两种情况都需要用户提供凭据：移动端读不到那个文件。
@@ -131,7 +162,6 @@ class OpenVpnConf {
         case 'persist-key':
         case 'persist-tun':
         case 'resolv-retry':
-        case 'remote-cert-tls':
         case 'verb':
         case 'tls-client':
         case 'pull':
@@ -157,6 +187,7 @@ class OpenVpnConf {
       network: network,
       cipher: cipher,
       dataCiphers: List<String>.unmodifiable(dataCiphers),
+      dataCiphersFallback: dataCiphersFallback,
       auth: auth,
       ca: ca,
       cert: cert,
@@ -164,6 +195,7 @@ class OpenVpnConf {
       tlsAuth: tlsAuth,
       tlsCrypt: tlsCrypt,
       keyDirection: keyDirection,
+      requiresServerCert: requiresServerCert,
       requiresCredentials: requiresCredentials,
       username: username,
       password: password,

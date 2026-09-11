@@ -1,6 +1,7 @@
 import 'openvpn_conf.dart';
 import 'parsed_profile.dart';
 import 'protocol_adapter.dart';
+import 'protocol_tuning.dart';
 import 'vpn_protocol.dart';
 
 /// OpenVPN 适配器。
@@ -72,11 +73,43 @@ class OpenVpnAdapter implements VpnProtocolAdapter {
       if (direction != null) controlWrap['direction'] = direction;
     }
 
-    // 加密套件：优先 data-ciphers（OpenVPN 2.4+ 的推荐写法）；
-    // 只有老式 cipher 时把它并进去，避免它被 TLS 模式拒绝。
-    final dataCiphers = conf.dataCiphers.isNotEmpty
-        ? conf.dataCiphers
-        : <String>[if (conf.cipher != null) conf.cipher!];
+    // ---- 加密套件 ------------------------------------------------------
+    //
+    // 这里做两件都是被实测错误逼出来的事：
+    //
+    //  1. **归一化成规范名**。sing-box 要求 data_ciphers /
+    //     data_ciphers_fallback 里的名字必须是 OpenVPN 官方的大写规范名，
+    //     写成小写会直接 FATAL：
+    //     「ClientOptions.DataChannel.Ciphers[0] must use a canonical
+    //       OpenVPN cipher name」——内核整体起不来，用户只看到「连不上」。
+    //     认不出的名字一律剔除：剔除只让协商范围变小，原样传会让内核挂掉。
+    //
+    //  2. **把 fallback 单独下发**。OpenVPN 2.4 及以上用 `data-ciphers`
+    //     协商，`data-ciphers-fallback` 是给「服务端只支持老套件」时的兜底。
+    //     老实现把 `cipher` 直接并进 data_ciphers，于是客户端会主动提议一个
+    //     服务端根本不会选的套件；更糟的是严格服务端会因此拒绝协商。
+    final primary = canonicalizeCipherList(
+      conf.dataCiphers.isNotEmpty
+          ? conf.dataCiphers
+          : <String>[if (conf.cipher != null) conf.cipher!],
+    );
+    final dataCiphers = preferFastCiphersFirst(primary.ciphers);
+
+    // 显式声明的 fallback 优先；否则用老式 `cipher` 指令的值。
+    String? fallback;
+    final declaredFallback = conf.dataCiphersFallback;
+    if (declaredFallback != null && declaredFallback.isNotEmpty) {
+      fallback = canonicalizeCipher(declaredFallback);
+    } else if (conf.cipher != null && conf.cipher!.isNotEmpty) {
+      final canonical = canonicalizeCipher(conf.cipher!);
+      // 只有当它没有被 data-ciphers 覆盖时才值得作为兜底下发。
+      if (canonical != null && !dataCiphers.contains(canonical)) {
+        fallback = canonical;
+      }
+    }
+
+    // 摘要名同样是规范名敏感的：`sha256` 会让内核 FATAL。
+    final auth = conf.auth == null ? null : canonicalizeAuth(conf.auth!);
 
     final tls = <String, Object?>{
       if (conf.ca != null && conf.ca!.isNotEmpty)
@@ -88,6 +121,12 @@ class OpenVpnAdapter implements VpnProtocolAdapter {
       if (controlWrap.isNotEmpty) 'control_wrap': controlWrap,
       // 服务端域名同样使用直连解析器，理由与 WireGuard 端点一致。
       'server_name': conf.remoteHost,
+      // `remote-cert-tls server` 的等价物。
+      //
+      // 这条指令在客户端配置里几乎必然存在（所有主流向导生成的配置都带），
+      // 含义是「只接受服务端证书」。映射到 sing-box 就是
+      // `remote_certificate_tls: server`。不映射等于悄悄丢掉了服务端身份校验。
+      if (conf.requiresServerCert) 'remote_certificate_tls': 'server',
     };
 
     return <String, Object?>{
@@ -99,7 +138,8 @@ class OpenVpnAdapter implements VpnProtocolAdapter {
       if (conf.username != null) 'username': conf.username,
       if (conf.password != null) 'password': conf.password,
       if (dataCiphers.isNotEmpty) 'data_ciphers': dataCiphers,
-      if (conf.auth != null) 'auth': conf.auth,
+      'data_ciphers_fallback': ?fallback,
+      'auth': ?auth,
       'tls': tls,
     };
   }

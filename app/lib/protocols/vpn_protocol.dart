@@ -48,25 +48,11 @@ extension VpnProtocolInfo on VpnProtocol {
         VpnProtocol.wireGuard || VpnProtocol.openVpn => true,
         _ => false,
       };
-
-  /// 该协议是否需要用户名/密码，导入时需要额外向用户索取。
-  bool get needsCredentials => switch (this) {
-        VpnProtocol.openVpn ||
-        VpnProtocol.shadowsocks ||
-        VpnProtocol.trojan ||
-        VpnProtocol.hysteria2 =>
-          true,
-        _ => false,
-      };
 }
 
 /// 已实现导入的协议。
 List<VpnProtocol> get importableProtocols =>
     VpnProtocol.values.where((p) => p.isImportable).toList(growable: false);
-
-/// 规划中的协议。
-List<VpnProtocol> get plannedProtocols =>
-    VpnProtocol.values.where((p) => !p.isImportable).toList(growable: false);
 
 /// 所有可被识别的扩展名，用于文件选择器过滤。
 List<String> get allSupportedExtensions {
