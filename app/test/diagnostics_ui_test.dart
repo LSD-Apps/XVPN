@@ -13,6 +13,8 @@ import 'package:xvpn/models.dart';
 import 'package:xvpn/core/singbox_runner.dart';
 import 'package:xvpn/core/vpn_core.dart';
 import 'package:xvpn/screens/settings_screen.dart';
+import 'package:xvpn/widgets/auto_route_card.dart';
+import 'package:xvpn/widgets/common.dart';
 import 'package:xvpn/screens/shell.dart';
 import 'package:xvpn/theme.dart';
 import 'package:xvpn/theme_controller.dart';
@@ -65,6 +67,15 @@ Future<void> _connect(WidgetTester tester, AppState state) async {
   await tester.pump(const Duration(seconds: 1));
   await tester.pump(const Duration(seconds: 1));
 }
+
+/// 造一个带真实内核的状态。
+///
+/// 用真实的 [SingBoxRunner] 而不是演示内核，是为了让自动纠正表真的存在——
+/// 那正是「手工指定」表单渲染的前提；主动探测关掉，测试里不真的连网络。
+AppState stateWithRealCore() => AppState(
+      coreFactory: (VpnCoreListener listener) =>
+          SingBoxRunner(listener, probesEnabled: false),
+    );
 
 /// 造一条可以手动触发的分流记录。
 SplitRecord _record(String target, RouteKind kind, {DateTime? at}) => SplitRecord(
@@ -407,10 +418,7 @@ void main() {
     testWidgets('接真实内核时可手工指定域名，且非法输入给出明确提示', (WidgetTester tester) async {
       // 用真实的 SingBoxRunner 当内核（关掉主动探测，测试里不真的连网络），
       // 这样自动纠正表存在，卡片会渲染出完整的手工指定表单。
-      final state = AppState(
-        coreFactory: (VpnCoreListener listener) =>
-            SingBoxRunner(listener, probesEnabled: false),
-      );
+      final state = stateWithRealCore();
       addTearDown(state.dispose);
       await _pump(tester, state, size: const Size(1500, 1400));
 
@@ -460,6 +468,111 @@ void main() {
         reason: '没有表时必须明确返回失败，而不是假装写入成功',
       );
       expect(state.pruneAutoRoute(), isEmpty);
+    });
+  });
+
+  group('手工指定输入区的宽度', () {
+    /// 手工指定输入框的**容器**。
+    ///
+    /// 必须量容器而不是内部的 TextField：后者还要减去容器左右各 12px 内边距
+    /// 与 14px 搜索图标，比容器窄约 48px，量错了会得到一个偏小且难以解释的数。
+    Finder inputBox() => find.ancestor(
+          of: find.widgetWithText(TextField, '例如 example.com'),
+          matching: find.byType(XvSearchField),
+        );
+
+    /// 用真实内核渲染桌面设置页，并把手工指定滚进视口。
+    Future<void> renderDesktopWithCore(WidgetTester tester, AppState state) async {
+      await _pump(tester, state, size: const Size(1500, 1400));
+      await tester.tap(find.text('设置'));
+      await tester.pumpAndSettle();
+      final scroll = find.byKey(SettingsScreen.desktopScrollKey);
+      var guard = 0;
+      while (find.text('手工指定').evaluate().isEmpty && guard < 20) {
+        await tester.drag(scroll, const Offset(0, -200));
+        await tester.pumpAndSettle();
+        guard++;
+      }
+    }
+
+    testWidgets('窄屏（手机宽度）下输入框不再被三栏挤压', (WidgetTester tester) async {
+      // 回归用例：原先「输入框 + 走向选择器 + 添加按钮」三栏并排，
+      // 选择器约 178px、按钮最小 88px、两处 8px 间距，一共吃掉约 282px。
+      // 手机可用宽度只有 330 上下，留给输入框的只剩 170 上下，
+      // 而域名动辄 20 多个字符，用户根本看不见自己输入了什么。
+      final state = stateWithRealCore();
+      addTearDown(state.dispose);
+      // 390 是常见手机的逻辑宽度。
+      await _pump(tester, state, size: const Size(390, 900));
+      await tester.tap(find.text('设置'));
+      await tester.pumpAndSettle();
+
+      // 手机设置页整体滚动，把手工指定滚进视口。
+      final scrollable = find.byType(Scrollable).first;
+      var guard = 0;
+      while (inputBox().evaluate().isEmpty && guard < 30) {
+        await tester.drag(scrollable, const Offset(0, -220));
+        await tester.pumpAndSettle();
+        guard++;
+      }
+
+      expect(inputBox(), findsOneWidget, reason: '应能找到手工指定输入框');
+      final width = tester.getSize(inputBox()).width;
+      expect(
+        width,
+        greaterThanOrEqualTo(AutoRouteCard.minInputWidth),
+        reason: '窄屏下输入框宽度不应低于 ${AutoRouteCard.minInputWidth}px（实测 $width）',
+      );
+      expect(tester.takeException(), isNull, reason: '窄屏排布不应溢出');
+
+      await _stop(tester, state);
+    });
+
+    testWidgets('宽屏（桌面）下仍是一行，且输入框仍够宽', (WidgetTester tester) async {
+      final state = stateWithRealCore();
+      addTearDown(state.dispose);
+      await renderDesktopWithCore(tester, state);
+
+      expect(inputBox(), findsOneWidget);
+      final width = tester.getSize(inputBox()).width;
+      expect(
+        width,
+        greaterThanOrEqualTo(AutoRouteCard.minInputWidth),
+        reason: '宽屏下输入框也应满足最小宽度（实测 $width）',
+      );
+      // 宽屏走一行排布：输入框与选择器在同一水平线上。
+      final segmentedY = tester.getCenter(find.text('走代理')).dy;
+      expect((tester.getCenter(inputBox()).dy - segmentedY).abs(), lessThan(4),
+          reason: '宽屏应为一行排布');
+
+      await _stop(tester, state);
+    });
+
+    testWidgets('窄屏下走向选择器独占一行且铺满', (WidgetTester tester) async {
+      final state = stateWithRealCore();
+      addTearDown(state.dispose);
+      await _pump(tester, state, size: const Size(390, 900));
+      await tester.tap(find.text('设置'));
+      await tester.pumpAndSettle();
+
+      final scrollable = find.byType(Scrollable).first;
+      var guard = 0;
+      while (inputBox().evaluate().isEmpty && guard < 30) {
+        await tester.drag(scrollable, const Offset(0, -220));
+        await tester.pumpAndSettle();
+        guard++;
+      }
+
+      expect(inputBox(), findsOneWidget);
+      final fieldTop = tester.getTopLeft(inputBox()).dy;
+      final segmentedBottom = tester.getBottomLeft(find.text('走代理')).dy;
+      expect(
+        segmentedBottom,
+        lessThanOrEqualTo(fieldTop + 1),
+        reason: '窄屏下选择器应位于输入框上方（分成两行）',
+      );
+
+      await _stop(tester, state);
     });
   });
 

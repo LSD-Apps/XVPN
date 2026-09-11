@@ -22,6 +22,33 @@ class AutoRouteCard extends StatefulWidget {
   final AppState state;
   final bool compact;
 
+  /// 输入框应保证的最小宽度。
+  ///
+  /// 200 是按最长的常见输入估的：`Blocked.Example.COM:443` 这类内容在 12.5px
+  /// 字号下约 170px，再留一点余量，用户至少能看到自己漏没漏字符。
+  ///
+  /// 注意这里量的是**输入框容器**（[XvSearchField]）的宽度，而不是它内部
+  /// [TextField] 的宽度：后者还要减去容器左右各 12px 的内边距与 14px 的搜索
+  /// 图标，比容器窄约 48px。断言时别量错对象。
+  ///
+  /// 放在 widget 上而不是 State 里：它是这个组件的**布局契约**，
+  /// 测试要据此断言「输入框没被三栏挤压」，因此必须对外可见。
+  static const double minInputWidth = 200;
+
+  /// 「走代理 / 直连」选择器的自然宽度。
+  ///
+  /// 125.25 是在测试里实测出来的（两个标签各 60.5px 文字 + 28px 内边距，
+  /// 加上外层 3px 内边距与 1px 描边）。写实测值而不是估一个，是因为这个数
+  /// 直接决定换行阈值：估大了会在本可以并排的宽度上提前换行。
+  static const double segmentedWidth = 126;
+
+  /// 「添加」按钮的宽度（[XvButton] 的 minWidth 默认值）。
+  static const double buttonWidth = 88;
+
+  /// 三栏排布所需的最小内容宽度。
+  static const double rowLayoutBreakpoint =
+      minInputWidth + segmentedWidth + buttonWidth + 16;
+
   @override
   State<AutoRouteCard> createState() => _AutoRouteCardState();
 }
@@ -115,31 +142,7 @@ class _AutoRouteCardState extends State<AutoRouteCard> {
             style: XvText.rowDesc,
           ),
           const SizedBox(height: 10),
-          Row(
-            children: <Widget>[
-              Expanded(
-                child: XvSearchField(
-                  hint: '例如 example.com',
-                  controller: _domainController,
-                  onChanged: (_) {
-                    if (_inputError != null) setState(() => _inputError = null);
-                  },
-                ),
-              ),
-              const SizedBox(width: 8),
-              XvSegmented(
-                labels: const <String>['走代理', '直连'],
-                index: _preference == RoutePreference.forceProxy ? 0 : 1,
-                onChanged: (int i) => setState(() {
-                  _preference = i == 0
-                      ? RoutePreference.forceProxy
-                      : RoutePreference.forceDirect;
-                }),
-              ),
-              const SizedBox(width: 8),
-              XvButton(label: '添加', onPressed: _submit),
-            ],
-          ),
+          _buildManualInput(),
           if (_inputError != null)
             Padding(
               padding: const EdgeInsets.only(top: 8),
@@ -197,6 +200,87 @@ class _AutoRouteCardState extends State<AutoRouteCard> {
       ),
     );
   }
+
+  /// 手工指定域名的输入区。
+  ///
+  /// 这里有个必须处理的宽度问题：「走代理 / 直连」选择器（约 126px）与
+  /// 「添加」按钮（最小 88px）都是定宽的，加上两处 8px 间距一共吃掉约 238px。
+  /// 而手机设置页卡片的内容宽度只有 326px 上下（390 屏 − 两侧 18px −
+  /// 卡片内边距 28px），三栏并排后留给输入框的只剩 180 上下——
+  /// 域名动辄 20 多个字符（`Blocked.Example.COM:443`），窄到看不见内容。
+  ///
+  /// 因此按可用宽度分成两种排布，**输入框始终占据自己那一行的剩余宽度**：
+  ///   * 宽（三栏放得下，见 [rowLayoutBreakpoint]）：三栏一行，与原设计一致；
+  ///   * 窄：选择器独占一行并铺满，输入框与「添加」一行。
+  ///
+  /// 无论哪种排布，输入框容器拿到的宽度都不少于 [minInputWidth]。
+  Widget _buildManualInput() {
+    final field = XvSearchField(
+      hint: '例如 example.com',
+      controller: _domainController,
+      onChanged: (_) {
+        if (_inputError != null) setState(() => _inputError = null);
+      },
+    );
+
+    return LayoutBuilder(
+      builder: (BuildContext context, BoxConstraints constraints) {
+        // 阈值 = 最小输入宽度 + 选择器 + 按钮 + 两处间距。
+        const breakpoint = AutoRouteCard.rowLayoutBreakpoint;
+        final roomy =
+            !constraints.hasBoundedWidth || constraints.maxWidth >= breakpoint;
+
+        if (roomy) {
+          return Row(
+            children: <Widget>[
+              // 输入框占据全部剩余宽度，定宽控件不参与分配。
+              Expanded(child: field),
+              const SizedBox(width: 8),
+              _buildPreferencePicker(expand: false),
+              const SizedBox(width: 8),
+              _buildAddButton(),
+            ],
+          );
+        }
+
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: <Widget>[
+            // 选择器铺满整行：它自己的点击热区也变大，比挤在角落更好点。
+            _buildPreferencePicker(expand: true),
+            const SizedBox(height: 8),
+            Row(
+              children: <Widget>[
+                Expanded(child: field),
+                const SizedBox(width: 8),
+                _buildAddButton(),
+              ],
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  /// 走向选择器。窄排布下铺满整行。
+  Widget _buildPreferencePicker({required bool expand}) => SizedBox(
+        height: 36,
+        child: XvSegmented(
+          labels: const <String>['走代理', '直连'],
+          index: _preference == RoutePreference.forceProxy ? 0 : 1,
+          expand: expand,
+          onChanged: (int i) => setState(() {
+            _preference =
+                i == 0 ? RoutePreference.forceProxy : RoutePreference.forceDirect;
+          }),
+        ),
+      );
+
+  /// 「添加」按钮。两种排布共用，高度与输入框对齐。
+  Widget _buildAddButton() => SizedBox(
+        height: 36,
+        child: XvButton(label: '添加', onPressed: _submit),
+      );
 
   Widget _buildEntry(AutoRouteEntry entry) {
     final isUser = entry.source == RouteRuleSource.user;
