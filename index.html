@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>XVPN — split-tunnel VPN client for Windows &amp; Android</title>
+<meta name="description" content="XVPN is a split-tunnel VPN client for Windows and Android. Import your own WireGuard or OpenVPN profile and get automatic geo-based traffic splitting, dual-resolver DNS cross-validation, and self-correcting routing rules. Open source, GPL-3.0-or-later. Collects no data.">
+<meta name="keywords" content="split-tunnel VPN client, WireGuard client, OpenVPN client, sing-box GUI, Windows VPN, Android VPN, DNS leak prevention, geoip-cn, geosite-cn, automatic rule learning, open source VPN">
+<link rel="canonical" href="https://lsd-apps.github.io/XVPN/">
+<meta property="og:type" content="website">
+<meta property="og:title" content="XVPN — split-tunnel VPN client">
+<meta property="og:description" content="Import your own WireGuard/OpenVPN profile; get automatic traffic splitting, DNS cross-validation and self-correcting rules. Windows + Android, Flutter + sing-box, GPL-3.0-or-later.">
+<meta property="og:url" content="https://lsd-apps.github.io/XVPN/">
+<meta name="twitter:card" content="summary">
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #ffffff; --fg: #1c1c22; --muted: #5e5c6a;
+    --line: #e3e3eb; --code-bg: #f1f1f6; --accent: #0b7a57;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0e131d; --fg: #e7ebf3; --muted: #8a93a6;
+      --line: #232b3a; --code-bg: #1b2231; --accent: #2ee6a8;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 56px 20px 80px;
+    background: var(--bg); color: var(--fg);
+    font: 16px/1.75 -apple-system, BlinkMacSystemFont, "Segoe UI",
+          "Noto Sans CJK SC", "Microsoft YaHei", sans-serif;
+  }
+  main { max-width: 780px; margin: 0 auto; }
+  h1 { font-size: 2rem; margin: 0 0 6px; letter-spacing: -0.02em; }
+  .tagline { color: var(--muted); font-size: 1.05rem; margin: 0 0 28px; }
+  h2 { font-size: 1.15rem; margin: 2.2em 0 .6em; padding-top: .7em;
+       border-top: 1px solid var(--line); }
+  a { color: var(--accent); }
+  code {
+    background: var(--code-bg); padding: .12em .4em; border-radius: 4px;
+    font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: .9em;
+  }
+  table { border-collapse: collapse; width: 100%; margin: 1em 0; font-size: .95rem; }
+  th, td { border: 1px solid var(--line); padding: .5em .7em; text-align: left; vertical-align: top; }
+  th { background: var(--code-bg); font-weight: 600; }
+  ul { padding-left: 1.4em; }
+  li { margin: .35em 0; }
+  .links { display: flex; flex-wrap: wrap; gap: 10px; margin: 22px 0 0; }
+  .links a {
+    display: inline-block; padding: 8px 14px; border: 1px solid var(--line);
+    border-radius: 8px; text-decoration: none; font-size: .95rem;
+  }
+  footer { margin-top: 4em; color: var(--muted); font-size: .85rem;
+           border-top: 1px solid var(--line); padding-top: 1.2em; }
+</style>
+</head>
+<body>
+<main>
+
+<h1>XVPN</h1>
+<p class="tagline">A split-tunnel VPN client that just takes your <code>.conf</code>.</p>
+
+<p>XVPN is a <strong>config client</strong> for Windows and Android. You import your
+own WireGuard (<code>.conf</code>) or OpenVPN (<code>.ovpn</code>) profile; the app
+translates it for the core, decides which traffic goes direct and which goes through
+the tunnel, and tells you <em>why</em> a site fails when it does.</p>
+
+<p>It ships <strong>no</strong> nodes, servers, subscriptions or accounts, and it
+implements no cryptography — that comes from
+<a href="https://github.com/SagerNet/sing-box">sing-box</a>. You bring your own config.</p>
+
+<div class="links">
+  <a href="https://github.com/LSD-Apps/XVPN">Source code</a>
+  <a href="https://github.com/LSD-Apps/XVPN/blob/main/README.md">Documentation</a>
+  <a href="https://github.com/LSD-Apps/XVPN/releases">Releases</a>
+  <a href="privacy.html">Privacy policy</a>
+  <a href="https://github.com/LSD-Apps/XVPN/blob/main/README.zh-CN.md">简体中文</a>
+</div>
+
+<h2>What it does</h2>
+<ul>
+  <li><strong>Automatic split tunnelling</strong> — bundled <code>geosite-cn</code> and
+      <code>geoip-cn</code> rule sets; domestic domains and IPs go direct, everything else
+      goes through the tunnel. No rules to write.</li>
+  <li><strong>Dual-resolver DNS</strong> — domestic domains resolve via a domestic
+      resolver, everything else inside the tunnel, so poisoned answers never drive routing.</li>
+  <li><strong>Failure attribution</strong> — "judged direct but failed" (a rule gap),
+      "went through the tunnel but failed" (a node problem), and "direct itself is down"
+      (a local network problem) look identical to a user but need opposite responses.
+      XVPN tells them apart.</li>
+  <li><strong>DNS cross-validation</strong> — the same domain is resolved via the domestic
+      resolver and via the core, the answer sets are compared, and geolocated against a
+      China IP prefix index to distinguish dual deployment from suspected poisoning.</li>
+  <li><strong>Self-correcting routing</strong> — a domain judged direct that keeps failing
+      is switched to the tunnel at highest priority. Counter-evidence is respected: one
+      successful direct connection resets the failure streak, and two revoke a learned rule.</li>
+</ul>
+
+<h2>Privacy</h2>
+<p><strong>XVPN collects nothing.</strong> No accounts, no analytics, no ads, no trackers,
+no crash reporting, no backend. Configs and credentials stay on your device; split records
+live in memory and are gone when the app closes. Every outbound network connection the app
+can make is enumerated in the privacy policy — and because the app is open source, each
+claim can be verified against the code.</p>
+<p><a href="privacy.html">Read the full privacy policy →</a></p>
+
+<h2>License</h2>
+<p>GPL-3.0-or-later. This is not a preference but a consequence of the dependency: the
+Android build links the GPL-licensed sing-box core into the same process, forming a
+combined work. Third-party components and the upstream additional terms are listed in
+<a href="https://github.com/LSD-Apps/XVPN/blob/main/NOTICE.md">NOTICE.md</a>.</p>
+
+<footer>
+  <p>XVPN is an independent project and is not affiliated with, endorsed by, or
+  sponsored by the sing-box or SagerNet projects.</p>
+  <p>This project is a client tool and provides no nodes or services. Please ensure the
+  configs and services you use comply with the laws of your jurisdiction.</p>
+</footer>
+
+</main>
+</body>
+</html>
