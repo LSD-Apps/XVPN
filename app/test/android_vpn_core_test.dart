@@ -1,34 +1,12 @@
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:xvpn/core/android_vpn_core.dart';
-import 'package:xvpn/core/core_log.dart';
-import 'package:xvpn/core/vpn_core.dart';
 import 'package:xvpn/models.dart';
 
-/// 记录内核回调，用来断言状态迁移。
-class _Recorder implements VpnCoreListener {
-  final List<VpnStatus> statuses = <VpnStatus>[];
-  final List<String> errors = <String>[];
-  final List<String> logFailures = <String>[];
+import 'support/recording_listener.dart';
 
-  @override
-  void onStatusChanged(VpnStatus status) => statuses.add(status);
-
-  @override
-  void onTraffic({required double downBps, required double upBps, required int totalBytes}) {}
-
-  @override
-  void onLatency(int? millis) {}
-
-  @override
-  void onSplitRecord(SplitRecord record) {}
-
-  @override
-  void onConnectionFailure(ConnectionFailure failure) => logFailures.add(failure.target);
-
-  @override
-  void onError(String message) => errors.add(message);
-}
+/// 本文件的断言只关心状态迁移与错误上报，因此直接用共享的记录器。
+typedef _Recorder = RecordingListener;
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -55,11 +33,19 @@ void main() {
 
   tearDown(() => messenger.setMockMethodCallHandler(channel, null));
 
+  /// 关掉主动探测。
+  ///
+  /// 接管成功后会启动观测引擎，它默认会立刻发一轮 DNS 探测（UDP）与启动自检
+  /// （TCP 连本机外的地址）。测试环境里这两者既不允许也没有意义，而且它们的
+  /// 异步工作在测试结束后才回来，会被 flutter_test 判为「有未完成的异步工作」。
+  AndroidVpnCore newCore(_Recorder recorder) =>
+      AndroidVpnCore(recorder, probesEnabled: false);
+
   group('AndroidVpnCore.resumeIfRunning', () {
     test('内核仍在运行时会接管，并把状态置为已连接', () async {
       final calls = mockChannel(running: true);
       final recorder = _Recorder();
-      final core = AndroidVpnCore(recorder);
+      final core = newCore(recorder);
 
       final adopted = await core.resumeIfRunning();
 
@@ -78,7 +64,7 @@ void main() {
     test('内核没在运行时不动状态', () async {
       mockChannel(running: false);
       final recorder = _Recorder();
-      final core = AndroidVpnCore(recorder);
+      final core = newCore(recorder);
 
       final adopted = await core.resumeIfRunning();
 
@@ -90,7 +76,7 @@ void main() {
     test('原生通道不可用时不抛异常，只是不接管', () async {
       messenger.setMockMethodCallHandler(channel, null);
       final recorder = _Recorder();
-      final core = AndroidVpnCore(recorder);
+      final core = newCore(recorder);
 
       // 通道没有实现时 invokeMethod 会抛 MissingPluginException，
       // 这里要求它被吞掉——启动路径上的异常会让整个界面起不来。

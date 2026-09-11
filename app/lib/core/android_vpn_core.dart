@@ -1,12 +1,12 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/services.dart';
 
 import '../models.dart';
-import 'clash_api.dart';
-import 'core_log.dart';
+import 'auto_route.dart';
+import 'core_monitor.dart';
+import 'cn_ip_index.dart';
 import 'singbox_config.dart';
 import 'vpn_core.dart';
 
@@ -15,11 +15,13 @@ import 'vpn_core.dart';
 /// 与 Windows 端的差别只有三处，其余全部共用：
 ///   * 内核形态：进程内的库（libbox）而非子进程；
 ///   * 流量接管：VpnService 的 TUN 而非系统代理；
-///   * 规则集：打包在 APK 里，需要先解包到可写目录再交给内核。
+///   * 规则集与索引：打包在 APK 里，需要先解包到可写目录再交给内核。
 ///
-/// 分流规则、DNS 策略、配置生成、以及连接观测（Clash API）都与平台无关。
+/// 观测部分（Clash API 轮询、速率、失败归因、DNS 监测、启动自检）由
+/// [CoreMonitor] 提供，与 Windows 端是同一份代码——此前的实现是两端各写一份，
+/// 结果一端修好的问题在另一端依旧存在。
 class AndroidVpnCore extends VpnCore {
-  AndroidVpnCore(super.listener);
+  AndroidVpnCore(super.listener, {super.probesEnabled});
 
   /// 与 MainActivity / XvpnVpnService 约定的通道名。
   static const MethodChannel _channel = MethodChannel('com.xvpn.xvpn/vpn');
@@ -30,21 +32,40 @@ class AndroidVpnCore extends VpnCore {
     'assets/rulesets/geoip-cn.srs',
   ];
 
+  /// 所有需要在连接前落到磁盘上的资源。
+  ///
+  /// 中国 IP 索引走同一条路径：内核不需要它，但 DNS 交叉校验需要，
+  /// 而它同样只在 APK 资源里。
+  static const List<String> _stagedAssets = <String>[
+    ..._ruleSetAssets,
+    CnIpIndex.assetPath,
+  ];
+
   @override
   String get name => 'sing-box（libbox）';
 
-  /// VpnService 不需要 root，但需要用户在系统弹窗里授权。
+  /// 自动纠正表。跨连接保留。
+  final AutoRouteTable _autoRoute = AutoRouteTable();
+
+  CnIpIndex _cnIpIndex = CnIpIndex.empty;
+
   @override
-  bool get requiresElevation => false;
+  CnIpIndex get cnIpIndex => _cnIpIndex;
 
-  Timer? _pollTimer;
-  final Set<String> _seenConnections = <String>{};
-  final RateCalculator _rate = RateCalculator();
-  DateTime? _lastLatencyProbe;
-  int _latencyFailures = 0;
+  @override
+  void initAutoRoute(Object? saved) => _autoRoute.loadFrom(saved);
 
-  /// 与 Windows 端保持一致的轮询与探测节奏。
-  static const Duration latencyProbeInterval = Duration(seconds: 15);
+  @override
+  List<Map<String, Object?>> exportAutoRoute() => _autoRoute.toJson();
+
+  @override
+  CoreMonitorHooks monitorHooks() => CoreMonitorHooks(
+        listener: listener,
+        clashApiPort: SingBoxConfigBuilder.defaultClashApiPort,
+        autoRoute: _autoRoute,
+        cnIpIndex: _cnIpIndex,
+        probesEnabled: probesEnabled,
+      );
 
   // ---------------------------------------------------------------- 启动
 
@@ -62,10 +83,12 @@ class AndroidVpnCore extends VpnCore {
         return;
       }
 
-      // 2) 规则集解包。内核要的是真实文件路径，而 APK 里的资源读不到路径。
-      final ruleSetDir = await _stageRuleSets();
+      // 2) 资源解包。内核要的是真实文件路径，而 APK 里的资源读不到路径。
+      final ruleSetDir = await _stageAssets();
+      _cnIpIndex = await _loadCnIpIndex(ruleSetDir);
 
-      // 3) 生成配置。分流与 DNS 策略与 Windows 端完全一致。
+      // 3) 生成配置。分流与 DNS 策略与 Windows 端完全一致，
+      //    自动纠正表也一并注入。
       final config = SingBoxConfigBuilder.build(
         profile: profile.parsed,
         splitMode: settings.splitMode,
@@ -73,21 +96,18 @@ class AndroidVpnCore extends VpnCore {
         // 安卓只能走 TUN：VpnService 的 fd 必须在应用进程内创建。
         inboundMode: InboundMode.tun,
         logSplits: settings.logSplits,
+        autoRoute: _autoRoute,
       );
 
-      // 4) 接收内核日志，供失败归因使用。
+      // 4) 接收内核日志，供失败归因与自动纠正使用。
       _channel.setMethodCallHandler(_onPlatformCall);
 
       // 5) 启动服务并等内核就绪。
-      _seenConnections.clear();
-      _rate.reset();
-      _lastLatencyProbe = null;
-      _latencyFailures = 0;
       await _channel.invokeMethod<void>('connect', <String, Object?>{
         'config': SingBoxConfigBuilder.encode(config),
       });
 
-      final ready = await _waitForApi(const Duration(seconds: 25));
+      final ready = await monitor.waitForApi(const Duration(seconds: 25));
       if (!ready) {
         final status = await _status();
         final detail = status['error'] as String?;
@@ -99,7 +119,7 @@ class AndroidVpnCore extends VpnCore {
       }
 
       listener.onStatusChanged(VpnStatus.connected);
-      _startPolling();
+      monitor.start();
     } on Object catch (e) {
       listener.onError('启动失败：$e');
       await disconnect();
@@ -110,7 +130,7 @@ class AndroidVpnCore extends VpnCore {
 
   @override
   Future<void> disconnect() async {
-    _stopPolling();
+    monitor.stop();
     try {
       await _channel.invokeMethod<void>('disconnect');
     } on Object {
@@ -125,29 +145,26 @@ class AndroidVpnCore extends VpnCore {
   Future<bool> resumeIfRunning() async {
     final status = await _status();
     if (status['running'] != true) return false;
-    // 接管后观测从零开始：这之前的连接属于上一个界面进程，不必补记。
-    _seenConnections.clear();
-    _rate.reset();
-    _lastLatencyProbe = null;
-    _latencyFailures = 0;
     // 内核日志的转发回调在 connect() 里注册；接管路径也要注册，否则失败归因失效。
     _channel.setMethodCallHandler(_onPlatformCall);
     listener.onStatusChanged(VpnStatus.connected);
-    _startPolling();
+    // 接管后观测从零开始：这之前的连接属于上一个界面进程，不必补记。
+    monitor.start();
     return true;
   }
 
   @override
   void dispose() {
-    _stopPolling();
+    monitor.stop();
+    super.dispose();
   }
 
-  // ------------------------------------------------------------ 规则集解包
+  // ------------------------------------------------------------ 资源解包
 
-  /// 把随包分发的规则集写到应用私有目录，返回该目录路径。
+  /// 把随包分发的资源写到应用私有目录，返回该目录路径。
   ///
-  /// 只在文件缺失或内容不对时重写：解包 90 KB 不贵，但没必要每次连接都做。
-  Future<String> _stageRuleSets() async {
+  /// 只在文件缺失或内容不对时重写：解包不到 100 KB 不贵，但没必要每次连接都做。
+  Future<String> _stageAssets() async {
     final base = await _channel.invokeMethod<String>('filesDir');
     if (base == null || base.isEmpty) {
       throw StateError('无法获取应用目录');
@@ -155,7 +172,7 @@ class AndroidVpnCore extends VpnCore {
     final dir = Directory('$base${Platform.pathSeparator}rulesets');
     dir.createSync(recursive: true);
 
-    for (final asset in _ruleSetAssets) {
+    for (final asset in _stagedAssets) {
       final name = asset.split('/').last;
       final target = File('${dir.path}${Platform.pathSeparator}$name');
       if (target.existsSync() && target.lengthSync() > 64) continue;
@@ -168,85 +185,14 @@ class AndroidVpnCore extends VpnCore {
     return dir.path;
   }
 
-  // ---------------------------------------------------------------- 轮询
-
-  void _startPolling() {
-    _stopPolling();
-    _pollTimer = Timer.periodic(const Duration(seconds: 1), (_) => unawaited(_poll()));
-  }
-
-  void _stopPolling() {
-    _pollTimer?.cancel();
-    _pollTimer = null;
-  }
-
-  Future<void> _poll() async {
-    final body = await _apiGet('/connections');
-    if (body == null) return;
-    final snapshot = ClashSnapshot.parse(body);
-    if (snapshot == null) return;
-
-    final sample = _rate.sample(
-      DateTime.now(),
-      snapshot.downloadTotal,
-      snapshot.uploadTotal,
-    );
-    if (sample != null) {
-      listener.onTraffic(
-        downBps: sample.downBps,
-        upBps: sample.upBps,
-        totalBytes: sample.totalBytes,
-      );
-    }
-
-    for (final conn in snapshot.newSince(_seenConnections)) {
-      _seenConnections.add(conn.id);
-      listener.onSplitRecord(
-        SplitRecord(
-          time: DateTime.now(),
-          target: conn.target,
-          kind: conn.proxied ? RouteKind.proxy : RouteKind.direct,
-          rule: conn.rule,
-          outbound: conn.outbound,
-        ),
-      );
-    }
-    if (_seenConnections.length > 2000) _seenConnections.clear();
-
-    await _probeLatency();
-  }
-
-  /// 经隧道实测一次延迟。失败本身也是信息：说明节点当前不可用。
-  Future<void> _probeLatency() async {
-    final now = DateTime.now();
-    final last = _lastLatencyProbe;
-    if (last != null && now.difference(last) < latencyProbeInterval) return;
-    _lastLatencyProbe = now;
-
-    final body = await _apiGet(
-      '/proxies/${SingBoxConfigBuilder.vpnTag}/delay'
-      // 用 https：不少网络封 80 端口但放行 443；超时给足，实测节点往返可能到数秒，
-      // 卡在 4 秒会让界面频繁显示「无数据」而不是真实延迟。
-      '?timeout=8000&url=https://www.gstatic.com/generate_204',
-      timeout: const Duration(seconds: 12),
-    );
-    if (body == null) return; // 接口不可用不算节点问题
+  /// 从刚解包的目录里读中国 IP 索引。缺失时返回空表（判定会变保守）。
+  Future<CnIpIndex> _loadCnIpIndex(String dir) async {
+    final file = File('$dir${Platform.pathSeparator}cn-ip.bin');
+    if (!file.existsSync()) return CnIpIndex.empty;
     try {
-      final json = jsonDecode(body) as Map<String, Object?>;
-      final delay = (json['delay'] as num?)?.toInt();
-      if (delay != null && delay > 0) {
-        listener.onLatency(delay);
-        _latencyFailures = 0;
-      } else {
-        _latencyFailures++;
-        listener.onLatency(null);
-        if (_latencyFailures == 3) {
-          listener.onError('连续 3 次延迟探测失败，节点可能不稳定');
-        }
-      }
+      return CnIpIndex.parse(file.readAsBytesSync()) ?? CnIpIndex.empty;
     } on Object {
-      // 解析失败按探测失败处理，但不额外报错。
-      listener.onLatency(null);
+      return CnIpIndex.empty;
     }
   }
 
@@ -256,10 +202,7 @@ class AndroidVpnCore extends VpnCore {
   Future<void> _onPlatformCall(MethodCall call) async {
     if (call.method == 'coreLog') {
       final line = call.arguments;
-      if (line is String) {
-        final failure = parseConnectionFailure(line);
-        if (failure != null) listener.onConnectionFailure(failure);
-      }
+      if (line is String) handleCoreLog(line);
     }
   }
 
@@ -270,43 +213,5 @@ class AndroidVpnCore extends VpnCore {
     } on Object {
       return const <String, Object?>{};
     }
-  }
-
-  // ---------------------------------------------------------------- HTTP
-
-  Future<String?> _apiGet(
-    String path, {
-    Duration timeout = const Duration(seconds: 2),
-  }) async {
-    final client = HttpClient()..connectionTimeout = timeout;
-    try {
-      final request = await client
-          .getUrl(Uri.parse('http://127.0.0.1:${SingBoxConfigBuilder.defaultClashApiPort}$path'))
-          .timeout(timeout);
-      final response = await request.close().timeout(timeout);
-      if (response.statusCode != 200) return null;
-      // join() 必须带超时：Clash API 里有流式接口，不设超时会把轮询卡死。
-      return await response.transform(utf8.decoder).join().timeout(timeout);
-    } on Object {
-      return null;
-    } finally {
-      client.close(force: true);
-    }
-  }
-
-  /// 轮询 Clash API 直到它能应答，或超时。
-  ///
-  /// 顺带检查原生侧是否已经报了错——那样就没必要把 25 秒等满，
-  /// 用户也能更快看到失败原因。
-  Future<bool> _waitForApi(Duration timeout) async {
-    final deadline = DateTime.now().add(timeout);
-    while (DateTime.now().isBefore(deadline)) {
-      if (await _apiGet('/version') != null) return true;
-      final status = await _status();
-      final error = status['error'];
-      if (error is String && error.isNotEmpty) return false;
-      await Future<void>.delayed(const Duration(milliseconds: 400));
-    }
-    return false;
   }
 }
