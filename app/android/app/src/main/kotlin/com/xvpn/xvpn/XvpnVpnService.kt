@@ -615,7 +615,7 @@ class XvpnVpnService : VpnService(), PlatformInterface {
         return builder
             .setContentTitle("XVPN 运行中")
             .setContentText("智能分流已启用：国内直连，国外走隧道")
-            .setSmallIcon(android.R.drawable.ic_lock_lock)
+            .setSmallIcon(R.drawable.ic_stat_xvpn)
             .setOngoing(true)
             .build()
     }

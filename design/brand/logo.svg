@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <title>XVPN — open passage</title>
+  <desc>A protective open arch and a flowing route toward its center.</desc>
+  <defs>
+    <linearGradient id="arch" x1="244" y1="330" x2="775" y2="680" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#52EFC1"/><stop offset=".42" stop-color="#22D8B4"/><stop offset="1" stop-color="#13ABBB"/>
+    </linearGradient>
+    <linearGradient id="crown" x1="345" y1="205" x2="784" y2="570" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#97F8D7"/><stop offset=".52" stop-color="#44DFC5"/><stop offset="1" stop-color="#22B9CC"/>
+    </linearGradient>
+    <linearGradient id="route" x1="486" y1="510" x2="537" y2="852" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#A5F9E5"/><stop offset=".35" stop-color="#53E6E4"/><stop offset="1" stop-color="#1BB9D1"/>
+    </linearGradient>
+  </defs>
+  <path d="M224 744 V464 C224 305 353 176 512 176 S800 305 800 464 V744 C800 778 773 800 740 800 S672 778 672 744 V464 C672 376 600 304 512 304 S352 376 352 464 V744 C352 778 325 800 292 800 S224 778 224 744Z" fill="url(#arch)"/>
+  <path d="M258 328 C307 237 402 176 512 176 C671 176 800 305 800 464 V654 C737 601 701 541 672 464 C617 319 426 226 302 301Z" fill="url(#crown)"/>
+  <path d="M368 826 C433 802 492 770 492 735 C492 709 414 694 414 656 C414 609 480 587 549 559 V524 C549 509 561 497 576 497 S603 509 603 524 V578 C548 600 489 623 489 648 C489 676 642 680 642 755 C642 800 610 838 561 848 C496 861 425 848 368 826Z" fill="url(#route)"/>
+</svg>
