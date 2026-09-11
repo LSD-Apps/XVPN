@@ -1,0 +1,82 @@
+# XVPN
+
+> A split-tunnel VPN client that takes a user-supplied WireGuard (`.conf`) or
+> OpenVPN (`.ovpn`) profile and applies automatic traffic splitting. Windows and
+> Android. Flutter UI, sing-box core. GPL-3.0-or-later.
+
+Canonical repository: https://github.com/LSD-Apps/XVPN
+Mirror: https://gitcode.com/start-ai/XVPN
+
+## What it is
+
+XVPN is a **config parser and split-tunnel client** for Windows and Android.
+The user supplies their own WireGuard or OpenVPN configuration; the app:
+
+1. Translates the profile into a sing-box configuration (all protocol-specific
+   fields are mapped automatically, and invalid/outdated parameter names are
+   normalised into what the core accepts).
+2. Routes traffic: domestic domains and IPs go direct (bundled `geosite-cn` +
+   `geoip-cn` rule sets); everything else goes through the tunnel.
+3. Resolves DNS with two resolvers — a domestic resolver direct, an
+   in-tunnel resolver for everything else — to avoid poisoned answers.
+4. Reads the core's connection list (Clash API, loopback only) to show split
+   records, per-outbound byte counts, and live rates.
+5. Attributes connection failures: "judged direct but failed" (a rule coverage
+   problem) versus "went through the tunnel but failed" (a node/server problem)
+   versus "direct itself is down" (a local network or DNS problem). These three
+   look identical to a user but require opposite responses.
+6. Cross-validates DNS: resolves a domain via the domestic resolver and via the
+   core's `/dns/query`, compares the answer sets, and geolocates them against a
+   China IP prefix index to distinguish "dual deployment (CN + overseas)" from
+   "suspected poisoning".
+7. Automatically corrects routing: a domain that is judged direct and fails
+   repeatedly is switched to the tunnel at highest priority (injected before the
+   rule sets), with counter-evidence handling — a single successful direct
+   connection resets the failure streak, and two successes revoke a learned rule.
+
+## What it is not
+
+XVPN ships **no** nodes, servers, subscriptions, or accounts, and it does **not**
+implement cryptography (that comes from sing-box). It is a client tool; the user
+brings their own configuration. It also collects no personal data — there is no
+analytics, advertising, tracking, or crash reporting, and no backend.
+
+## Keywords
+
+split-tunnel VPN client, zero-config VPN client, WireGuard client for Windows,
+WireGuard client for Android, OpenVPN client for Windows, OpenVPN client for
+Android, sing-box GUI, sing-box frontend, Clash API client, DNS leak prevention,
+DNS poisoning detection, DNS cross-validation, geoip-cn, geosite-cn, China
+mainland direct routing, rule-based routing, automatic rule learning, network
+diagnostics, Flutter desktop app, Flutter Android app, GPL-3.0.
+
+## Documentation
+
+- [README.md](README.md) — overview, quick start, build, test (English)
+- [README.zh-CN.md](README.zh-CN.md) — 简体中文
+- [PRIVACY.md](PRIVACY.md) / [privacy.html](privacy.html) — privacy policy; the
+  app collects nothing, and every outbound network connection is enumerated
+- [CONTRIBUTING.md](CONTRIBUTING.md) — development conventions, adding a protocol
+- [NOTICE.md](NOTICE.md) — third-party components and licenses
+- [docs/PROTOCOLS.md](docs/PROTOCOLS.md) — protocol adapters and parameter
+  normalisation pitfalls verified against a real `sing-box check`
+- [docs/RULES.md](docs/RULES.md) — rule set coverage measurements, DNS monitoring,
+  automatic correction design
+- [docs/ANDROID.md](docs/ANDROID.md) — VpnService + libbox integration
+- [docs/RELEASE.md](docs/RELEASE.md) — release and compliance analysis by market
+- [docs/STORE_LISTING.md](docs/STORE_LISTING.md) — Google Play listing materials
+- [docs/RESEARCH.md](docs/RESEARCH.md) — why sing-box was chosen over a WireGuard
+  plugin
+
+## Technical facts
+
+- Core: sing-box 1.14.0 (`GPL-3.0-or-later`)
+- UI: Flutter 3.44+ / Dart 3.12+, one shared state layer for both platforms
+- Windows traffic takeover: system proxy (no admin rights required)
+- Android traffic takeover: VpnService TUN (the only option there)
+- Protocols: WireGuard `.conf`, OpenVPN `.ovpn`, detected by content not extension
+- Observation: sing-box Clash API on `127.0.0.1:2081`
+- Tests: `flutter analyze` clean, `flutter test` all passing; protocol assertions
+  correspond to real `sing-box check` results
+- License: GPL-3.0-or-later (required because the Android build links the
+  GPL-licensed core into the same process)

@@ -1,0 +1,33 @@
+cff-version: 1.2.0
+message: If you use XVPN in academic work, please cite it as below.
+title: XVPN
+abstract: >-
+  A split-tunnel VPN client that takes a user-supplied WireGuard or OpenVPN
+  profile and applies automatic traffic splitting between China and elsewhere,
+  dual-resolver DNS with cross-validation, failure attribution derived from core
+  logs, and evidence-based automatic routing correction. Built on sing-box for
+  Windows and Android with a shared Flutter UI.
+type: software
+license: GPL-3.0-or-later
+license-url: https://github.com/LSD-Apps/XVPN/blob/main/LICENSE
+repository-code: https://github.com/LSD-Apps/XVPN
+url: https://github.com/LSD-Apps/XVPN
+version: 1.0.0
+date-released: 2026-02-14
+keywords:
+  - vpn
+  - split-tunnel
+  - wireguard
+  - openvpn
+  - sing-box
+  - dns
+  - dns-poisoning
+  - geoip
+  - geosite
+  - flutter
+  - windows
+  - android
+  - network
+  - privacy
+authors:
+  - name: LSD-Apps

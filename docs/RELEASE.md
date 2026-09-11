@@ -211,7 +211,7 @@ Apple 对 VPN 应用依 Guideline 5.4 审核，需要 `NEVPNManager` 与相应 e
       第二节（声明表单用）+ 第一节（商店说明用，政策强制要求写在说明里）
 - [x] **Data safety / 权限声明 / 内容分级的答案**：见 `STORE_LISTING.md`
 - [x] **贡献指南**：[`CONTRIBUTING.md`](../CONTRIBUTING.md)
-- [x] **英文 README**：[`README.en.md`](../README.en.md)（与中文版互为语言切换）
+- [x] **双语 README**：[README.md](../README.md) 为英文（GitHub 默认渲染英文，有利于被检索与收录）、[README.zh-CN.md](../README.zh-CN.md) 为中文，两者互为语言切换
 
 ### 发布前需补齐
 
