@@ -63,7 +63,11 @@ flutter:
   assets:
     # 品牌标识：界面里只出现在桌面端标题栏
     - assets/vpn.png
-    # 分流规则集：随包分发，用户无需任何配置
+    # 分流规则集：随包分发，用户无需任何配置。
+    # 目录里除 .srs 之外还有 cn-ip.bin：中国 IP 前缀索引，
+    # 供 DNS 交叉校验判断「解析出的地址是不是国内的」，由
+    # tool/build_cn_ip_index.dart 从 geoip-cn.srs 生成（Dart 标准库没有
+    # zlib，无法在运行时解压 .srs，因此在构建期摊平）。
     - assets/rulesets/
 
   # To add assets to your application, add an assets section, like this:

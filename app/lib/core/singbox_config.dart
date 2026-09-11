@@ -3,6 +3,7 @@ import 'dart:convert';
 import '../models.dart';
 import '../protocols/parsed_profile.dart';
 import '../protocols/protocol_adapter.dart';
+import 'auto_route.dart';
 
 /// 入站方式：决定内核如何接管流量。两端能力不同，因此按平台选择。
 enum InboundMode {
@@ -54,6 +55,10 @@ class SingBoxConfigBuilder {
   /// [ruleSetDir] 是规则集（.srs）所在目录的绝对路径；sing-box 需要真实路径，
   /// 因此运行时要把资源落到磁盘上再传进来。
   ///
+  /// [autoRoute] 是自动纠正表。它的规则会被插在 `geosite-cn` / `geoip-cn`
+  /// **之前**，因此「学到的判断」优先于规则库——这一点是自动纠正能生效的前提：
+  /// 需要纠正的恰恰是规则库判错的那一批域名。
+  ///
   /// 协议相关部分完全交给适配器：本方法只负责「所有协议都一样的部分」——
   /// DNS 分流、路由规则、入站与观测接口。
   static Map<String, Object?> build({
@@ -64,6 +69,7 @@ class SingBoxConfigBuilder {
     int mixedPort = defaultMixedPort,
     int clashApiPort = defaultClashApiPort,
     bool logSplits = true,
+    AutoRouteTable? autoRoute,
   }) {
     final remoteDns = _pickRemoteDns(profile);
     final adapter = VpnProtocolFactory.adapterForProtocol(profile.protocol);
@@ -100,6 +106,7 @@ class SingBoxConfigBuilder {
         ruleSetDir: ruleSetDir,
         splitMode: splitMode,
         resolveDnsTag: remoteDns.$3,
+        autoRoute: autoRoute,
       ),
       'experimental': <String, Object?>{
         // 界面上的连接列表与实时流量都从这里取，避免自己解析日志。
@@ -231,23 +238,43 @@ class SingBoxConfigBuilder {
     required String ruleSetDir,
     required SplitMode splitMode,
     required String resolveDnsTag,
+    AutoRouteTable? autoRoute,
   }) {
+    // 自动纠正规则只在智能分流下注入。
+    //
+    // 「全局代理」「全局直连」是用户显式要求忽略分流的两种模式，
+    // 往里注入域名规则会与用户的意图冲突——尤其是全局直连时，
+    // 注入 force-proxy 会让「完全不使用隧道」这个承诺失效。
+    final learnedRules = splitMode == SplitMode.smart && autoRoute != null
+        ? autoRoute.buildRouteRules()
+        : const <Map<String, Object?>>[];
+
     return <String, Object?>{
       'rules': <Object?>[
         // 嗅探：从 TLS SNI / HTTP Host 里认出域名，
         // 这样即便流量以 IP 形式到达也能按域名规则判定。
+        // 必须放在最前面：后面所有按域名判定的规则都依赖它填好目标域名。
         <String, Object?>{
           'action': 'sniff',
-        },
-        // 局域网与本机地址始终直连。
-        <String, Object?>{
-          'ip_is_private': true,
-          'outbound': 'direct',
         },
         // 本地 DNS 代理自身的解析请求交给内置 DNS 模块处理。
         <String, Object?>{
           'protocol': 'dns',
           'action': 'hijack-dns',
+        },
+        // 自动纠正学到的规则紧跟在嗅探之后。
+        //
+        // 位置很关键：它必须早于下面的 geosite-cn / geoip-cn，否则规则库会先把
+        // 域名判成直连，纠正永远不生效——而这正是需要纠正的场景
+        // （被墙站点解析到国内 IP 时，geoip-cn 会「正确地」命中）。
+        ...learnedRules,
+        // 局域网与本机地址始终直连。
+        //
+        // 放在自动纠正之后：用户如果显式把某个内网域名指向代理（例如为了
+        // 排查问题），应当尊重他的选择；但默认情况下内网地址绝不进隧道。
+        <String, Object?>{
+          'ip_is_private': true,
+          'outbound': 'direct',
         },
         if (splitMode == SplitMode.smart)
           <String, Object?>{
