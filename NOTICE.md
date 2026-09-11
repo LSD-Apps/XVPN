@@ -3,6 +3,35 @@
 本项目的分发物包含第三方软件。它们各自的许可以下逐一列出。**本节不是法律意见**，
 如果你要再分发，请自行核对上游的最新许可条款。
 
+## 零、本项目的授权声明
+
+```
+XVPN — Copyright (C) 2026 LSD-Apps
+
+This program is free software: you can redistribute it and/or modify it under
+the terms of the GNU General Public License as published by the Free Software
+Foundation, either version 3 of the License, or (at your option) any later
+version.
+
+This program is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+PARTICULAR PURPOSE.  See the GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License along with
+this program.  If not, see <https://www.gnu.org/licenses/>.
+
+SPDX-License-Identifier: GPL-3.0-or-later
+```
+
+**为什么这段声明放在这里而不是 `LICENSE` 文件里**：GitHub 的许可证识别要求
+`LICENSE` 保持 GPL 正文的**原样**——只要在里面插入任何自定义段落，
+识别结果就会退化成「Other」，仓库页面上就不再显示 GPL 标识。
+因此版权与授权声明放在本文件，`LICENSE` 保持纯净。
+
+**为什么是 `or-later` 而不是 `only`**：内置内核 sing-box 的许可证就是
+GPL-3.0-or-later，本项目与它组合作品，采用同一版本范围最清晰，
+下游也不会因为「到底能不能用 GPL-4」产生歧义。
+
 ## 一、sing-box（内核）
 
 - 上游：<https://github.com/SagerNet/sing-box>
