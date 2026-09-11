@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:desktop_drop/desktop_drop.dart';
 import 'package:flutter/material.dart';
 
@@ -465,28 +467,46 @@ class ConnectScreen extends StatelessWidget {
   ///
   /// 它回答的是「连上了但打不开网站」时最容易搞错的那个问题：
   /// 到底是本地网络的事，还是节点的事。两者表现一样，处置方式相反。
+  ///
+  /// 结论是**一次采样**的结果：自检每 10 分钟自动重跑一次，但用户遇到
+  /// 「刚才还好好的」时不该干等下一个周期，因此行尾给了重测入口。
   Widget _selfCheckRow() {
     final report = state.selfCheckReport;
     if (report == null) {
       return CheckRow(
         title: '正在自检两条路径…',
         detail: '分别验证国内直连与隧道出口是否可用',
+        action: TapAction(
+          label: '重测',
+          onTap: () => unawaited(state.runSelfCheck()),
+        ),
       );
     }
     return CheckRow(
       title: report.hasFailures ? report.conclusion : '自检通过 · ${report.conclusion}',
       detail: report.advice,
       warn: report.hasFailures,
+      action: TapAction(
+        label: '重测',
+        onTap: () => unawaited(state.runSelfCheck()),
+      ),
     );
   }
 
   /// DNS 健康状况。
+  ///
+  /// 与自检同理：这是一次采样的结论（每 45 秒自动重测），也给一个手动重测入口。
   Widget _dnsRow() {
     final report = state.dnsReport;
+    final retry = TapAction(
+      label: '重测',
+      onTap: () => unawaited(state.refreshDns()),
+    );
     if (report == null || report.isEmpty) {
-      return const CheckRow(
+      return CheckRow(
         title: '正在探测 DNS…',
         detail: '国内解析器与隧道解析器分别计时，并交叉校验解析结果',
+        action: retry,
       );
     }
     final abnormal = report.resolvers.any((ResolverHealth h) => h.consecutiveFailures > 0);
@@ -495,6 +515,7 @@ class ConnectScreen extends StatelessWidget {
       detail: '${report.summary} · ${report.verdict.advice}',
       warn: abnormal || report.verdict == DnsVerdict.suspectPoisoning,
       mono: true,
+      action: retry,
     );
   }
 

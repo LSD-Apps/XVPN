@@ -751,22 +751,58 @@ void main() {
     await _stopCore(tester, state);
   });
 
-  testWidgets('设置页不再提供无法兑现的 TUN 选项，并说明原因', (WidgetTester tester) async {
+  testWidgets('桌面设置页只讲系统代理，不提供无法兑现的 TUN 选项', (WidgetTester tester) async {
     // 桌面端只有系统代理一条可用路径（TUN 需要 wintun 驱动与管理员权限，
     // 当前版本未内置）。此前界面上并排摆着「TUN 虚拟网卡」选项，选了却不生效，
     // 属于安静的假承诺。这个用例锁住「不再提供该选项、且说明原因」。
-    final state = AppState();
-    addTearDown(state.dispose);
-    await _pumpShell(tester, state, size: const Size(1400, 1100));
+    //
+    // 必须显式指定平台：测试进程跑在桌面上时 defaultTargetPlatform 可能是
+    // android，那样拿到的是移动端的文案，断言会莫名其妙地失败。
+    debugDefaultTargetPlatformOverride = TargetPlatform.windows;
+    try {
+      final state = AppState();
+      addTearDown(state.dispose);
+      await _pumpShell(tester, state, size: const Size(1400, 1100));
 
-    await tester.tap(find.text('设置'));
-    await tester.pumpAndSettle();
+      await tester.tap(find.text('设置'));
+      await tester.pumpAndSettle();
 
-    expect(find.text('流量接管方式'), findsOneWidget);
-    expect(find.text('TUN 虚拟网卡'), findsNothing, reason: '不能提供无法兑现的选项');
-    expect(find.textContaining('暂不支持 TUN'), findsOneWidget, reason: '要说明为什么没有');
+      expect(find.text('流量接管方式'), findsOneWidget);
+      expect(find.text('系统代理'), findsOneWidget);
+      expect(find.text('TUN 虚拟网卡'), findsNothing, reason: '不能提供无法兑现的选项');
+      expect(find.textContaining('暂不支持 TUN'), findsOneWidget, reason: '要说明为什么没有');
+    } finally {
+      debugDefaultTargetPlatformOverride = null;
+    }
+  });
 
-    await _stopCore(tester, state);
+  testWidgets('移动端设置页同样有「流量接管方式」，内容按平台给出', (WidgetTester tester) async {
+    // 这一块此前**只有桌面端有**，移动端整张卡片缺失——同一份设置在两端
+    // 信息结构不一致。现在两端都有这张卡，只是内容按平台不同。
+    debugDefaultTargetPlatformOverride = TargetPlatform.android;
+    try {
+      final state = AppState();
+      addTearDown(state.dispose);
+      await _pumpShell(tester, state, size: const Size(390, 900));
+
+      await tester.tap(find.text('设置'));
+      await tester.pumpAndSettle();
+
+      final scrollable = find.byType(Scrollable).first;
+      var guard = 0;
+      while (find.text('流量接管方式').evaluate().isEmpty && guard < 30) {
+        await tester.drag(scrollable, const Offset(0, -200));
+        await tester.pumpAndSettle();
+        guard++;
+      }
+
+      expect(find.text('流量接管方式'), findsOneWidget);
+      expect(find.text('TUN 虚拟网卡'), findsOneWidget, reason: '安卓走 VpnService 的 TUN');
+      expect(find.text('系统代理'), findsNothing, reason: '安卓没有系统代理这条路');
+      expect(find.textContaining('VpnService'), findsWidgets, reason: '要说明为什么只能是 TUN');
+    } finally {
+      debugDefaultTargetPlatformOverride = null;
+    }
   });
 }
 

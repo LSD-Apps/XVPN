@@ -718,6 +718,7 @@ class CheckRow extends StatelessWidget {
     required this.detail,
     this.mono = false,
     this.warn = false,
+    this.action,
   });
 
   final String title;
@@ -732,6 +733,12 @@ class CheckRow extends StatelessWidget {
   /// 界面上仍然是一片绿色——用户看到的全是「✓」，自然以为没问题。
   /// 检查行的颜色必须反映它自己报告的结论。
   final bool warn;
+
+  /// 行尾的操作入口。
+  ///
+  /// 有些检查是**采样**出来的结论（DNS 健康、启动自检），结论会随时间变化。
+  /// 只展示不给重测入口，用户遇到「刚才还好好的」就只能干等下一个采样周期。
+  final Widget? action;
 
   @override
   Widget build(BuildContext context) {
@@ -770,6 +777,11 @@ class CheckRow extends StatelessWidget {
             ],
           ),
         ),
+        if (action != null) ...<Widget>[
+          const SizedBox(width: 8),
+          // 与标题对齐而不是与整块居中对齐：说明可能换行，居中会让它浮在两行之间。
+          Padding(padding: const EdgeInsets.only(top: 1), child: action!),
+        ],
       ],
     );
   }

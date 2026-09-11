@@ -1,0 +1,330 @@
+import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:xvpn/app_state.dart';
+import 'package:xvpn/core/dns_monitor.dart';
+import 'package:xvpn/core/singbox_runner.dart';
+import 'package:xvpn/core/startup_self_check.dart';
+import 'package:xvpn/core/vpn_core.dart';
+import 'package:xvpn/models.dart';
+import 'package:xvpn/screens/shell.dart';
+import 'package:xvpn/theme.dart';
+import 'package:xvpn/theme_controller.dart';
+import 'package:xvpn/widgets/auto_route_card.dart';
+
+/// PC 与移动端的一致性。
+///
+/// 这个产品两端共用同一份状态层与大部分组件，但布局是分开写的（桌面侧栏 +
+/// 独立页 / 移动底部标签 + 并入设置页）。分叉是必要的，问题在于**分叉很容易
+/// 悄悄变成功能缺失**——此前的实际例子：
+///
+///   * 分段选择器的标签两端叫法不同（桌面「走代理」/ 移动「代理」）；
+///   * 「流量接管方式」整张卡片只有桌面端有；
+///   * DNS 探测与启动自检结论两端都能看，但**都没有**重测入口
+///     （`AppState.refreshDns` / `runSelfCheck` 写了却没有任何界面调用）；
+///   * 移动端一度完全没有删除配置的入口。
+///
+/// 这个文件的作用就是把「两端该有的东西」显式写成断言，让下一次分叉在测试里
+/// 暴露出来，而不是等用户发现。原则是：**能力可以因平台而异，但呈现结构必须
+/// 一致**——该讲清楚的信息两端都要讲，该有的操作两端都要有。
+void main() {
+  const conf = '''
+[Interface]
+PrivateKey = aGVsbG8gd29ybGQgdGhpcyBpcyBhIGtleSB2YWx1ZQ==
+Address = 10.7.0.2/32
+MTU = 1420
+
+[Peer]
+PublicKey = cHVibGljIGtleSB2YWx1ZSBnb2VzIGhlcmUgcGFkZGVk
+Endpoint = 203.0.113.42:51820
+AllowedIPs = 0.0.0.0/0
+PersistentKeepalive = 25
+''';
+
+  /// 造一个带真实内核的状态：自动纠正表与 DNS/自检入口都需要它。
+  AppState stateWithRealCore() => AppState(
+        coreFactory: (VpnCoreListener l) => SingBoxRunner(l, probesEnabled: false),
+      );
+
+  /// 渲染并回到指定平台。
+  ///
+  /// 平台用 `debugDefaultTargetPlatformOverride` 指定，**必须在测试体内复位**
+  /// （由 [resetPlatform] 完成）：flutter_test 在测试体结束、tearDown 之前就会
+  /// 校验 foundation 的调试变量有没有被改动过，放进 tearDown 会得到
+  /// 「The value of a foundation debug variable was changed by the test」，
+  /// 而且这条错误会把真正的断言结果盖掉。
+  Future<void> pumpOn(
+    WidgetTester tester,
+    AppState state,
+    TargetPlatform platform, {
+    required Size size,
+  }) async {
+    debugDefaultTargetPlatformOverride = platform;
+    tester.view.physicalSize = size;
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildXvTheme(XvPalette.dark),
+        home: XvShell(state: state, theme: ThemeController()),
+      ),
+    );
+    await tester.pumpAndSettle();
+  }
+
+  /// 复位平台覆盖。每个用例结束前必须调用。
+  void resetPlatform() => debugDefaultTargetPlatformOverride = null;
+
+  /// 切到某个页面/标签，并把目标文案滚进视口（如果它在视口外）。
+  ///
+  /// 两端导航不同（桌面点侧栏、移动点底部标签），因此按文案点即可。
+  ///
+  /// 注意**不能假定存在 Scrollable**：桌面设置页内容够高时就是一个不产生
+  /// Scrollable 的普通布局（SingleChildScrollView 在内容不超出时不会建
+  /// Scrollable），此时 `find.byType(Scrollable).first` 会直接抛
+  /// 「Bad state: No element」。因此这里先看目标在不在，在就直接返回；
+  /// 只有确实需要滚动时才去找可滚动节点，找不到就当作「已经在视口里」。
+  Future<void> openAndReveal(
+    WidgetTester tester,
+    String tab,
+    String target,
+  ) async {
+    await tester.tap(find.text(tab).first);
+    await tester.pumpAndSettle();
+
+    if (find.text(target).evaluate().isNotEmpty) return;
+
+    // 页面级滚动容器（移动端设置页）或卡片内滚动区域，取第一个能用的。
+    final scrollable = find.byType(Scrollable);
+    if (scrollable.evaluate().isEmpty) return;
+
+    var guard = 0;
+    while (find.text(target).evaluate().isEmpty && guard < 30) {
+      await tester.drag(scrollable.first, const Offset(0, -200));
+      await tester.pumpAndSettle();
+      guard++;
+    }
+  }
+
+  Future<void> stop(WidgetTester tester, AppState state) async {
+    await tester.pumpWidget(const SizedBox.shrink());
+    state.dispose();
+  }
+
+  group('两端都有的能力', () {
+    testWidgets('两端设置页都含 外观 / 启动 / 流量接管方式 / 分流 四块', (WidgetTester tester) async {
+      // 「配置」块在桌面端是独立页面、在移动端并入设置页，因此不在这条断言里，
+      // 由下面的「配置入口」用例按各自的位置分别检查。
+      for (final target in <String>['外观', '启动', '流量接管方式', '分流']) {
+        final desktop = stateWithRealCore();
+        await pumpOn(tester, desktop, TargetPlatform.windows, size: const Size(1400, 1200));
+        await openAndReveal(tester, '设置', target);
+        expect(find.text(target), findsWidgets, reason: '桌面设置页应包含「$target」');
+        await stop(tester, desktop);
+
+        final mobile = stateWithRealCore();
+        await pumpOn(tester, mobile, TargetPlatform.android, size: const Size(390, 900));
+        await openAndReveal(tester, '设置', target);
+        expect(
+          find.text(target),
+          findsWidgets,
+          reason: '移动设置页应包含「$target」——两端信息结构必须一致',
+        );
+        await stop(tester, mobile);
+        resetPlatform();
+      }
+    });
+
+    testWidgets('配置模块：桌面是独立页、移动并入设置页，但内容同源', (WidgetTester tester) async {
+      // 位置不同是设计决定（移动端标签栏只有三项），但两块内容必须都在：
+      // 配置列表与两条导入路径。
+      const fileTitle = '选择配置文件';
+      const pasteTitle = '粘贴配置文本';
+
+      final desktop = stateWithRealCore();
+      await pumpOn(tester, desktop, TargetPlatform.windows, size: const Size(1400, 1200));
+      await openAndReveal(tester, '配置文件', fileTitle);
+      expect(find.text(fileTitle), findsOneWidget);
+      expect(find.text(pasteTitle), findsOneWidget);
+      await stop(tester, desktop);
+
+      final mobile = stateWithRealCore();
+      await pumpOn(tester, mobile, TargetPlatform.android, size: const Size(390, 900));
+      await openAndReveal(tester, '设置', fileTitle);
+      expect(find.text(fileTitle), findsOneWidget, reason: '移动端也要能选文件导入');
+      expect(find.text(pasteTitle), findsOneWidget, reason: '移动端也要能粘贴导入');
+      await stop(tester, mobile);
+      resetPlatform();
+    });
+
+    testWidgets('流量接管方式：两端都有这张卡，内容按平台给', (WidgetTester tester) async {
+      // 能力不同（桌面系统代理 / 安卓 TUN），但「用什么接管、有什么限制」
+      // 这件事两端都要讲清楚。
+      final desktop = stateWithRealCore();
+      await pumpOn(tester, desktop, TargetPlatform.windows, size: const Size(1400, 1200));
+      await openAndReveal(tester, '设置', '流量接管方式');
+      expect(find.text('系统代理'), findsOneWidget);
+      expect(find.text('TUN 虚拟网卡'), findsNothing, reason: '桌面不提供无法兑现的选项');
+      await stop(tester, desktop);
+
+      final mobile = stateWithRealCore();
+      await pumpOn(tester, mobile, TargetPlatform.android, size: const Size(390, 900));
+      await openAndReveal(tester, '设置', '流量接管方式');
+      expect(find.text('TUN 虚拟网卡'), findsOneWidget);
+      expect(find.text('系统代理'), findsNothing);
+      await stop(tester, mobile);
+      resetPlatform();
+    });
+
+    testWidgets('分流记录页：筛选叫法两端一致', (WidgetTester tester) async {
+      // 曾经移动端写「代理」、桌面写「走代理」，同一个筛选器两种叫法。
+      for (final platform in <TargetPlatform>[TargetPlatform.windows, TargetPlatform.android]) {
+        final state = AppState();
+        await pumpOn(
+          tester,
+          state,
+          platform,
+          size: platform == TargetPlatform.windows
+              ? const Size(1400, 900)
+              : const Size(390, 900),
+        );
+        await tester.tap(find.text(platform == TargetPlatform.windows ? '分流记录' : '分流').first);
+        await tester.pumpAndSettle();
+
+        for (final label in <String>['全部', '走代理', '直连']) {
+          expect(
+            find.text(label),
+            findsWidgets,
+            reason: '$platform 的分流筛选应有「$label」，两端叫法必须一致',
+          );
+        }
+        await stop(tester, state);
+        resetPlatform();
+      }
+    });
+  });
+
+  group('两端都有的操作', () {
+    testWidgets('DNS 与自检结论两端都能手动重测', (WidgetTester tester) async {
+      // 这是本轮补上的缺口：结论两端都能看，但重测入口此前**两端都没有**——
+      // AppState.refreshDns / runSelfCheck 写了却没有任何界面调用它们。
+      for (final platform in <TargetPlatform>[TargetPlatform.windows, TargetPlatform.android]) {
+        final state = stateWithRealCore();
+        await pumpOn(
+          tester,
+          state,
+          platform,
+          size: platform == TargetPlatform.windows
+              ? const Size(1400, 1400)
+              : const Size(390, 900),
+        );
+        // 必须先有配置：连接页在没有配置时走的是「导入引导」空状态，
+        // 检测区块根本不会渲染。
+        state.importConf(text: conf, fileName: 'wg.conf');
+        await tester.pump();
+        await tester.pump(const Duration(seconds: 1));
+        await tester.pump(const Duration(seconds: 1));
+
+        // 连接后才显示检测区块。
+        state.onStatusChanged(VpnStatus.connected);
+        state.onDnsReport(_sampleDnsReport());
+        state.onSelfCheck(_sampleSelfCheck());
+        await tester.pumpAndSettle();
+
+        expect(
+          find.text('重测'),
+          findsWidgets,
+          reason: '$platform 应能手动重测 DNS 与自检',
+        );
+        await stop(tester, state);
+        resetPlatform();
+      }
+    });
+
+    testWidgets('移动端也能删除配置', (WidgetTester tester) async {
+      // 曾经移动端只能增不能删。
+      final state = AppState();
+      await pumpOn(tester, state, TargetPlatform.android, size: const Size(390, 900));
+      state.importConf(text: conf, fileName: 'wg.conf');
+      await tester.pump();
+      await tester.pump(const Duration(seconds: 1));
+      await tester.pump(const Duration(seconds: 1));
+
+      await openAndReveal(tester, '设置', '删除');
+      expect(find.text('删除'), findsOneWidget, reason: '移动端必须有删除入口');
+      await stop(tester, state);
+      resetPlatform();
+    });
+
+    testWidgets('两端都能手工指定域名走向', (WidgetTester tester) async {
+      for (final platform in <TargetPlatform>[TargetPlatform.windows, TargetPlatform.android]) {
+        final state = stateWithRealCore();
+        await pumpOn(
+          tester,
+          state,
+          platform,
+          size: platform == TargetPlatform.windows
+              ? const Size(1400, 1400)
+              : const Size(390, 900),
+        );
+        await openAndReveal(tester, '设置', '手工指定');
+        expect(
+          find.text('手工指定'),
+          findsOneWidget,
+          reason: '$platform 应有手工指定入口',
+        );
+        expect(find.byType(AutoRouteCard), findsOneWidget);
+        await stop(tester, state);
+        resetPlatform();
+      }
+    });
+  });
+
+  group('两端都不该出现的东西', () {
+    testWidgets('两端都不出现内核术语', (WidgetTester tester) async {
+      // 内核的 rule 字段是「条件 => 动作」的描述文本，任何一端把它原样显示
+      // 都是把内部实现泄漏给了用户。
+      for (final platform in <TargetPlatform>[TargetPlatform.windows, TargetPlatform.android]) {
+        final state = AppState();
+        await pumpOn(
+          tester,
+          state,
+          platform,
+          size: platform == TargetPlatform.windows
+              ? const Size(1400, 900)
+              : const Size(390, 900),
+        );
+        state.onSplitRecord(SplitRecord(
+          time: DateTime(2026, 2, 14),
+          target: 'www.baidu.com',
+          kind: RouteKind.direct,
+          rule: 'geosite-cn + geoip-cn',
+          outbound: 'direct',
+        ));
+        await tester.pump();
+        expect(
+          find.textContaining('rule_set='),
+          findsNothing,
+          reason: '$platform 不应出现内核术语',
+        );
+        await stop(tester, state);
+        resetPlatform();
+      }
+    });
+  });
+}
+
+DnsReport _sampleDnsReport() => DnsReport(
+      checkedAt: DateTime(2026, 2, 14),
+      resolvers: const <ResolverHealth>[],
+      direct: LatencyWindow(capacity: 4)..add(12),
+      tunnel: LatencyWindow(capacity: 4)..add(96),
+      verdict: DnsVerdict.consistent,
+    );
+
+StartupSelfCheckReport _sampleSelfCheck() => StartupSelfCheckReport(
+      checkedAt: DateTime(2026, 2, 14),
+      probes: const <ProbeResult>[],
+      conclusion: '两条路径都正常',
+      advice: '可以正常使用',
+    );

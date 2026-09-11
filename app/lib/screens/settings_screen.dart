@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../app_state.dart';
@@ -59,7 +60,7 @@ class SettingsScreen extends StatelessWidget {
           const SizedBox(height: 13),
           _buildStartupCard(),
           const SizedBox(height: 13),
-          _buildTakeoverCard(),
+          _buildTakeoverCard(compact: false),
           const SizedBox(height: 13),
           _buildSplitCard(compact: false),
           const SizedBox(height: 13),
@@ -160,31 +161,46 @@ class SettingsScreen extends StatelessWidget {
 
   /// 流量接管方式。
   ///
-  /// 桌面端目前只有「系统代理」这一条可用路径，因此这里**不再提供 TUN 选项**。
-  /// 原先两个选项并排摆着，选了 TUN 也不会生效：sing-box 的 tun 入站需要
-  /// wintun 驱动与管理员权限，而两者都不具备，最终仍然只建 mixed 入站。
-  /// 那是一个安静的假承诺——用户选了「接管全部程序」，实际只有认系统代理的
-  /// 程序走隧道，界面上却看不出来。
+  /// 这一块此前**只有桌面端有**，移动端整张卡片缺失。两端接管方式本来就不同
+  /// （桌面走系统代理、安卓走 VpnService 的 TUN），但「用什么接管、有什么限制」
+  /// 这件事两边都该讲清楚，否则同一份设置在两端的信息结构就不一致了。
   ///
-  /// 安卓端不显示这张卡片：VpnService 的 TUN 是唯一方式，没有可选之处。
-  Widget _buildTakeoverCard() {
+  /// 桌面端刻意**不提供 TUN 选项**：sing-box 的 tun 入站需要 wintun 驱动与
+  /// 管理员权限，两者都不具备，选了也不会生效——那是一个安静的假承诺，
+  /// 界面上写着「接管全部程序」，实际只有认系统代理的程序走隧道。
+  ///
+  /// [compact] 为 true 时按移动端卡片规范渲染（panel2 / 12 圆角 / 更紧的内边距），
+  /// 与其它卡片保持一致。
+  Widget _buildTakeoverCard({required bool compact}) {
+    final isAndroid = defaultTargetPlatform == TargetPlatform.android;
+
     return XvCard(
+      color: compact ? XV.panel2 : XV.panel,
+      radius: compact ? 12 : XV.rCard,
+      padding: compact
+          ? const EdgeInsets.fromLTRB(14, 13, 14, 13)
+          : const EdgeInsets.all(16),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: <Widget>[
           const XvCardTitle('流量接管方式'),
           SettingRow(
-            title: '系统代理',
-            description: '免管理员权限，浏览器与绝大多数软件立即生效；断开时自动还原系统设置。',
+            title: isAndroid ? 'TUN 虚拟网卡' : '系统代理',
+            description: isAndroid
+                ? '由 VpnService 提供，接管全部程序（含游戏与命令行工具）。'
+                : '免管理员权限，浏览器与绝大多数软件立即生效；断开时自动还原系统设置。',
             isLast: true,
             control: RouteTag.green('已启用'),
           ),
           Padding(
             padding: const EdgeInsets.only(top: 10),
             child: Text(
-              '暂不支持 TUN 虚拟网卡：它需要 wintun 驱动与管理员权限，'
-              '当前版本未内置。需要接管游戏、命令行工具等不认系统代理的程序时，'
-              '请等待后续版本。',
+              isAndroid
+                  ? '安卓只能走 TUN：VpnService 的文件描述符必须在应用进程内创建，'
+                      '系统代理那条路在这里不成立。因此没有可选项，接入即接管全部程序。'
+                  : '暂不支持 TUN 虚拟网卡：它需要 wintun 驱动与管理员权限，'
+                      '当前版本未内置。需要接管游戏、命令行工具等不认系统代理的程序时，'
+                      '请等待后续版本。',
               style: XvText.caption,
             ),
           ),
@@ -309,6 +325,10 @@ class SettingsScreen extends StatelessWidget {
                     ],
                   ),
                 ),
+                const SizedBox(height: 12),
+                // 与桌面端保持一致的信息结构：接管方式两端都讲清楚，
+                // 只是内容按平台不同（桌面系统代理 / 安卓 TUN）。
+                _buildTakeoverCard(compact: true),
                 const SizedBox(height: 12),
                 _buildSplitCard(compact: true),
                 const SizedBox(height: 12),
