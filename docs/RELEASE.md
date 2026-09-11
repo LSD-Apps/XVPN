@@ -204,25 +204,34 @@ Apple 对 VPN 应用依 Guideline 5.4 审核，需要 `NEVPNManager` 与相应 e
 - [x] 测试全绿（`flutter analyze` 无问题、`flutter test` 全通过）
 - [x] 协议行为经真实内核 `sing-box check` 验证，不是推测
 - [x] 两端一致性有测试守住（`test/platform_parity_test.dart`）
+- [x] **隐私政策**：[`../PRIVACY.md`](../PRIVACY.md)，含逐项数据清单——
+      包括「应用会主动联网的目标与内容」这一节（回环 Clash API、固定的延迟
+      探测地址、国内公共 DNS 的健康探测、仅在点击时访问的规则库 CDN）
+- [x] **VpnService 用途声明**：见 [`STORE_LISTING.md`](STORE_LISTING.md)
+      第二节（声明表单用）+ 第一节（商店说明用，政策强制要求写在说明里）
+- [x] **Data safety / 权限声明 / 内容分级的答案**：见 `STORE_LISTING.md`
+- [x] **贡献指南**：[`CONTRIBUTING.md`](../CONTRIBUTING.md)
+- [x] **英文 README**：[`README.en.md`](../README.en.md)（与中文版互为语言切换）
 
 ### 发布前需补齐
 
-- [ ] **Google Play 的 `VpnService` 用途声明**（政策强制，需在商店列表写明）
-- [ ] **权限声明表**（`goo.gle/play-permission-decl-form`）
-- [ ] **隐私政策页**：需说明「配置只存本机、不上传任何流量数据」——
-      这其实是本项目的优势，应主动写清楚
-- [ ] **`Data safety` 表单**（Google Play）与 **App Privacy**（App Store）
-- [ ] **英文 README**（面向海外用户与贡献者）
-- [ ] **`CONTRIBUTING.md`**：协议适配器的接入三步已经很清晰，可直接整理成贡献指南
+- [ ] **把 `PRIVACY.md` 发布到公开 URL** 并填入 Play Console。
+      三种做法见 `STORE_LISTING.md` 第七节；提交前务必在浏览器里打开确认可访问
+- [ ] 在 Play Console 填写 VpnService 声明表单（文案已备好）
+- [ ] 在 Play Console 填写 Data safety 与权限声明（答案已备好）
+- [ ] **截图与图标**：注意截图**不要**出现「翻墙」类表述或具体境外站点
+- [ ] **`CONTRIBUTING.md` 与英文 README 目前是中文/英文各一份**；
+      若面向海外贡献者，建议后续把 `CONTRIBUTING.md` 也补一份英文版
 - [ ] **iOS 工程**（若要做 iOS）
-- [ ] **发布渠道**：公开仓库 + GitHub Releases（含各平台构建产物与校验和）
-- [ ] **发布脚本**：构建时必须同时带上 `--dart-define=XVPN_VERSION=<pubspec 的 version>`，
+- [ ] **发布渠道**：公开仓库 + Releases（含各平台构建产物与校验和）
+- [ ] **发布脚本**：构建时必须同时带上
+      `--dart-define=XVPN_VERSION=<pubspec 的 version>`，
       否则界面显示的是回落值（当前两者相同，因此暂未暴露差异）
 
 ### 建议的发布顺序
 
-1. 补齐上表中的**商店合规材料**（声明、隐私政策、Data safety）；
-2. 先做 **Windows + Android 的 GitHub Releases**（不依赖商店审核，风险最低）；
+1. 发布 `PRIVACY.md` 到公开 URL，并在 Play Console 补齐四项表单（文案已备好）；
+2. 先做 **Windows + Android 的 Releases**（不依赖商店审核，风险最低）；
 3. 再上 **Google Play**（Android 是主力场景，且政策路径明确）；
 4. iOS 视投入产出决定。
 

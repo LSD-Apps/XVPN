@@ -42,6 +42,11 @@ dev_dependencies:
   flutter_test:
     sdk: flutter
 
+  # 仅用于开发期工具 tool/build_privacy_html.dart：把 PRIVACY.md 渲染成
+  # 可托管的静态页面（Google Play 要求隐私政策有公开 URL）。
+  # 放在 dev_dependencies：它不进应用产物，也不增加运行时依赖。
+  markdown: ^7.3.0
+
   # The "flutter_lints" package below contains a set of recommended lints to
   # encourage good coding practices. The lint set provided by the package is
   # activated in the `analysis_options.yaml` file located at the root of your

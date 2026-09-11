@@ -14,6 +14,8 @@
 | 界面 | Flutter，两端共用一套状态层与调色板 |
 | 许可 | [GPL-3.0-or-later](LICENSE)（受内核许可约束，见下） |
 
+<sub>English: [README.en.md](README.en.md)</sub>
+
 ## 这是什么，以及不是什么
 
 **是**：一个配置解析与分流客户端。你把 WireGuard / OpenVPN 配置交给它，
@@ -228,11 +230,12 @@ app/lib/
   screens/       四个页面（连接 / 分流记录 / 配置文件 / 设置）+ 导入流程
   widgets/       公共组件与自绘标题栏、连接圆环、自动纠正管理卡片
   theme.dart     双主题调色板（暗色 / 亮色），界面只通过 XV.* 取色
+  version.dart   版本号唯一来源（构建期注入，与 pubspec 同步）
 app/tool/        开发工具：生成内核配置、校验配置、生成中国 IP 索引
 app/windows/     自绘无边框窗口、托盘、系统代理接管与还原
 app/android/     VpnService 实现、VpnService 与 libbox 的桥接
 design/          品牌资源与界面原型
-docs/            协议、规则、安卓接入、发布分析
+docs/            协议、规则、安卓接入、发布分析、上架材料
 scripts/         内核编译脚本、中国 IP 索引生成脚本
 testdata/        用于测试的样例配置
 ```
@@ -273,6 +276,11 @@ testdata/        用于测试的样例配置
 本项目是**客户端工具**，不提供任何节点或服务。请自行确保你使用的配置
 与服务符合你所在司法辖区的法律法规。相关分析（含国内外市场的可行性判断）
 见 [`docs/RELEASE.md`](docs/RELEASE.md)。
+
+- **隐私**：不收集任何数据。完整说明见 [`PRIVACY.md`](PRIVACY.md)。
+- **贡献**：见 [`CONTRIBUTING.md`](CONTRIBUTING.md)。
+- **上架材料**（Google Play 的 VpnService 声明、Data safety 答案等）：
+  见 [`docs/STORE_LISTING.md`](docs/STORE_LISTING.md)。
 
 ## 背景调研
 
