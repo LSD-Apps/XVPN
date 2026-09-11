@@ -1,15 +1,30 @@
 # XVPN
 
-**导入一个 `.conf` 就能用的分流 VPN 客户端。** 不需要选节点、不需要填规则、
-不需要理解什么是 geosite——把配置文件丢进来，剩下的交给程序。
+**导入一个 `.conf` 就能用的分流 VPN 客户端。**
 
-国内域名与 IP 自动直连，其余流量走隧道；DNS 走两套解析，国内用国内 DNS、
-国外走隧道解析，避免污染。
+不需要选节点、不需要填规则、不需要理解什么是 geosite——把配置文件丢进来，
+剩下的交给程序：国内域名与 IP 自动直连，其余流量走隧道；DNS 走两套解析，
+国内用国内 DNS、国外走隧道解析，避免污染。
 
-- 桌面端：Windows
-- 移动端：Android
-- 内核：[sing-box](https://github.com/SagerNet/sing-box) 1.14.0
-- 界面：Flutter，两端共用一套代码与一套调色板
+| | |
+| --- | --- |
+| 桌面端 | Windows |
+| 移动端 | Android |
+| 内核 | [sing-box](https://github.com/SagerNet/sing-box) 1.14.0 |
+| 界面 | Flutter，两端共用一套状态层与调色板 |
+| 许可 | [GPL-3.0-or-later](LICENSE)（受内核许可约束，见下） |
+
+## 这是什么，以及不是什么
+
+**是**：一个配置解析与分流客户端。你把 WireGuard / OpenVPN 配置交给它，
+它负责把配置翻译成内核能懂的形式、决定哪些流量直连哪些走隧道、并检查
+分流有没有判错。
+
+**不是**：一个 VPN 服务。本项目**不提供**任何节点、服务器、订阅或账号，
+也**不分发**加密实现本身——密码学由 sing-box 提供。
+
+因此你需要**自备配置**（自建服务器、公司内网、或你自己购买的合规服务）。
+这一点是刻意设计的，理由见 [`docs/RELEASE.md`](docs/RELEASE.md)。
 
 ## 它做了什么（以及为什么不需要配置）
 
@@ -17,19 +32,35 @@
 | --- | --- |
 | 挑选流量走哪条路 | 内置 `geosite-cn` + `geoip-cn` 规则集，域名与 IP 双保险 |
 | 配置 DNS 防污染 | 自动生成两套 DNS：国内直连解析、国外走隧道解析 |
-| 理解 WireGuard 参数 | 解析 `.conf` 并翻译成内核配置，字段全部自动映射 |
+| 理解 WireGuard / OpenVPN 参数 | 解析配置并翻译成内核配置，字段全部自动映射、非法值自动纠正 |
 | 每次换配置重设一遍 | 记忆多份配置，切换即重连 |
 
 规则集随包分发，首次连接时解包到应用私有目录，之后可以「检查更新」增量刷新。
 
 ## 支持的协议
 
-按内容自动识别，不靠扩展名。新增协议只需实现一个适配器，界面与内核层都不用改。
+按**内容**自动识别，不靠扩展名。新增协议只需实现一个适配器，
+界面与内核层都不用改。
 
 - WireGuard（`.conf`）
 - OpenVPN（`.ovpn`）
 
 详见 [`docs/PROTOCOLS.md`](docs/PROTOCOLS.md)。
+
+## 快速开始
+
+1. 启动程序。
+2. 把 `.conf` / `.ovpn` 拖进窗口（Windows），或在手机上用文件管理器
+   「打开方式」选择 XVPN，也可以点「选择配置文件」或粘贴配置文本。
+3. 首次连接时 Windows 会设置系统代理、Android 会请求 VPN 授权。
+
+Windows 端关闭主窗口会收进系统托盘，连接不中断；要真正退出走托盘右键菜单的
+「退出 XVPN」——退出时会还原系统代理并结束内核进程，不会留下断网的烂摊子。
+
+> **关于接管方式**：桌面端走系统代理（免管理员权限，浏览器与绝大多数软件
+> 立即生效）；安卓端走 VpnService 的 TUN（唯一可行方式）。桌面端的 TUN 需要
+> wintun 驱动与管理员权限，当前版本未内置，因此设置页**不提供**该选项——
+> 详见 [`docs/PROTOCOLS.md`](docs/PROTOCOLS.md) 的「暂不支持的方向」。
 
 ## 分流与检测
 
@@ -61,7 +92,7 @@
   撤销程序学到的强制代理规则 —— 反证比猜测可靠。
 - 用户手工指定的规则永远优先，且不会被程序改写。
 - 设置页的「自动纠正」卡片列出每条规则的**证据**（失败次数、原因、已走隧道
-  流量），并允许逐条撤销。
+  流量），并允许逐条撤销或手工指定。
 
 ### DNS 监测与交叉校验
 
@@ -97,6 +128,8 @@ sing-box 的 `/connections` 快照在服务端就把 DNS 流量过滤掉了
 | 直连通、隧道不通 | 节点/服务器有问题 | 改规则没有用 |
 | 两条都通、个别站点不通 | 规则库覆盖问题 | 交给自动纠正 |
 
+DNS 与自检结论都是**采样**结果，界面上都带「重测」入口，不必等下一个采样周期。
+
 ### 统计数据
 
 - 按出站分别统计已传输字节，回答「这些流量里有多少真的走了隧道」；
@@ -120,26 +153,23 @@ sing-box 的 `/connections` 快照在服务端就把 DNS 流量过滤掉了
 - 累计流量与连接列表分开处理：前者每秒更新，后者只在出现新连接时才构造对象。
   两千条连接里提取一条新连接是单遍、近乎无分配的。
 
-## 运行
+## 两端一致性
 
-### 直接用
+桌面与移动的布局是分开写的（桌面侧栏 + 独立页 / 移动底部标签 + 并入设置页），
+但**呈现结构必须一致**：该讲清楚的信息两端都讲，该有的操作两端都有。
 
-1. 启动程序。
-2. 把 `.conf` / `.ovpn` 拖进窗口（Windows），或在手机上用文件管理器「打开方式」
-   选择 XVPN。也可以点「选择配置文件」。
-3. 首次连接时 Windows 会设置系统代理、Android 会请求 VPN 授权。
+[`app/test/platform_parity_test.dart`](app/test/platform_parity_test.dart) 把这条
+原则写成了断言。此前靠它抓出过几处真实缺失：移动端没有删除配置的入口、
+「流量接管方式」整张卡只有桌面端有、DNS 与自检的「重测」入口两端都没有
+（`AppState.refreshDns` / `runSelfCheck` 写了却从未被界面调用）。
 
-Windows 端关闭主窗口会收进系统托盘，连接不中断；要真正退出走托盘右键菜单的
-「退出 XVPN」——退出时会还原系统代理并结束内核进程，不会留下断网的烂摊子。
+能力本身可以按平台不同——桌面是系统代理、安卓是 VpnService 的 TUN——但两端
+都会把「用什么接管、有什么限制」讲清楚。
 
-> **关于接管方式**：桌面端走系统代理（免管理员权限，浏览器与绝大多数软件
-> 立即生效）；安卓端走 VpnService 的 TUN（唯一可行方式）。桌面端的 TUN 需要
-> wintun 驱动与管理员权限，当前版本未内置，因此设置页**不提供**该选项——
-> 详见 [`docs/PROTOCOLS.md`](docs/PROTOCOLS.md) 的「暂不支持的方向」。
+## 从源码构建
 
-### 从源码构建
-
-需要 Flutter 3.44+、Visual Studio（Windows 端）、Android SDK + NDK（安卓端）。
+需要 Flutter 3.44+、Visual Studio（Windows 端，含「使用 C++ 的桌面开发」工作负载）、
+Android SDK + NDK（安卓端）。
 
 ```powershell
 # 桌面端
@@ -147,15 +177,15 @@ cd app
 flutter build windows
 
 # 安卓端：先编译内核库，再打包
-../scripts/build-libbox.ps1      # 产出 app/android/app/libs/libbox.aar
-flutter build apk
+pwsh scripts/build-libbox.ps1      # 产出 app/android/app/libs/libbox.aar
+cd app; flutter build apk
 ```
 
 `scripts/build-libbox.ps1` 会拉取 sing-box 源码并用 gomobile 编译出 `libbox.aar`；
 编译链路上的坑（Go 工具链版本、linkname 校验、脚本编码）记在
 [`docs/ANDROID.md`](docs/ANDROID.md)。
 
-### 测试
+## 测试
 
 ```powershell
 cd app
@@ -165,10 +195,11 @@ flutter test
 
 测试覆盖配置解析（WireGuard / OpenVPN）、参数规范化、内核配置生成、
 分流日志归因、Clash API 解析、DNS 报文编解码与交叉校验、自动纠正表、
-启动自检、以及两端界面行为。
+启动自检、两端一致性、以及界面行为。
 
-协议相关的内核行为不是靠猜的：`test/protocol_tuning_test.dart` 里每一条断言
-都对应一次真实的 `sing-box check` 结果。复核方式：
+**协议相关的内核行为不是靠猜的**：`test/protocol_tuning_test.dart` 里每一条
+断言都对应一次真实的 `sing-box check` 结果——例如「加密套件名必须是大写规范名，
+写小写会让内核直接 FATAL」。复核方式：
 
 ```powershell
 cd app
@@ -200,8 +231,8 @@ app/lib/
 app/tool/        开发工具：生成内核配置、校验配置、生成中国 IP 索引
 app/windows/     自绘无边框窗口、托盘、系统代理接管与还原
 app/android/     VpnService 实现、VpnService 与 libbox 的桥接
-design/          界面原型（HTML，设计基准）
-docs/            协议、规则、安卓接入说明
+design/          品牌资源与界面原型
+docs/            协议、规则、安卓接入、发布分析
 scripts/         内核编译脚本、中国 IP 索引生成脚本
 testdata/        用于测试的样例配置
 ```
@@ -214,10 +245,34 @@ testdata/        用于测试的样例配置
 - **两端同一份观测代码**：Windows 读子进程日志，Android 读 `libbox` 回调，
   但连接观测、速率统计、失败归因、DNS 监测、启动自检全部走 `CoreMonitor`
   这一份实现——此前是两端各写一份，已经出现过「一端修好、另一端还是旧行为」。
+- **控件高度有单一来源**：`XvControlMetrics.height`。此前「手工指定」那一行
+  的输入框、按钮、分段选择器分别是 41 / 32 / 36 三种高度——41 也不是谁定的，
+  而是 `TextField` 在当前字号下的自然高度，也就是根本没决定过。
 - **协议适配器只做翻译，规范化单独一层**：加密套件名、摘要名、MTU 这些参数
   写错会让内核**直接启动失败**，而错误信息完全面向开发者。因此
   `protocol_tuning.dart` 负责把参数归一化成内核认可的写法，认不出的直接剔除。
 - **主题可切换**：跟随系统 / 亮色 / 深色，标题栏按钮与设置页共用同一份状态。
+
+## 许可
+
+本项目采用 **GPL-3.0-or-later**。
+
+这不是偏好，而是被依赖关系决定的：本项目把 [sing-box](https://github.com/SagerNet/sing-box)
+（GPL-3.0-or-later）作为内核，安卓端更以原生库的形式**链接进同一个进程**，
+构成 GPL 意义上的组合作品。
+
+- 完整许可见 [`LICENSE`](LICENSE)；
+- 第三方组件、上游附加条款（sing-box 对名称使用有限制）、
+  规则库来源与出口管制提示见 [`NOTICE.md`](NOTICE.md)。
+
+再分发时请保留 `LICENSE` 与 `NOTICE.md`，提供 sing-box 对应版本的源码获取方式，
+并且**不要**使用 sing-box 的名称或暗示与上游有关联。
+
+## 使用须知
+
+本项目是**客户端工具**，不提供任何节点或服务。请自行确保你使用的配置
+与服务符合你所在司法辖区的法律法规。相关分析（含国内外市场的可行性判断）
+见 [`docs/RELEASE.md`](docs/RELEASE.md)。
 
 ## 背景调研
 
