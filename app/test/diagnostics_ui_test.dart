@@ -576,6 +576,124 @@ void main() {
     });
   });
 
+  group('配置模块的导入入口', () {
+    /// 两条导入路径的标题。它们必须**同时存在且规格一致**——
+    /// 原先它们散落在三处、权重也各不相同（一个大按钮 + 一行弱化文字链），
+    /// 因此这里既断言「都在」，也断言「排布关系」。
+    const fileTitle = '选择配置文件';
+    const pasteTitle = '粘贴配置文本';
+
+    testWidgets('桌面端：有配置时两条路径同在一张卡里，并排', (WidgetTester tester) async {
+      final state = AppState();
+      addTearDown(state.dispose);
+      await _pump(tester, state, size: const Size(1400, 900));
+      await _connect(tester, state);
+
+      await tester.tap(find.text('配置文件'));
+      await tester.pumpAndSettle();
+
+      expect(find.text(fileTitle), findsOneWidget);
+      expect(find.text(pasteTitle), findsOneWidget);
+      // 并排：两者的垂直中心基本一致。
+      final fileY = tester.getCenter(find.text(fileTitle)).dy;
+      final pasteY = tester.getCenter(find.text(pasteTitle)).dy;
+      expect(
+        (fileY - pasteY).abs(),
+        lessThan(4),
+        reason: '宽屏下两条路径应并排在一行，而不是上下割裂',
+      );
+      // 同规格：两个入口块高度一致。
+      expect(
+        tester.getSize(find.byType(ImportActionTile).first).height,
+        closeTo(tester.getSize(find.byType(ImportActionTile).last).height, 1),
+      );
+
+      await _stop(tester, state);
+    });
+
+    testWidgets('桌面端：没有配置时两条路径同样可达', (WidgetTester tester) async {
+      // 这是原来最割裂的一处：空状态只给「选择 .conf 文件」，粘贴要切到
+      // 别的入口或干脆找不到。现在两条路径都不随状态消失。
+      final state = AppState();
+      addTearDown(state.dispose);
+      await _pump(tester, state, size: const Size(1400, 900));
+
+      await tester.tap(find.text('配置文件'));
+      await tester.pumpAndSettle();
+
+      expect(find.text(fileTitle), findsOneWidget);
+      expect(find.text(pasteTitle), findsOneWidget);
+      expect(find.byType(ImportActionTile), findsNWidgets(2));
+
+      await _stop(tester, state);
+    });
+
+    testWidgets('移动端：两条路径竖排，且都在设置页的配置卡内', (WidgetTester tester) async {
+      final state = AppState();
+      addTearDown(state.dispose);
+      await _pump(tester, state, size: const Size(390, 900));
+
+      await tester.tap(find.text('设置'));
+      await tester.pumpAndSettle();
+
+      final scrollable = find.byType(Scrollable).first;
+      var guard = 0;
+      while (find.text(fileTitle).evaluate().isEmpty && guard < 30) {
+        await tester.drag(scrollable, const Offset(0, -200));
+        await tester.pumpAndSettle();
+        guard++;
+      }
+
+      expect(find.text(fileTitle), findsOneWidget);
+      expect(find.text(pasteTitle), findsOneWidget);
+      // 窄屏竖排：粘贴入口在选文件入口下方。
+      expect(
+        tester.getTopLeft(find.text(pasteTitle)).dy,
+        greaterThan(tester.getTopLeft(find.text(fileTitle)).dy),
+        reason: '窄屏下应竖排，避免说明被压成多行',
+      );
+      expect(tester.takeException(), isNull);
+
+      await _stop(tester, state);
+    });
+
+    testWidgets('粘贴入口确实打开粘贴对话框', (WidgetTester tester) async {
+      // 光有入口不够，要确认它接的是粘贴流程而不是被画成了装饰。
+      final state = AppState();
+      addTearDown(state.dispose);
+      await _pump(tester, state, size: const Size(1400, 900));
+
+      await tester.tap(find.text('配置文件'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text(pasteTitle));
+      await tester.pumpAndSettle();
+
+      expect(find.text('粘贴 WireGuard 配置'), findsOneWidget);
+
+      await tester.tap(find.widgetWithText(XvButton, '取消'));
+      await tester.pumpAndSettle();
+      await _stop(tester, state);
+    });
+
+    testWidgets('删除配置后导入入口仍然在，不会退回没有入口的空状态', (WidgetTester tester) async {
+      final state = AppState();
+      addTearDown(state.dispose);
+      await _pump(tester, state, size: const Size(1400, 900));
+      await _connect(tester, state);
+
+      await tester.tap(find.text('配置文件'));
+      await tester.pumpAndSettle();
+      state.removeProfile(state.profiles.first.id);
+      await tester.pumpAndSettle();
+
+      expect(find.text('还没有导入任何配置'), findsOneWidget);
+      expect(find.text(fileTitle), findsOneWidget, reason: '空状态下入口不应消失');
+      expect(find.text(pasteTitle), findsOneWidget);
+
+      await _stop(tester, state);
+    });
+  });
+
   group('观测引擎：一轮采样的真实上报', () {
     test('按出站拆分字节、统计活连接数、上报内核内存', () async {
       // 这是界面上所有统计数字的唯一来源，因此直接喂一份内核风格的响应，

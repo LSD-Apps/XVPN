@@ -1232,6 +1232,95 @@ class XvSearchField extends StatelessWidget {
   }
 }
 
+/// 导入动作入口。
+///
+/// 「配置」模块有两条导入路径（选文件、粘贴文本），它们此前散落在三处、
+/// 权重也各不相同：页面右上角一个按钮、空状态里一个按钮加一行弱化文字、
+/// 已有配置时又变成卡片底部两行不对齐的文字链。同一个「把配置弄进来」的
+/// 动作，位置和分量都在变，读起来就是「布局割裂」。
+///
+/// 这个组件把一条路径固定成一个**同规格的入口**：图标 + 主标题 + 说明，
+/// 整块可点，三种状态（空列表 / 已有列表 / 移动端）复用同一套观感，
+/// 因此路径之间的关系一眼可读，而不是靠猜哪一行能点。
+class ImportActionTile extends StatefulWidget {
+  const ImportActionTile({
+    super.key,
+    required this.icon,
+    required this.title,
+    required this.description,
+    required this.onTap,
+    this.primary = false,
+  });
+
+  final IconData icon;
+  final String title;
+  final String description;
+  final VoidCallback onTap;
+
+  /// 主路径用品牌绿描边强调（一行里只应有一个）。
+  final bool primary;
+
+  @override
+  State<ImportActionTile> createState() => _ImportActionTileState();
+}
+
+class _ImportActionTileState extends State<ImportActionTile> {
+  bool _hover = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final accent = widget.primary ? XV.green : XV.muted;
+    final border = widget.primary
+        ? XV.green.withValues(alpha: _hover ? 0.45 : 0.28)
+        : (_hover ? XV.line : XV.line2);
+
+    return MouseRegion(
+      cursor: SystemMouseCursors.click,
+      onEnter: (_) => setState(() => _hover = true),
+      onExit: (_) => setState(() => _hover = false),
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: widget.onTap,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 140),
+          padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 12),
+          decoration: BoxDecoration(
+            color: _hover
+                ? Color.alphaBlend(XV.hoverOverlay, XV.field)
+                : XV.field,
+            border: Border.all(color: border),
+            borderRadius: BorderRadius.circular(10),
+          ),
+          // 图标与文字顶部对齐：说明可能换行，居中会让图标「浮」在两行文字中间。
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              Icon(widget.icon, size: 17, color: accent),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: <Widget>[
+                    Text(
+                      widget.title,
+                      style: XvText.body.copyWith(
+                        fontSize: 12.5,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const SizedBox(height: 3),
+                    Text(widget.description, style: XvText.rowDesc),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 /// 设置行：原型中的 .set-row。
 /// 行间用 1px 分隔线，最后一行不画（对应 :last-child 的样式覆盖）。
 class SettingRow extends StatelessWidget {

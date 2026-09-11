@@ -19,6 +19,8 @@ class ProfilesScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (embedded) return _buildEmbedded(context);
+
+    final hasProfiles = state.profiles.isNotEmpty;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: <Widget>[
@@ -31,22 +33,24 @@ class ProfilesScreen extends StatelessWidget {
                 children: <Widget>[
                   Text('配置文件', style: XvText.screenTitle),
                   SizedBox(height: 4),
-                  Text('导入的 .conf 都保存在本机，随时可以切换', style: XvText.screenSubtitle),
+                  Text(
+                    hasProfiles
+                        ? '导入的配置都保存在本机，随时可以切换'
+                        : '导入一份配置就能开始使用，分流规则已经内置',
+                    style: XvText.screenSubtitle,
+                  ),
                 ],
               ),
-            ),
-            XvButton(
-              label: '导入配置',
-              kind: XvButtonKind.primary,
-              onPressed: () => pickAndImportConf(context, state),
             ),
           ],
         ),
         const SizedBox(height: 13),
+        // 导入入口固定成一张卡，位置与分量不随「有没有配置」变化。
+        _ImportCard(state: state, compact: false),
+        const SizedBox(height: 13),
         Expanded(
-          child: state.profiles.isEmpty
-              ? _buildEmpty(context)
-              : ListView.separated(
+          child: hasProfiles
+              ? ListView.separated(
                   padding: EdgeInsets.zero,
                   itemCount: state.profiles.length,
                   separatorBuilder: (_, _) => const SizedBox(height: 13),
@@ -56,40 +60,42 @@ class ProfilesScreen extends StatelessWidget {
                     onActivate: () => state.setActiveProfile(state.profiles[i].id),
                     onRemove: () => state.removeProfile(state.profiles[i].id),
                   ),
-                ),
+                )
+              : _buildEmpty(context),
         ),
       ],
     );
   }
 
+  /// 还没有任何配置时的提示。
+  ///
+  /// 导入入口本身已经在上方的 [_ImportCard] 里给了，这里不再重复放按钮——
+  /// 两处按钮指向同一个动作，只会让人犹豫该点哪一个。
   Widget _buildEmpty(BuildContext context) {
     return Center(
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: <Widget>[
+          Icon(Icons.folder_open_outlined, size: 26, color: XV.muted2),
+          const SizedBox(height: 12),
           Text('还没有导入任何配置', style: TextStyle(fontSize: 14, color: XV.muted)),
-          const SizedBox(height: 10),
-          Text(
-            '导入一个 .conf 就能开始使用，分流规则已经内置',
-            style: XvText.caption,
-          ),
-          const SizedBox(height: 20),
-          XvButton(
-            label: '选择 .conf 文件',
-            kind: XvButtonKind.primary,
-            onPressed: () => pickAndImportConf(context, state),
-          ),
+          const SizedBox(height: 6),
+          Text('用上面的任一方式导入即可', style: XvText.caption),
         ],
       ),
     );
   }
 
   /// 移动端：作为设置页里的一张卡，对应原型 M4 的「配置」区。
+  ///
+  /// 列表与导入入口合成一张卡：已有配置时先列列表再给入口，没有配置时
+  /// 只留入口。这样「配置」在设置页里始终是一个完整的区域，
+  /// 而不是列表与两行零散文字链拼起来的碎片。
   Widget _buildEmbedded(BuildContext context) {
     return XvCard(
       color: XV.panel2,
       radius: 12,
-      padding: const EdgeInsets.fromLTRB(14, 13, 14, 6),
+      padding: const EdgeInsets.fromLTRB(14, 13, 14, 13),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: <Widget>[
@@ -123,26 +129,8 @@ class ProfilesScreen extends StatelessWidget {
                 ],
               ),
             ),
-          InkWell(
-            onTap: () => pickAndImportConf(context, state),
-            child: Padding(
-              padding: EdgeInsets.symmetric(vertical: 12),
-              child: Row(
-                children: <Widget>[
-                  Expanded(
-                    child: Text('导入新配置…', style: TextStyle(fontSize: 12.5, color: XV.muted)),
-                  ),
-                  Text('＋', style: TextStyle(fontSize: 13, color: XV.muted2)),
-                ],
-              ),
-            ),
-          ),
-          // 粘贴导入原先只在「一个配置都没有」的空状态页里可达，导入第一个配置后就
-          // 再也找不到了。放在这里，两条导入路径随时都在。
-          TapAction(
-            label: '粘贴配置文本…',
-            onTap: () => startConfPasteDialog(context, state),
-          ),
+          if (state.profiles.isNotEmpty) const SizedBox(height: 10),
+          _ImportCard(state: state, compact: true),
         ],
       ),
     );
@@ -199,6 +187,96 @@ class ProfilesScreen extends StatelessWidget {
       ),
     );
     if (confirmed == true) state.removeProfile(profile.id);
+  }
+}
+
+/// 导入卡片：把「选文件」与「粘贴文本」两条路径固定放在一起。
+///
+/// 设计意图（针对原来「布局割裂」的问题）：
+///
+///   * **同一个位置、同一个分量**。两条路径从「页面右上角按钮 + 空状态按钮 +
+///     卡片底部两行文字链」收敛成一张卡里的两个同规格入口，位置不再随
+///     「有没有配置」变化，用户不用重新找。
+///   * **权重有主次但规格一致**。选文件是主路径（品牌绿描边），粘贴是备选
+///     （中性描边），二者结构相同：图标 + 标题 + 一句说明，整块可点。
+///     原来粘贴只是一行弱化文字，与那个大按钮的观感完全不在一个层次上。
+///   * **说明写在入口里**。每条路径各自讲清楚「什么时候该用它」，
+///     而不是在卡片底部堆一段通用提示。
+///
+/// 桌面端另有一行拖拽提示：那是最快的路径，但拖拽区在「还没有配置」时才展开，
+/// 因此这里用文字点到即止，不重复放一个大的落点。
+class _ImportCard extends StatelessWidget {
+  const _ImportCard({required this.state, required this.compact});
+
+  final AppState state;
+
+  /// 移动端排布：卡片已经是设置页里的一张卡，这里不再套一层卡片。
+  final bool compact;
+
+  @override
+  Widget build(BuildContext context) {
+    final content = LayoutBuilder(
+      builder: (BuildContext context, BoxConstraints constraints) {
+        final fileTile = ImportActionTile(
+          icon: Icons.folder_open_outlined,
+          title: '选择配置文件',
+          description: '从本机挑一个 .conf 或 .ovpn 文件',
+          primary: true,
+          onTap: () => pickAndImportConf(context, state),
+        );
+        final pasteTile = ImportActionTile(
+          icon: Icons.content_paste_outlined,
+          title: '粘贴配置文本',
+          description: '把配置文件的内容整段贴进来',
+          onTap: () => startConfPasteDialog(context, state),
+        );
+
+        // 窄屏并排会把「说明」压成两行以上，反而更乱，因此竖排。
+        // 阈值按两个入口各自的最小可用宽度估算。
+        const minTileWidth = 250;
+        if (constraints.hasBoundedWidth &&
+            constraints.maxWidth < minTileWidth * 2 + 10) {
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: <Widget>[
+              fileTile,
+              const SizedBox(height: 10),
+              pasteTile,
+            ],
+          );
+        }
+        // 横向并排时**不能**用 CrossAxisAlignment.stretch：卡片在移动端设置页里
+        // 处于可滚动容器中，纵向约束是无界的，stretch 会让子项去撑满这个无界高度
+        // 从而报布局错误（实测矮屏下直接崩出 21 个异常）。两个入口的内边距
+        // 完全一致，本来就等高，用 start 不影响观感。
+        return Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            Expanded(child: fileTile),
+            const SizedBox(width: 10),
+            Expanded(child: pasteTile),
+          ],
+        );
+      },
+    );
+
+    if (compact) return content;
+
+    return XvCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: <Widget>[
+          const XvCardTitle('导入配置'),
+          content,
+          const SizedBox(height: 10),
+          Text(
+            '也可以直接把配置文件拖进窗口。协议按内容自动识别，'
+            '分流规则与 DNS 策略都已经内置，无需再填任何参数。',
+            style: XvText.caption,
+          ),
+        ],
+      ),
+    );
   }
 }
 
