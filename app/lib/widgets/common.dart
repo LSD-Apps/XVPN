@@ -266,7 +266,29 @@ class XvSwitch extends StatelessWidget {
 }
 
 /// 分段控件：原型中的 .seg
-class XvSegmented extends StatelessWidget {
+/// 分段选择器（原型中的 .seg）。
+///
+/// ## 为什么用「滑块」而不是「两段各自变色」
+///
+/// 原实现给每个分段自己画背景，选中时把该段的背景淡入、另一段淡出。这在
+/// 两个分段相邻时会呈现出一个很难看的中间态：两个圆角矩形同时半透明地贴在
+/// 一起，视觉上「两个状态串在一起」，而且因为没有任何位移，切换过程读不出
+/// 「选中项从这边移到了那边」。
+///
+/// 更糟的是对比度：选中态用的 `panel3` 与轨道用的 `field` 色值极近——
+/// 亮色下是 #ECECF2 对 #F1F1F6，几乎看不出差别；暗色下 #1B2231 对 #0E131D
+/// 也只是勉强可辨。于是「选中」这件事本身就不明显，再叠加淡入淡出，
+/// 给人的感觉就是切换不顺畅、状态糊在一起。
+///
+/// 现在改成**单一滑块**：轨道底色不变，一块高对比的圆角滑块在分段之间平移，
+/// 文字颜色与字重同步过渡。一个指示器只有一个位置，「选中的是哪个」一眼可读，
+/// 位移本身也把「切换」这件事表达出来了。
+///
+/// 滑块用 [Alignment] 定位，因此 `expand` 与非 `expand` 两种情况共用同一套
+/// 几何：N 段时第 i 段的中心对应 `-1 + 2i/(N-1)`，而 [AnimatedAlign] 在两点
+/// 之间是线性插值，恰好等于「按等宽分段平移」的结果——即便各段文字宽度不等，
+/// 滑块也能停在视觉上合理的位置。
+class XvSegmented extends StatefulWidget {
   const XvSegmented({
     super.key,
     required this.labels,
@@ -280,49 +302,272 @@ class XvSegmented extends StatelessWidget {
   final ValueChanged<int>? onChanged;
   final bool expand;
 
+  /// 滑块平移时长。
+  ///
+  /// 140ms 配在「淡入淡出」上显得拖沓（视觉上像是在等它变完），
+  /// 而滑块这种有明确位移的动效需要稍长一点才看得清轨迹，
+  /// 因此取 180ms 配 easeOutCubic：起步快、收尾稳，读起来是「咔哒」一下。
+  static const Duration slideDuration = Duration(milliseconds: 180);
+
+  static const Curve slideCurve = Curves.easeOutCubic;
+
+  /// 轨道内边距。
+  static const double trackPadding = 3;
+
+  /// 滑块的调试与测试标识。
+  ///
+  /// 滑块是自绘的装饰盒，从组件树里很难稳定地认出它（按类型找会撞上别的
+  /// Container），因此挂一个具名 Key：测试据此断言它的位置与宽度。
+  static const Key thumbKey = Key('xv-segmented-thumb');
+
+  @override
+  State<XvSegmented> createState() => _XvSegmentedState();
+}
+
+class _XvSegmentedState extends State<XvSegmented> {
+  /// 是否已经完成过首帧。
+  ///
+  /// 首帧不做动画：组件刚从树上建出来时 [AnimatedAlign] 会从默认值滚到目标
+  /// 位置，那会表现为「页面一打开滑块自己滑过去」。只有用户点选引起的
+  /// 变化才该有位移。
+  bool _settled = false;
+
+  @override
+  void initState() {
+    super.initState();
+    // 首帧之后再打开动画开关。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) setState(() => _settled = true);
+    });
+  }
+
+  int get _count => widget.labels.length;
+
   @override
   Widget build(BuildContext context) {
-    final children = <Widget>[];
-    for (var i = 0; i < labels.length; i++) {
-      final selected = i == index;
-      final item = MouseRegion(
-        cursor: onChanged == null ? SystemMouseCursors.basic : SystemMouseCursors.click,
-        child: GestureDetector(
-          behavior: HitTestBehavior.opaque,
-          onTap: onChanged == null ? null : () => onChanged!(i),
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 140),
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-            decoration: BoxDecoration(
-              color: selected ? XV.panel3 : Colors.transparent,
-              borderRadius: BorderRadius.circular(7),
-            ),
-            child: Text(
-              labels[i],
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                fontSize: 12,
-                fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
-                color: selected ? XV.text : XV.muted,
-              ),
-            ),
-          ),
-        ),
-      );
-      children.add(expand ? Expanded(child: item) : item);
-    }
+    final count = _count;
+    if (count == 0) return const SizedBox.shrink();
+
+    // 索引越界时收敛到合法范围：调用方传入的 index 可能与 labels 不同步
+    // （例如列表变短了），越界不该让滑块跑到轨道外面去。
+    final safeIndex = widget.index.clamp(0, count - 1);
+    final enabled = widget.onChanged != null;
+
+    final row = Row(
+      mainAxisSize: widget.expand ? MainAxisSize.max : MainAxisSize.min,
+      children: <Widget>[
+        for (var i = 0; i < count; i++) _buildSegment(i, safeIndex, enabled),
+      ],
+    );
 
     return Container(
-      padding: const EdgeInsets.all(3),
+      padding: const EdgeInsets.all(XvSegmented.trackPadding),
       decoration: BoxDecoration(
         color: XV.field,
         border: Border.all(color: XV.line),
         borderRadius: BorderRadius.circular(XV.rCtl),
       ),
-      child: Row(
-        mainAxisSize: expand ? MainAxisSize.max : MainAxisSize.min,
-        children: children,
+      child: Stack(
+        children: <Widget>[
+          // 滑块在下层，文字在上层，因此标签始终清晰可读。
+          //
+          // 滑块的位置与宽度都用**像素**算，而不是用 Alignment 或
+          // FractionallySizedBox 的比例：
+          //   * 非 expand 时 Row 是 MainAxisSize.min，整条轨道在布局期处于
+          //     无界约束下，FractionallySizedBox 会把宽度算成 Infinity 而报错，
+          //     而且此时轨道宽度也拿不到（依赖内容）；
+          //   * 各段文字宽度本来就不相等（「跟随系统」比「亮色」宽得多），
+          //     按等分比例定位会让滑块与文字错位。
+          // 这里用一次「先排文字、测量、再定位」的方式，两者都解决。
+          if (enabled)
+            Positioned.fill(
+              child: _SlidingThumb(
+                labels: widget.labels,
+                expand: widget.expand,
+                index: safeIndex,
+                animate: _settled,
+              ),
+            ),
+          row,
+        ],
       ),
+    );
+  }
+
+  Widget _buildSegment(int i, int safeIndex, bool enabled) {
+    final selected = i == safeIndex;
+    // 文字颜色与字重的过渡交给 AnimatedDefaultTextStyle，文字本身不再写 style，
+    // 否则两处都设样式，实际生效的是内层、过渡也就白做了。
+    final label = MouseRegion(
+      cursor: enabled ? SystemMouseCursors.click : SystemMouseCursors.basic,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: enabled ? () => widget.onChanged!(i) : null,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+          // 等宽排布下每个分段宽度由外部决定，标签在选中时（w600）比未选中略宽，
+          // 极端情况下可能超出分配到的槽位。宁可省略号，也不要抛 overflow。
+          child: Text(
+            widget.labels[i],
+            textAlign: TextAlign.center,
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+      ),
+    );
+
+    // 文字过渡用 120ms：比滑块稍快一点收束，
+    // 避免出现「滑块已经停稳、文字还在变」的拖尾感。
+    final animated = AnimatedDefaultTextStyle(
+      duration: _settled ? const Duration(milliseconds: 120) : Duration.zero,
+      curve: XvSegmented.slideCurve,
+      style: TextStyle(
+        fontSize: 12,
+        fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
+        color: selected ? XV.text : XV.muted,
+      ),
+      child: label,
+    );
+    return widget.expand ? Expanded(child: animated) : animated;
+  }
+}
+
+/// 滑动块：按各段的**实测宽度**把自己摆到被选中那一段下面。
+///
+/// 为什么需要这么一层：滑块要贴合每一段文字，而各段宽度并不相等
+/// （「跟随系统」明显比「亮色」宽），按等分比例定位会错位；而轨道在非 expand
+/// 时是 `MainAxisSize.min`，布局期处于无界约束下，拿不到轨道宽度，
+/// 用 `FractionallySizedBox` 之类的比例控件会直接把宽度算成 Infinity。
+///
+/// 做法是：先按真实约束把「等宽分段」的占位排一遍并测量（这一步只测量、不上屏），
+/// 得到每段的左右边界；再用 [AnimatedPositioned] 把滑块放到目标段的位置。
+/// 测量结果存进 State，只在宽度或段数变化时重算，不进入布局热路径。
+class _SlidingThumb extends StatefulWidget {
+  const _SlidingThumb({
+    required this.labels,
+    required this.expand,
+    required this.index,
+    required this.animate,
+  });
+
+  final List<String> labels;
+
+  /// 是否等宽铺满。等宽时各段几何只取决于轨道宽度，与文字宽度无关。
+  final bool expand;
+
+  final int index;
+
+  /// 是否播放位移动画。首帧为 false，避免组件刚建出来时滑块自己滑过去。
+  final bool animate;
+
+  @override
+  State<_SlidingThumb> createState() => _SlidingThumbState();
+}
+
+class _SlidingThumbState extends State<_SlidingThumb> {
+  /// 每段的左边界与宽度。
+  List<({double left, double width})> _segments = const <({double left, double width})>[];
+
+  /// 上一次测量时的可用尺寸。尺寸没变就不重复测量。
+  Size? _measuredFor;
+
+  /// 单段的水平内边距，与 [_buildSegment] 保持一致。
+  static const double _horizontalPadding = 14;
+
+  /// 某个标签在「未选中」与「选中」两种字重下所需的宽度，取较大者。
+  ///
+  /// 必须取较大者：选中段是 w600、未选中是 w400，两者宽度不同。若按当前字重
+  /// 测量，切换时滑块宽度会跟着变，看起来像在「抖」。
+  static double _segmentWidth(String label) {
+    var widest = 0.0;
+    for (final weight in <FontWeight>[FontWeight.w400, FontWeight.w600]) {
+      final painter = TextPainter(
+        text: TextSpan(
+          text: label,
+          style: TextStyle(fontSize: 12, fontWeight: weight),
+        ),
+        textDirection: TextDirection.ltr,
+      )..layout();
+      if (painter.width > widest) widest = painter.width;
+      painter.dispose();
+    }
+    return widest + _horizontalPadding * 2;
+  }
+
+  /// 按当前约束测量各段的几何。
+  ///
+  /// 用 [TextPainter] 真实排版文字来拿宽度，而不是按字符数估算：
+  /// 中英混排、全角标点、字重都会影响宽度，估算必然对不齐。
+  List<({double left, double width})> _measure(BoxConstraints constraints) {
+    final count = widget.labels.length;
+    final available = constraints.maxWidth;
+    if (count == 0 || !available.isFinite || available <= 0) {
+      return const <({double left, double width})>[];
+    }
+
+    final segments = <({double left, double width})>[];
+    if (widget.expand) {
+      // 等宽：各段均分，最后一段吃掉舍入误差。
+      final slot = available / count;
+      for (var i = 0; i < count; i++) {
+        final left = slot * i;
+        segments.add((left: left, width: i == count - 1 ? available - left : slot));
+      }
+      return segments;
+    }
+
+    // 非等宽：按自然宽度紧排。Row 在 MainAxisSize.min 下从起点排，
+    // 因此这里也从 0 开始，不能自作主张居中——那会让滑块与文字错位。
+    var cursor = 0.0;
+    for (final label in widget.labels) {
+      final width = _segmentWidth(label);
+      segments.add((left: cursor, width: width));
+      cursor += width;
+    }
+    return segments;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (BuildContext context, BoxConstraints constraints) {
+        final size = Size(constraints.maxWidth, constraints.maxHeight);
+        if (_measuredFor != size) {
+          _measuredFor = size;
+          _segments = _measure(constraints);
+        }
+        if (_segments.isEmpty) return const SizedBox.shrink();
+
+        final target = _segments[widget.index.clamp(0, _segments.length - 1)];
+        return Stack(
+          children: <Widget>[
+            AnimatedPositioned(
+              duration: widget.animate ? XvSegmented.slideDuration : Duration.zero,
+              curve: XvSegmented.slideCurve,
+              left: target.left,
+              top: 0,
+              bottom: 0,
+              width: target.width,
+              child: DecoratedBox(
+                key: XvSegmented.thumbKey,
+                decoration: BoxDecoration(
+                  color: XV.segThumb,
+                  borderRadius: BorderRadius.circular(XV.rCtl - 3),
+                  // 阴影是暗色下把滑块从轨道里「抬起来」的辅助手段：
+                  // 色差为主，投影为辅。
+                  boxShadow: <BoxShadow>[
+                    BoxShadow(
+                      color: XV.shadow,
+                      blurRadius: 6,
+                      offset: const Offset(0, 1),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        );
+      },
     );
   }
 }

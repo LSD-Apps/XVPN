@@ -38,6 +38,8 @@ class XvPalette {
     required this.dashIdle,
     required this.radioBorder,
     required this.onAccent,
+    required this.segThumb,
+    required this.shadow,
   });
 
   // 背景层次
@@ -52,6 +54,15 @@ class XvPalette {
 
   /// 输入类控件底色（搜索框、计时条、分段控件）
   final Color field;
+
+  /// 分段控件里滑动块的底色。
+  ///
+  /// 必须与 [field] 拉开明显差别。原实现用的是 panel3，与 field 色值极近
+  /// （亮色下 #ECECF2 对 #F1F1F6），导致「选中了哪个」根本看不出来。
+  final Color segThumb;
+
+  /// 浮起元素（滑块、卡片）的投影颜色。
+  final Color shadow;
 
   // 描边
   final Color line;
@@ -129,6 +140,13 @@ class XvPalette {
     dashIdle: Color(0xFF2F3A4D),
     radioBorder: Color(0xFF39435A),
     onAccent: Color(0xFF04231A),
+    // 滑块比 field(#0E131D) 亮一大截，靠色差就能读出选中项；
+    // 暗色下再用一层淡投影把它从轨道里抬起来。
+    //
+    // 取值经过对比度校验：与 field 的 WCAG 对比度约 1.75，能一眼看出选中项；
+    // 原先用 panel3(#1B2231) 时只有 1.07，几乎等同。
+    segThumb: Color(0xFF333D54),
+    shadow: Color(0x66000000),
   );
 
   /// 亮色：同一套语义，重新取值。主色仍是绿色，只是压暗以保证浅底对比度。
@@ -166,6 +184,10 @@ class XvPalette {
     dashIdle: Color(0xFFC9C6D4),
     radioBorder: Color(0xFFC3C0CE),
     onAccent: Color(0xFFFFFFFF),
+    // 亮色下轨道是 #F1F1F6，滑块用纯白 + 淡投影才拉得开对比；
+    // 原实现的 panel3(#ECECF2) 比轨道还暗一点，选中项几乎是隐形的。
+    segThumb: Color(0xFFFFFFFF),
+    shadow: Color(0x1F000000),
   );
 }
 
@@ -189,6 +211,8 @@ class XV {
   static Color get panel2 => _current.panel2;
   static Color get panel3 => _current.panel3;
   static Color get field => _current.field;
+  static Color get segThumb => _current.segThumb;
+  static Color get shadow => _current.shadow;
 
   static Color get line => _current.line;
   static Color get line2 => _current.line2;
