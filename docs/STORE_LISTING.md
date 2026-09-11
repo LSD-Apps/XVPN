@@ -226,8 +226,10 @@ Play Console 的表单逐项答案。**必须与 `PRIVACY.md` 及实际实现一
 
 ## 六、上架前检查清单
 
-- [ ] `PRIVACY.md` 已发布到公开 URL，且该 URL 填入 Play Console
-- [ ] **完整说明里保留了「VpnService 用途声明」一节**（硬性要求）
+- [x] **隐私政策已发布到公开 URL**：
+      <https://lsd-apps.github.io/XVPN/privacy.html>（HTTP 200，中文无乱码）
+      —— 直接填入 Play Console 即可
+- [ ] **完整说明里保留了「VpnService 用途声明」一节**（硬性要求，文案见第一节）
 - [ ] VpnService 声明表单已填写（本文第二节）
 - [ ] 权限声明已逐项填写（本文第三节）
 - [ ] Data safety 表单已填（本文第四节）
@@ -236,21 +238,30 @@ Play Console 的表单逐项答案。**必须与 `PRIVACY.md` 及实际实现一
       之类的表述，也不要出现具体境外站点——那会同时触发政策与合规问题）
 - [ ] 商店列表中的开发者名称与联系方式为真实可用的信息
 - [ ] 已在真机上验证：首次连接会弹出系统 VPN 授权对话框
-- [ ] 已确认应用内**没有**暗示与 sing-box 官方有关联（见 `NOTICE.md`）
+- [x] 已确认应用内**没有**暗示与 sing-box 官方有关联（见 `NOTICE.md`）
 
 ---
 
-## 七、隐私政策 URL
+## 七、隐私政策 URL（已发布）
 
-Play Console 要求一个**公开可访问**的隐私政策页面。仓库里已经准备好了可直接
-托管的页面，**不需要自己写 HTML**：
+**填进 Play Console 的地址：**
+
+```
+https://lsd-apps.github.io/XVPN/privacy.html
+```
+
+已实测可访问（HTTP 200），中文无乱码。仓库首页落地页为
+<https://lsd-apps.github.io/XVPN/>。
+
+它由 GitHub Pages 直接提供（Pages 源已设为 `main` 分支根目录）：
 
 | 文件 | 用途 |
 | --- | --- |
-| [`PRIVACY.md`](../PRIVACY.md) | 政策源文件（随源码版本管理，改动的公开记录） |
-| [`privacy.html`](../privacy.html) | 由源文件渲染出的**自包含静态页面**，直接拿去托管 |
+| [`PRIVACY.md`](../PRIVACY.md) | 政策源文件，随源码版本管理，因此每次修改都有公开记录 |
+| [`privacy.html`](../privacy.html) | 由源文件渲染出的**自包含静态页面**，也就是上面那个 URL 服务的文件 |
+| [`index.html`](../index.html) | Pages 落地页（含 SEO/社交分享元信息） |
 
-重新生成页面（改完 `PRIVACY.md` 后必须跑一次，否则两者脱节）：
+改完 `PRIVACY.md` 后**必须**重新生成页面，否则托管的政策会与源文件脱节：
 
 ```powershell
 cd app
@@ -258,17 +269,20 @@ dart run tool/build_privacy_html.dart
 ```
 
 页面是单文件、样式内联、无任何外部请求——隐私政策页反过来加载第三方资源
-是很荒唐的事，因此刻意不引 CDN 字体或脚本。它自适应深浅色模式，
-可直接由任意静态托管提供。
+是很荒唐的事，因此刻意不引 CDN 字体或脚本。它自适应深浅色模式。
 
-三种托管做法：
+<details>
+<summary>如果不使用 GitHub Pages（备选托管方式）</summary>
 
-1. **GitHub Pages**（推荐，零成本）：仓库 Settings → Pages → 选分支，
-   然后把 `https://<用户名>.github.io/<仓库名>/privacy.html` 填进 Play Console。
-   注意本仓库当前托管在 GitCode，GitHub Pages 需要在 GitHub 建一个镜像仓库。
-2. **GitCode / Gitee Pages**：若平台提供 Pages 能力，直接用仓库内的
-   `privacy.html`。
-3. **自有域名**：把 `privacy.html` 部署到你的站点。
+把 `privacy.html` 放到任意静态托管即可：
 
-**提交前务必在浏览器里打开该 URL 确认可访问**，并确认中文没有乱码——
-填了一个打不开或乱码的链接是常见的驳回原因。
+1. **GitCode / Gitee Pages**：若平台提供 Pages 能力，直接指向仓库内的
+   `privacy.html`；
+2. **自有域名**：把该文件部署到你的站点；
+3. **原始文件直链**（不推荐，浏览器会当纯文本下载而非渲染）：
+   `https://raw.githubusercontent.com/LSD-Apps/XVPN/main/privacy.html`
+
+</details>
+
+**提交前务必在浏览器里再打开一次该 URL 确认可访问且中文不乱码**——
+填一个打不开或乱码的链接是常见的驳回原因。
