@@ -853,7 +853,14 @@ class DesktopUpdateInstaller implements UpdateInstaller {
     }
 
     final bool isWindows = platform == TargetPlatform.windows;
-    final String separator = isWindows ? '\\' : '/';
+    // 脚本与日志是**本机磁盘上**的真实文件，分隔符必须按宿主平台取；
+    // 脚本内容里给目标平台用的分隔符由 buildXxxRelaunchScript 自己负责。
+    //
+    // 这里曾经用目标平台的分隔符来拼宿主路径，在 Windows 上恰好等价（二者都是
+    // `\`）因此长期没暴露；在 Linux 上执行 Windows 安装策略时，脚本会被写成一个
+    // 名为 `staging\xvpn-relaunch.ps1` 的文件（反斜杠成了文件名的一部分），
+    // 实际路径 `staging/xvpn-relaunch.ps1` 并不存在——CI 上跑双平台测试时抓到。
+    final String separator = Platform.pathSeparator;
     final File script = File(
       '${stagingDir.path}$separator$relaunchScriptName.${isWindows ? 'ps1' : 'sh'}',
     );
@@ -907,7 +914,8 @@ class DesktopUpdateInstaller implements UpdateInstaller {
       return '找不到安装目录（${installDir.path}），无法自动更新。请手动下载新版本解压覆盖。';
     }
     if (skipWritabilityCheck) return null;
-    final String separator = platform == TargetPlatform.windows ? '\\' : '/';
+    // 探针文件同样写在本机磁盘上：分隔符按宿主平台取，理由与脚本路径相同。
+    final String separator = Platform.pathSeparator;
     final probe = File('${installDir.path}$separator.xvpn-update-probe');
     try {
       probe.writeAsStringSync('', flush: true);
