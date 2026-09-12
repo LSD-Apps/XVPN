@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:xvpn/app_state.dart';
@@ -403,6 +404,201 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(state.profiles, isEmpty);
+    });
+  });
+
+  // 这一组锁住「滚动条压住表单字段」这个缺陷。
+  //
+  // 测试环境默认按 Android 处理（见 `defaultTargetPlatform` 的文档），而只有
+  // 桌面端的 [MaterialScrollBehavior] 会给纵向滚动视图挂滚动条。因此必须显式
+  // 覆盖平台，否则这些断言在 Android 语义下根本遇不到滚动条、也就抓不到回归。
+  group('配置表单界面：滚动条不遮挡字段', () {
+    /// 在指定视口与桌面平台下打开「手动添加配置」表单。
+    Future<AppState> pumpManual(WidgetTester tester, Size size) async {
+      final state = AppState();
+      state.updateSettings(const AppSettings(autoConnectOnImport: false));
+      addTearDown(state.dispose);
+
+      tester.view.physicalSize = size;
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.reset);
+
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: buildXvTheme(XvPalette.dark),
+          home: Scaffold(
+            body: Builder(
+              builder: (BuildContext context) => TextButton(
+                onPressed: () => startManualConfigForm(context, state),
+                child: const Text('手动填写'),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.tap(find.text('手动填写'));
+      await tester.pumpAndSettle();
+      return state;
+    }
+
+    /// 主题里滚动条的厚度（[ScrollbarThemeData.thickness]）。
+    double scrollbarThickness(WidgetTester tester) {
+      final theme = ScrollbarTheme.of(
+        tester.element(find.byType(SingleChildScrollView)),
+      );
+      return theme.thickness?.resolve(<WidgetState>{}) ?? 0;
+    }
+
+    /// 滚动内容右侧为滚动条预留的间距。
+    ///
+    /// 桌面端滚动条浮在内容之上、不占布局宽度，因此这个间距就是字段让开
+    /// 滚动条的唯一来源——它必须不小于滚动条厚度。
+    double contentTrailingInset(WidgetTester tester) {
+      final scrollView = tester.widget<SingleChildScrollView>(
+        find.byType(SingleChildScrollView),
+      );
+      final child = scrollView.child;
+      expect(child, isA<Padding>(), reason: '滚动内容应带有让开滚动条的内边距');
+      return (child! as Padding).padding.resolve(TextDirection.ltr).right;
+    }
+
+    /// 某个字段最外层输入框（带描边的那层容器）的矩形。
+    ///
+    /// 这层容器横向铺满滚动内容，因此它的右边缘就是滚动内容的右边缘；用它
+    /// 相对滚动视口右边缘的距离，可以直接判断字段有没有落进滚动条的槽位。
+    Rect fieldBox(WidgetTester tester, String field) {
+      final Finder box = find
+          .ancestor(
+            of: find.byKey(configFieldKey(field)),
+            matching: find.byWidgetPredicate(
+              (Widget w) =>
+                  w is Container &&
+                  w.decoration is BoxDecoration &&
+                  (w.decoration! as BoxDecoration).border != null,
+            ),
+          )
+          .first;
+      return tester.getRect(box);
+    }
+
+    testWidgets('矮桌面窗口（1200×560）：内容让开滚动条且不溢出', (WidgetTester tester) async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.windows;
+      try {
+        await pumpManual(tester, const Size(1200, 560));
+        expect(tester.takeException(), isNull, reason: '矮窗口下表单不应溢出');
+
+        final Finder scrollFinder = find.byType(SingleChildScrollView);
+        expect(scrollFinder, findsOneWidget);
+
+        final thickness = scrollbarThickness(tester);
+        expect(thickness, greaterThan(0), reason: '主题应给滚动条一个非零厚度');
+
+        expect(
+          contentTrailingInset(tester),
+          greaterThanOrEqualTo(thickness),
+          reason: '滚动内容右侧必须留出滚动条的宽度',
+        );
+
+        // 结构性断言：输入框那层容器横向铺满滚动内容，它的右边缘必须整个让开
+        // 滚动条所在的槽位——否则桌面端浮动滚动条会正好压在字段的右边框上。
+        final viewport = tester.getRect(scrollFinder);
+        expect(
+          viewport.right - fieldBox(tester, 'name').right,
+          greaterThanOrEqualTo(thickness),
+          reason: '字段右边缘不应落进滚动条所在的槽位',
+        );
+
+        // 内容确实溢出，滚动条才会出现——否则这个用例什么也没覆盖到。
+        final scrollView = tester.widget<SingleChildScrollView>(scrollFinder);
+        expect(
+          scrollView.controller!.position.maxScrollExtent,
+          greaterThan(0),
+          reason: '该窗口下表单内容应当溢出',
+        );
+      } finally {
+        debugDefaultTargetPlatformOverride = null;
+      }
+    });
+
+    testWidgets('窄屏（390×640）：不溢出，且最后一个字段可滚动到完全可见', (WidgetTester tester) async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.windows;
+      try {
+        await pumpManual(tester, const Size(390, 640));
+        expect(tester.takeException(), isNull, reason: '窄屏下表单不应溢出');
+
+        final Finder scrollFinder = find.byType(SingleChildScrollView);
+        expect(scrollFinder, findsOneWidget);
+        final thickness = scrollbarThickness(tester);
+        expect(thickness, greaterThan(0));
+        expect(contentTrailingInset(tester), greaterThanOrEqualTo(thickness));
+
+        final viewport = tester.getRect(scrollFinder);
+        expect(
+          viewport.right - fieldBox(tester, 'wg.endpointHost').right,
+          greaterThanOrEqualTo(thickness),
+        );
+
+        // 最后一个字段初始在视口之外，说明这份表单确实需要滚动。
+        final Finder lastField = find.byKey(configFieldKey('wg.keepalive'));
+        expect(
+          tester.getRect(lastField).bottom,
+          greaterThan(viewport.bottom),
+          reason: '最后一个字段初始应在视口之外',
+        );
+
+        await tester.drag(scrollFinder, const Offset(0, -2000));
+        await tester.pumpAndSettle();
+
+        // 滚到底之后它应完整落在视口内，而不是被裁掉或压在按钮行下面。
+        final Rect lastRect = tester.getRect(lastField);
+        expect(lastRect.top, greaterThanOrEqualTo(viewport.top - 0.5));
+        expect(lastRect.bottom, lessThanOrEqualTo(viewport.bottom + 0.5));
+        expect(tester.takeException(), isNull);
+      } finally {
+        debugDefaultTargetPlatformOverride = null;
+      }
+    });
+
+    testWidgets('确认并添加配置流程同样让开滚动条', (WidgetTester tester) async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.windows;
+      try {
+        final state = AppState();
+        state.updateSettings(const AppSettings(autoConnectOnImport: false));
+        addTearDown(state.dispose);
+        tester.view.physicalSize = const Size(1200, 560);
+        tester.view.devicePixelRatio = 1.0;
+        addTearDown(tester.view.reset);
+
+        await tester.pumpWidget(
+          MaterialApp(
+            theme: buildXvTheme(XvPalette.dark),
+            home: Scaffold(
+              body: Builder(
+                builder: (BuildContext context) => TextButton(
+                  onPressed: () => reviewAndImportConf(
+                    context,
+                    state,
+                    text: _wireGuard,
+                    fileName: 'wg.conf',
+                  ),
+                  child: const Text('导入'),
+                ),
+              ),
+            ),
+          ),
+        );
+        await tester.tap(find.text('导入'));
+        await tester.pumpAndSettle();
+
+        expect(find.text('确认并添加配置'), findsOneWidget);
+        expect(tester.takeException(), isNull);
+        expect(
+          contentTrailingInset(tester),
+          greaterThanOrEqualTo(scrollbarThickness(tester)),
+        );
+      } finally {
+        debugDefaultTargetPlatformOverride = null;
+      }
     });
   });
 }

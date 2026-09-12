@@ -102,6 +102,35 @@ abstract class VpnCoreListener {
   void onMtuCheck(MtuCheck check) {}
 }
 
+/// 一次连接尝试的取消令牌。
+///
+/// 连接路径上有若干处「等内核就绪 / 等系统代理 / 等隧道能载流量」的 await，
+/// 用户完全可能在任意一处按下取消。没有这个令牌时，被取消的那一轮会在下一次
+/// await 之后继续往下走，把已经拆掉的隧道与系统代理重新装回来——界面显示
+/// 「已连接」，而用户以为自己已经把它停了。
+///
+/// 令牌的生命周期由 [AppState] 掌握：每次用户发起连接创建一个新的，取消或
+/// 新一轮连接开始时把旧的标记掉。内核**只在每个 await 之后复查它**，而不是
+/// 只看「用户是否要断开」——后者会被下一轮连接重置，不足以区分「这一轮已经
+/// 被取代」和「这一轮正常继续」。
+class ConnectAttempt {
+  ConnectAttempt(this.generation);
+
+  /// 第几轮连接（从 1 开始）。仅用于日志与测试定位。
+  final int generation;
+
+  bool _cancelled = false;
+
+  /// 本轮尝试是否已被取消或被新的一轮取代。
+  bool get isCancelled => _cancelled;
+
+  /// 作废本轮尝试。幂等：重复调用没有额外效果。
+  void cancel() => _cancelled = true;
+
+  @override
+  String toString() => 'ConnectAttempt(#$generation, cancelled: $isCancelled)';
+}
+
 /// 隧道内核抽象。
 ///
 /// 两个真实实现：
@@ -129,7 +158,17 @@ abstract class VpnCore {
   /// 内核名称，展示在诊断信息里。
   String get name;
 
-  Future<void> connect(VpnProfile profile, AppSettings settings);
+  /// 建立隧道。
+  ///
+  /// [attempt] 是本轮的取消令牌。带真实阻塞（等内核、等端口、等系统代理）的
+  /// 实现必须在**每个 await 之后**复查 `attempt?.isCancelled`，在被取消时收手，
+  /// 而不是继续把状态推到「已连接」。演示内核也必须遵守同一条约定，否则界面
+  /// 的取消按钮在演示模式下会「按了没用」。
+  Future<void> connect(
+    VpnProfile profile,
+    AppSettings settings, {
+    ConnectAttempt? attempt,
+  });
 
   Future<void> disconnect();
 
@@ -350,10 +389,16 @@ class DemoVpnCore extends VpnCore {
   ];
 
   @override
-  Future<void> connect(VpnProfile profile, AppSettings settings) async {
+  Future<void> connect(
+    VpnProfile profile,
+    AppSettings settings, {
+    ConnectAttempt? attempt,
+  }) async {
     listener.onStatusChanged(VpnStatus.connecting);
     await Future<void>.delayed(const Duration(milliseconds: 700));
-    if (isDisposed) return;
+    // 演示内核也必须遵守取消约定：用户在这 700ms 里按了取消，本轮已经作废，
+    // 绝不能事后再把状态翻回「已连接」——那正是界面取消按钮要防住的那类竞态。
+    if (isDisposed || (attempt?.isCancelled ?? false)) return;
     listener.onStatusChanged(VpnStatus.connected);
     listener.onLatency(38 + _random.nextInt(20));
     _startTraffic();

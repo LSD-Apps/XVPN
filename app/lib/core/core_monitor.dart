@@ -1054,10 +1054,17 @@ class CoreMonitor {
   /// 轮询 Clash API 直到它能应答，或超时。
   ///
   /// [isAlive] 用于提前退出：内核进程已经退出时没必要把超时等满。
-  Future<bool> waitForApi(Duration timeout, {bool Function()? isAlive}) async {
+  /// [isCancelled] 用于用户取消：取消的优先级高于一切，这里一秒都不该多等——
+  /// 否则「取消」在等内核就绪这一步上要等满 12/25 秒才生效。
+  Future<bool> waitForApi(
+    Duration timeout, {
+    bool Function()? isAlive,
+    bool Function()? isCancelled,
+  }) async {
     final started = DateTime.now();
     final deadline = started.add(timeout);
     while (DateTime.now().isBefore(deadline)) {
+      if (isCancelled != null && isCancelled()) return false;
       if (isAlive != null && !isAlive()) return false;
       if (await _get('/version') != null) return true;
       await Future<void>.delayed(

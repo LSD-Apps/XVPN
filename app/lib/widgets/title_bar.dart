@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../app_state.dart';
 import '../core/links.dart';
+import '../core/update_center.dart';
 import '../core/window_controls.dart';
 import '../format.dart';
 import '../theme.dart';
@@ -22,6 +23,8 @@ class XvTitleBar extends StatelessWidget {
     required this.theme,
     required this.state,
     this.openExternalUrl = launchInBrowser,
+    this.updateCenter,
+    this.onOpenUpdate,
   });
 
   final ThemeController theme;
@@ -32,6 +35,17 @@ class XvTitleBar extends StatelessWidget {
   /// 默认是真实的系统浏览器；测试注入替身来断言「点了哪个地址」——
   /// 测试环境里没有浏览器，真调用只会失败，无法验证行为。
   final ExternalUrlLauncher openExternalUrl;
+
+  /// 更新提示的共享结果。为 null 时用全局 [UpdateCenter.instance]。
+  ///
+  /// 标题栏只读它来决定要不要显示指示器，自己不做任何检查。
+  final UpdateCenter? updateCenter;
+
+  /// 点击更新指示器时跳转到更新界面。
+  ///
+  /// 标题栏不拥有导航（桌面端由 [XvShell] 控制分页），因此这里只回调，
+  /// 由外壳切到设置页。
+  final VoidCallback? onOpenUpdate;
 
   @override
   Widget build(BuildContext context) {
@@ -57,6 +71,12 @@ class XvTitleBar extends StatelessWidget {
           ),
           _ConnectionTimer(state: state),
           const SizedBox(width: 10),
+          // 更新指示器排在计时与主题按钮之间：它属于应用自身功能，
+          // 且与右侧的窗口控制区隔了一道分割线，不会被误当成系统按钮。
+          _UpdateIndicator(
+            center: updateCenter ?? UpdateCenter.instance,
+            onOpenUpdate: onOpenUpdate,
+          ),
           _ThemeButton(theme: theme),
           const SizedBox(width: 4),
           // GitHub 入口排在主题按钮之后、分割线之前：分割线右侧是窗口按钮，
@@ -139,6 +159,82 @@ class _Brand extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => const XvBrandMark();
+}
+
+/// 有可用更新时出现在标题栏的提示入口。
+///
+/// 只在启动检查真的发现了新版本、且用户尚未忽略时渲染；其余时刻返回
+/// [SizedBox.shrink]，标题栏与没有这个功能时完全一致。点击由外壳切到设置页的
+/// 「版本更新」卡片（标题栏不拥有导航）。
+///
+/// 样式与 [_ThemeButton] / [_GitHubButton] 一致（悬停底色、同一个圆角、同一套
+/// [Tooltip]），并且位于 [_DragRegion] 之外——否则点击会被当成拖动标题栏。
+class _UpdateIndicator extends StatefulWidget {
+  const _UpdateIndicator({required this.center, this.onOpenUpdate});
+
+  final UpdateCenter center;
+  final VoidCallback? onOpenUpdate;
+
+  @override
+  State<_UpdateIndicator> createState() => _UpdateIndicatorState();
+}
+
+class _UpdateIndicatorState extends State<_UpdateIndicator> {
+  bool _hover = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return ValueListenableBuilder<UpdateNotice?>(
+      valueListenable: widget.center.notice,
+      builder: (BuildContext context, UpdateNotice? notice, Widget? _) {
+        if (notice == null || notice.dismissed) {
+          return const SizedBox.shrink();
+        }
+        return Row(
+          mainAxisSize: MainAxisSize.min,
+          children: <Widget>[
+            Tooltip(
+              message: '发现新版本 v${notice.version}，点击查看',
+              child: MouseRegion(
+                cursor: SystemMouseCursors.click,
+                onEnter: (_) => setState(() => _hover = true),
+                onExit: (_) => setState(() => _hover = false),
+                child: GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap: widget.onOpenUpdate,
+                  child: AnimatedContainer(
+                    duration: const Duration(milliseconds: 140),
+                    height: 30,
+                    padding: const EdgeInsets.symmetric(horizontal: 11),
+                    decoration: BoxDecoration(
+                      color: _hover ? XV.panel3 : Colors.transparent,
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: <Widget>[
+                        Icon(
+                          Icons.system_update_alt,
+                          size: 15,
+                          color: XV.green,
+                        ),
+                        const SizedBox(width: 8),
+                        Text(
+                          '发现新版本',
+                          style: TextStyle(fontSize: 12, color: XV.green),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(width: 4),
+          ],
+        );
+      },
+    );
+  }
 }
 
 /// 主题切换：跟随系统 → 亮色 → 深色 → 跟随系统。

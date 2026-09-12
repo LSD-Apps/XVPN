@@ -11,6 +11,7 @@ import 'core/licenses.dart';
 import 'core/singbox_runner.dart';
 import 'core/store.dart';
 import 'core/system_proxy.dart';
+import 'core/update_center.dart';
 import 'core/vpn_core.dart';
 import 'core/window_controls.dart';
 import 'protocols/vpn_protocol.dart';
@@ -35,6 +36,16 @@ Future<void> main(List<String> args) async {
   await WindowControls.listen();
   final store = await _resolveStore();
   runApp(XvpnApp(launchConfPath: _confPathFromArgs(args), store: store));
+
+  // 启动后的静默更新检查。放在第一帧之后：它绝不能拖慢首帧；失败也绝不能
+  // 打扰用户——checkOnStartup 在内部把失败处理成与「没有更新」完全一致，
+  // 结果只共享给标题栏与设置页卡片，不弹任何对话框。
+  //
+  // 刻意放在顶层 main() 而不是 AppState 的 initState：测试会直接 pump
+  // XvpnApp，若写在 initState 里，每个用例都会真的去摸一次网络。
+  WidgetsBinding.instance.addPostFrameCallback((_) {
+    unawaited(UpdateCenter.instance.checkOnStartup());
+  });
 }
 
 /// 安卓侧的原生通道。桌面端用不到——桌面走命令行参数打开配置文件。

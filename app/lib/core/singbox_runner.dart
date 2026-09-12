@@ -196,6 +196,12 @@ class SingBoxRunner extends VpnCore {
   /// 自己又连上了」。
   bool _userDisconnect = false;
 
+  /// 第几轮连接尝试。每次 [_startTunnel] 自增并捕获一份，用来判断「本轮是否
+  /// 已被更新的一轮取代」。取消与重连可能落在任意 await 之后，只看
+  /// [_userDisconnect] 不够——新一轮连接会把它重置，被取代的旧一轮会误以为
+  /// 自己仍然有效，从而把新状态覆盖掉。
+  int _attemptSeq = 0;
+
   /// 待执行的重连定时器。
   Timer? _reconnectTimer;
 
@@ -215,6 +221,13 @@ class SingBoxRunner extends VpnCore {
 
   bool _proxyTakenOver = false;
 
+  /// 当前登记的系统代理属于第几轮的尝试（-1 表示没有）。
+  ///
+  /// 被取消的一轮若已经设过代理、而新一轮还没来得及接管，必须由它自己撤掉；
+  /// 否则新一轮一旦在设代理之前失败，系统代理会一直指着一个已经死掉的端口，
+  /// 用户的浏览器全部打不开，而现象与隧道毫无关系。
+  int _proxyOwnerSeq = -1;
+
   @override
   String get name => 'sing-box 1.14.0';
 
@@ -233,7 +246,11 @@ class SingBoxRunner extends VpnCore {
   // ---------------------------------------------------------------- 启动
 
   @override
-  Future<void> connect(VpnProfile profile, AppSettings settings) async {
+  Future<void> connect(
+    VpnProfile profile,
+    AppSettings settings, {
+    ConnectAttempt? attempt,
+  }) async {
     // 用户主动连接 = 新的一轮：上一轮的重试与自愈额度全部清零。
     _userDisconnect = false;
     _cancelReconnect();
@@ -244,27 +261,45 @@ class SingBoxRunner extends VpnCore {
     // 先清理旧实例，但不广播「已断开」：否则自动重连时界面会先闪一下
     // 未连接再回到连接中，看起来像连接被打断了一次。
     await _stopCore(notifyStatus: false);
-    await _startTunnel(profile, settings);
+    await _startTunnel(profile, settings, attempt);
   }
 
-  /// 启动过程中用户点了断开，或对象已经销毁。
-  ///
-  /// 必须在**每一次 await 之后**都查一遍。启动路径上有五处等待——读中国 IP
-  /// 索引、探端口、起进程、等内核就绪、设系统代理——用户完全可能在其中任何
-  /// 一处按下断开。不查的后果不是「晚一点断开」，而是把已经拆掉的内核与系统
-  /// 代理重新装回来：界面显示已连接、系统代理指着一个用户以为已经关掉的隧道；
-  /// 若在起进程之前断开，还会留下一个没人管的孤儿内核进程。
-  bool get _aborted => _disposed || _userDisconnect;
-
   /// 拉起内核并等待它就绪。手动连接与自动重连共用这一条路径。
-  Future<void> _startTunnel(VpnProfile profile, AppSettings settings) async {
+  ///
+  /// [attempt] 是用户这一轮的取消令牌，为 null 表示内部重连（崩溃自愈、
+  /// 隧道不通自愈），那种情况下取消由 [_userDisconnect] 表达。
+  Future<void> _startTunnel(
+    VpnProfile profile,
+    AppSettings settings,
+    ConnectAttempt? attempt,
+  ) async {
+    // 本轮的身份。用它判断「是否已被更新的一轮取代」——只看 [_userDisconnect]
+    // 会在新连接把它重置后失效。
+    final seq = ++_attemptSeq;
+
+    /// 本轮是否应当收手。
+    ///
+    /// 必须在**每一次 await 之后**都查一遍。启动路径上有五处等待——读中国 IP
+    /// 索引、探端口、起进程、等内核就绪、设系统代理——用户完全可能在其中任何
+    /// 一处按下取消。不查的后果不是「晚一点取消」，而是把已经拆掉的内核与系统
+    /// 代理重新装回来：界面显示已连接、系统代理指着一个用户以为已经关掉的隧道；
+    /// 若在起进程之前取消，还会留下一个没人管的孤儿内核进程。
+    ///
+    /// `seq != _attemptSeq` 覆盖「取消后立刻又发起一轮」的竞态：旧的一轮不能
+    /// 再去碰新一轮的进程、系统代理与状态。
+    bool aborted() =>
+        _disposed ||
+        _userDisconnect ||
+        (attempt?.isCancelled ?? false) ||
+        seq != _attemptSeq;
+
     // 在广播「连接中」**之前**先查一次。
     //
-    // 这一条是补上一个很窄但很难受的窗口：用户点了断开，而这条启动流程早已
+    // 这一条是补上一个很窄但很难受的窗口：用户点了取消，而这条启动流程早已
     // 在队列里（例如自愈重启正在进行中，或 connect() 正卡在拆旧内核那一步），
     // 此时若先广播「连接中」再在后面的检查点悄悄 return，界面就会**永远停在
     // 连接中**——状态再也不会被谁改回来。
-    if (_aborted) return;
+    if (aborted()) return;
     listener.onStatusChanged(VpnStatus.connecting);
     // 预热宽限期的起点：**从这里**算起，而不是从观测引擎启动时算起。
     // 中间隔着起进程、等内核就绪、设系统代理、就绪门控四步，可能已经花掉
@@ -291,7 +326,7 @@ class SingBoxRunner extends VpnCore {
       if (!_indexLoaded) {
         _cnIpIndex = await CnIpIndex.load(assetsDir: runtime.assetDir);
         _indexLoaded = true;
-        if (_aborted) return;
+        if (aborted()) return;
       }
 
       runtime.workDir.createSync(recursive: true);
@@ -308,7 +343,7 @@ class SingBoxRunner extends VpnCore {
       //    用户看不懂的绑定失败。改成往后找可用的，用户什么都不用做。
       //    必须在生成配置**之前**确定：配置、系统代理、观测引擎三处共用它。
       final ports = await PortAllocator.allocate(from: mixedPort, count: 2);
-      if (_aborted) return;
+      if (aborted()) return;
       if (ports.length < 2) {
         listener.onError('本地端口 $mixedPort 起连续 50 个都被占用，无法启动内核');
         await _stopCore(notifyStatus: true);
@@ -354,23 +389,30 @@ class SingBoxRunner extends VpnCore {
         workingDirectory: runtime.workDir.path,
         runInShell: false,
       );
+      // 进程刚起来，用户可能正好在这一刻点了取消。**必须在这里查**：晚一步的
+      // 话，进程已经起好了，而取消/disconnect 早就执行完了——它会留下一个没人
+      // 管的孤儿内核，界面却显示未连接。
+      //
+      // 这一步刻意**不登记** `_process`：若本轮已被取代，登记会覆盖新一轮已经
+      // 写好的进程引用，于是新一轮的进程没人跟踪，而本轮的进程被当成当前实例。
+      // 直接收掉刚起来的这一个即可。
+      if (aborted()) {
+        process.kill();
+        return;
+      }
       _process = process;
       _uptime
         ..reset()
         ..start();
-      // 进程刚起来，用户可能正好在这一刻点了断开。**必须在这里查**：晚一步的
-      // 话，进程已经起好了，而 disconnect() 早就执行完了——它会留下一个没人
-      // 管的孤儿内核，界面却显示未连接。
-      if (_aborted) {
-        await _stopCore(notifyStatus: false);
-        return;
-      }
       runtime.pidFile.writeAsStringSync('${process.pid}');
       process.stdout.transform(utf8.decoder).listen(_appendLog);
       process.stderr.transform(utf8.decoder).listen(_appendLog);
       unawaited(
         process.exitCode.then((int code) async {
           if (_process != process) return;
+          // 本轮已被取消/取代：这不是一次真实的内核崩溃。报错或自动重连都会
+          // 把一个用户已经取消的尝试重新变成一轮新的连接。
+          if (aborted()) return;
           // 内核自己退出了：多半是配置或网络问题，把原因带出来。
           _process = null;
           _uptime.stop();
@@ -378,8 +420,9 @@ class SingBoxRunner extends VpnCore {
           // 必须同时撤销系统代理。否则内核已经没了、代理还指着它，
           // 用户的所有网站都会打不开，而且完全看不出原因。
           if (_proxyTakenOver) {
-            await proxy.clear();
             _proxyTakenOver = false;
+            _proxyOwnerSeq = -1;
+            await proxy.clear();
           }
           _deletePidFile();
 
@@ -417,9 +460,12 @@ class SingBoxRunner extends VpnCore {
       final ready = await monitor.waitForApi(
         const Duration(seconds: 12),
         isAlive: () => _process != null,
+        // 取消时立刻收手，不必把 12 秒的上限等满。内核进程此后会被本轮或
+        // disconnect() 收掉。
+        isCancelled: aborted,
       );
-      if (_aborted) {
-        await _stopCore(notifyStatus: false);
+      if (aborted()) {
+        await _abortCleanup(seq);
         return;
       }
       if (!ready) {
@@ -447,11 +493,12 @@ class SingBoxRunner extends VpnCore {
       // 不生效」的假象——那意味着界面上写着「接管全部程序」，实际只有认系统
       // 代理的程序走隧道，而用户完全看不出区别。
       _proxyTakenOver = await proxy.set(host: '127.0.0.1', port: _mixedPort);
-      // 设代理是异步的，用户也可能正好在这一刻点了断开。不查这一步的后果
-      // 比「晚一点断开」严重得多：系统代理会被**重新装上**，界面显示已连接，
+      if (_proxyTakenOver) _proxyOwnerSeq = seq;
+      // 设代理是异步的，用户也可能正好在这一刻点了取消。不查这一步的后果
+      // 比「晚一点取消」严重得多：系统代理会被**重新装上**，界面显示已连接，
       // 而用户以为隧道已经关了。
-      if (_aborted) {
-        await _stopCore(notifyStatus: false);
+      if (aborted()) {
+        await _abortCleanup(seq);
         return;
       }
       if (!_proxyTakenOver) {
@@ -478,11 +525,11 @@ class SingBoxRunner extends VpnCore {
       await runTunnelReadyGate(
         listener: listener,
         probe: monitor.probeTunnelReadiness,
-        isAborted: () => _aborted,
+        isAborted: aborted,
         timeout: readyGateTimeout,
       );
-      if (_aborted) {
-        await _stopCore(notifyStatus: false);
+      if (aborted()) {
+        await _abortCleanup(seq);
         return;
       }
 
@@ -495,6 +542,11 @@ class SingBoxRunner extends VpnCore {
       // 慢的话会拖住「已连接」的宣布。结论稍后经 onMtuCheck 回来。
       if (probesEnabled) unawaited(monitor.checkMtu());
     } on Object catch (e) {
+      // 取消/被取代不算启动失败：那是用户的选择，不该弹一句红字。
+      if (aborted()) {
+        await _abortCleanup(seq);
+        return;
+      }
       listener.onError('启动失败：$e');
       // 走 _stopCore 而不是 disconnect：后者会把 _userDisconnect 置真，
       // 让紧随其后的「内核退出」回调被误判成用户主动断开。同一个错误在
@@ -516,6 +568,23 @@ class SingBoxRunner extends VpnCore {
     await _stopCore(notifyStatus: true);
   }
 
+  /// 本轮尝试被取消或取代后的收尾。
+  ///
+  /// 只回收**本轮自己的**副作用。若已经有更新的一轮在跑（`seq != _attemptSeq`），
+  /// 进程归新一轮管——本轮再拆一次就会把新隧道杀掉。但系统代理若还是本轮设的，
+  /// 必须由本轮撤掉：新一轮可能在设代理之前就失败，留下一个指向死端口的全局代理。
+  Future<void> _abortCleanup(int seq) async {
+    if (seq == _attemptSeq) {
+      await _stopCore(notifyStatus: false);
+      return;
+    }
+    if (_proxyOwnerSeq == seq) {
+      _proxyTakenOver = false;
+      _proxyOwnerSeq = -1;
+      await proxy.clear();
+    }
+  }
+
   /// 拆掉内核与系统代理。
   ///
   /// [notifyStatus] 为 false 时不广播「已断开」：连接与重连的过程中会先
@@ -531,6 +600,7 @@ class SingBoxRunner extends VpnCore {
       // 这里只看返回值、不报错，属于「安静地失败」，正是最该避免的一类。
       final restored = await proxy.clear();
       _proxyTakenOver = false;
+      _proxyOwnerSeq = -1;
       if (!restored) {
         listener.onError(
           defaultTargetPlatform == TargetPlatform.linux
@@ -585,7 +655,8 @@ class SingBoxRunner extends VpnCore {
       }
       // 不在这里做重试计数：重连若再次失败，内核的退出回调会带着新的
       // 存活时长回到同一个状态机，由它统一裁决。
-      unawaited(_startTunnel(profile, settings));
+      // 内部重连没有用户令牌，取消由 _userDisconnect 表达。
+      unawaited(_startTunnel(profile, settings, null));
     });
   }
 
@@ -641,7 +712,7 @@ class SingBoxRunner extends VpnCore {
     // 起两个实例、后一个因端口被占而失败。一行保险，成本为零。
     _cancelReconnect();
     await _stopCore(notifyStatus: false);
-    await _startTunnel(profile, settings);
+    await _startTunnel(profile, settings, null);
   }
 
   @override

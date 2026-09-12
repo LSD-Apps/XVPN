@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 
 import '../core/links.dart';
+import '../core/update_center.dart';
 import '../core/updater.dart';
 import '../format.dart';
 import '../theme.dart';
@@ -28,6 +29,7 @@ class UpdateCard extends StatefulWidget {
     super.key,
     this.compact = false,
     this.updater,
+    this.updateCenter,
     this.openExternalUrl = launchInBrowser,
     this.exitProcess = exit,
   });
@@ -40,6 +42,12 @@ class UpdateCard extends StatefulWidget {
   /// 与 `SystemProxy.forPlatform` / `SecretProtector.forPlatform` 的注入点同一
   /// 思路：真实更新要联网、要替换安装目录，测试只能靠替身把每条分支走一遍。
   final Updater? updater;
+
+  /// 启动检查结果的共享持有者（见 [UpdateCenter]）。
+  ///
+  /// 为 null 时用全局 [UpdateCenter.instance]。注入点让测试可以预置一条
+  /// 「已有新版本」的 notice，从而断言卡片**不联网**也会呈现该状态。
+  final UpdateCenter? updateCenter;
 
   /// 打开发布页的实现。默认交给系统浏览器；测试注入记录器断言点了哪个地址。
   final ExternalUrlLauncher openExternalUrl;
@@ -56,6 +64,9 @@ class UpdateCard extends StatefulWidget {
 
 class _UpdateCardState extends State<UpdateCard> {
   late final Updater _updater;
+
+  /// 启动检查的共享结果。卡片只**读**它来决定初始呈现，绝不为它发起请求。
+  late final UpdateCenter _updateCenter;
 
   bool _checking = false;
   bool _downloading = false;
@@ -78,6 +89,7 @@ class _UpdateCardState extends State<UpdateCard> {
   void initState() {
     super.initState();
     _updater = widget.updater ?? Updater.forCurrentPlatform();
+    _updateCenter = widget.updateCenter ?? UpdateCenter.instance;
   }
 
   @override
@@ -119,8 +131,10 @@ class _UpdateCardState extends State<UpdateCard> {
     });
   }
 
-  Future<void> _download() async {
-    final info = _info;
+  /// [target] 用于启动检查已经发现更新、卡片尚未走过 `_check()` 的场景：
+  /// 此时 `_info` 仍是 null，由入口把 notice 里的信息显式带进来。
+  Future<void> _download([UpdateInfo? target]) async {
+    final info = target ?? _info;
     if (info == null || _busy) return;
     final cancellation = UpdateCancellation();
     setState(() {
@@ -131,6 +145,8 @@ class _UpdateCardState extends State<UpdateCard> {
       _cancellation = cancellation;
       _received = 0;
       _total = info.assetSize;
+      // 记下来，之后「重试下载」等入口无需再传参数。
+      _info = info;
     });
     final result = await _updater.download(
       info,
@@ -155,6 +171,12 @@ class _UpdateCardState extends State<UpdateCard> {
   }
 
   void _cancelDownload() => _cancellation?.cancel();
+
+  /// 用户忽略启动检查发现的更新：本次运行内标题栏与卡片都不再提示。
+  void _dismissNotice() {
+    if (_busy) return;
+    _updateCenter.dismiss();
+  }
 
   /// 用户在确认步骤里选择「稍后」：退回「有更新」状态，不安装。
   void _dismissDownload() {
@@ -233,25 +255,32 @@ class _UpdateCardState extends State<UpdateCard> {
       padding: widget.compact
           ? const EdgeInsets.fromLTRB(14, 13, 14, 13)
           : const EdgeInsets.all(16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: <Widget>[
-          const XvCardTitle('版本更新'),
-          Row(
+      // 订阅启动检查的结果：notice 从「有新版本」变成「已忽略」时，
+      // 卡片无需 setState 就会退回初始态。
+      child: ValueListenableBuilder<UpdateNotice?>(
+        valueListenable: _updateCenter.notice,
+        builder: (BuildContext context, UpdateNotice? notice, Widget? _) {
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: <Widget>[
-              Text('当前版本', style: XvText.rowDesc),
-              const SizedBox(width: 8),
-              Text('v$appVersion', style: XvText.rowTitle),
+              const XvCardTitle('版本更新'),
+              Row(
+                children: <Widget>[
+                  Text('当前版本', style: XvText.rowDesc),
+                  const SizedBox(width: 8),
+                  Text('v$appVersion', style: XvText.rowTitle),
+                ],
+              ),
+              const SizedBox(height: 10),
+              ..._buildBody(notice),
             ],
-          ),
-          const SizedBox(height: 10),
-          ..._buildBody(),
-        ],
+          );
+        },
       ),
     );
   }
 
-  List<Widget> _buildBody() {
+  List<Widget> _buildBody(UpdateNotice? notice) {
     if (_checking) return _buildChecking();
     if (_installing) return _buildInstalling();
 
@@ -264,7 +293,14 @@ class _UpdateCardState extends State<UpdateCard> {
     if (downloadResult != null) return _buildDownloadBlock(downloadResult);
 
     final checkResult = _checkResult;
-    if (checkResult == null) return _buildIdle();
+    if (checkResult == null) {
+      // 启动检查已经发现了新版本：直接呈现它。卡片自己不发起任何网络请求，
+      // 这正是「打开设置页不自动联网」那条纪律所要求的。
+      if (notice != null && !notice.dismissed) {
+        return _buildAvailable(notice.info, fromStartup: true);
+      }
+      return _buildIdle();
+    }
     return switch (checkResult) {
       UpdateAvailable(:final info) => _buildAvailable(info),
       UpdateNotAvailable(:final latestVersion) => _buildUpToDate(latestVersion),
@@ -328,7 +364,10 @@ class _UpdateCardState extends State<UpdateCard> {
     ),
   ];
 
-  List<Widget> _buildAvailable(UpdateInfo info) {
+  /// [fromStartup] 为 true 表示这条更新来自启动时的静默检查（用户从未点过
+  /// 「检查更新」）。此时多给一个「忽略」入口：用户不想要这个提示时，会话内
+  /// 不再出现（见 [UpdateCenter.dismiss]），但手动检查照旧可用。
+  List<Widget> _buildAvailable(UpdateInfo info, {bool fromStartup = false}) {
     final size = info.assetSize;
     return <Widget>[
       Row(
@@ -358,9 +397,10 @@ class _UpdateCardState extends State<UpdateCard> {
           XvButton(
             label: '下载更新',
             kind: XvButtonKind.primary,
-            onPressed: _download,
+            onPressed: () => _download(info),
           ),
           XvButton(label: '查看发布页', onPressed: () => _openRelease(info)),
+          if (fromStartup) XvButton(label: '忽略', onPressed: _dismissNotice),
         ],
       ),
     ];

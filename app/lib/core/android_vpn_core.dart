@@ -115,12 +115,6 @@ class AndroidVpnCore extends VpnCore {
   /// 会被一笔勾销，紧接着一次探测失败就又被判成「隧道不通」。
   DateTime? _tunnelSince;
 
-  /// 是否正在建立连接。
-  ///
-  /// 就绪门控会在这里干等最多 20 秒，而用户完全可能在这期间点断开。断开之后
-  /// 若还继续探测、甚至宣布「已连接」，就会把一个已经拆掉的隧道说成可用。
-  bool _connecting = false;
-
   /// 用户是否明确要求断开。
   ///
   /// 与桌面端同义：自愈重启必须尊重这个旗标。否则用户点了断开、健康判定恰好
@@ -128,12 +122,13 @@ class AndroidVpnCore extends VpnCore {
   /// 「断开之后自己又连上了」。
   bool _userDisconnect = false;
 
+  /// 第几轮连接尝试。理由与桌面端 `_attemptSeq` 相同：只看 `_userDisconnect`
+  /// 会被新一轮连接重置，无法区分「本轮已被取消/取代」和「本轮正常继续」。
+  int _attemptSeq = 0;
+
   /// 本次连接使用的配置与设置。自愈重启要用它们重新建立隧道。
   VpnProfile? _lastProfile;
   AppSettings? _lastSettings;
-
-  /// 启动/重启过程中是否应当收手（对象已销毁，或用户明确断开）。
-  bool get _aborted => isDisposed || _userDisconnect;
 
   @override
   CnIpIndex get cnIpIndex => _cnIpIndex;
@@ -177,7 +172,11 @@ class AndroidVpnCore extends VpnCore {
   // ---------------------------------------------------------------- 启动
 
   @override
-  Future<void> connect(VpnProfile profile, AppSettings settings) async {
+  Future<void> connect(
+    VpnProfile profile,
+    AppSettings settings, {
+    ConnectAttempt? attempt,
+  }) async {
     // 用户主动连接 = 新的一轮：清掉「已断开」旗标与上一轮的自愈额度，
     // 并记下配置——自愈重启要用同一份配置与设置。
     _userDisconnect = false;
@@ -187,19 +186,34 @@ class AndroidVpnCore extends VpnCore {
     // 拆旧实例但**不**广播「已断开」：否则每次连接界面都会先闪一下未连接
     // 再回到连接中，看起来像连接被打断了一次。
     await _teardown(notifyStatus: false);
-    await _startTunnel(profile, settings);
+    await _startTunnel(profile, settings, attempt);
   }
 
   /// 拉起 VpnService 并等内核就绪。手动连接与自愈重启共用这一条路径。
-  Future<void> _startTunnel(VpnProfile profile, AppSettings settings) async {
-    if (_aborted) return;
-    _connecting = true;
+  ///
+  /// [attempt] 是用户这一轮的取消令牌，为 null 表示内部自愈重启。
+  Future<void> _startTunnel(
+    VpnProfile profile,
+    AppSettings settings,
+    ConnectAttempt? attempt,
+  ) async {
+    // 本轮的身份：见 [_attemptSeq] 的说明。
+    final seq = ++_attemptSeq;
+
+    /// 本轮是否应当收手。必须在每一次 await 之后都查。
+    bool aborted() =>
+        isDisposed ||
+        _userDisconnect ||
+        (attempt?.isCancelled ?? false) ||
+        seq != _attemptSeq;
+
+    if (aborted()) return;
     listener.onStatusChanged(VpnStatus.connecting);
 
     try {
       // 1) 申请 VPN 授权。必须在 Activity 里弹系统对话框，因此走通道。
       final granted = await _channel.invokeMethod<bool>('prepareVpn') ?? false;
-      if (_aborted) return;
+      if (aborted()) return;
       if (!granted) {
         listener.onError('未获得 VPN 授权。请重新连接并在系统弹窗中选择「允许」');
         await _teardown(notifyStatus: true);
@@ -208,9 +222,9 @@ class AndroidVpnCore extends VpnCore {
 
       // 2) 资源解包。内核要的是真实文件路径，而 APK 里的资源读不到路径。
       final ruleSetDir = await _stageAssets();
-      if (_aborted) return;
+      if (aborted()) return;
       _cnIpIndex = await _loadCnIpIndex(ruleSetDir);
-      if (_aborted) return;
+      if (aborted()) return;
 
       // 3) 生成配置。分流与 DNS 策略与 Windows 端完全一致，
       //    自动纠正表也一并注入。
@@ -235,12 +249,31 @@ class AndroidVpnCore extends VpnCore {
       await _channel.invokeMethod<void>('connect', <String, Object?>{
         'config': SingBoxConfigBuilder.encode(config),
       });
-      if (_aborted) return;
+      // 服务可能已经被这一句拉起。取消时若直接 return，TUN 会一直接管流量而
+      // 界面显示未连接——必须把刚起来的服务收掉。只有仍是最新的一轮才收，
+      // 否则会把新一轮刚拉起的服务拆掉。
+      if (aborted()) {
+        if (seq == _attemptSeq) await _teardown(notifyStatus: false);
+        return;
+      }
 
-      final ready = await monitor.waitForApi(readyTimeout);
-      if (_aborted) return;
+      // 取消时立刻收手，不必把就绪超时等满。
+      final ready = await monitor.waitForApi(
+        readyTimeout,
+        isCancelled: aborted,
+      );
+      if (aborted()) {
+        if (seq == _attemptSeq) await _teardown(notifyStatus: false);
+        return;
+      }
       if (!ready) {
         final status = await _status();
+        // 取详细错误期间用户可能点了取消：那是用户的选择，不该再报一句
+        // 「启动超时」。这里不写错误，只收掉可能已经起来的服务。
+        if (aborted()) {
+          if (seq == _attemptSeq) await _teardown(notifyStatus: false);
+          return;
+        }
         final detail = status['error'] as String?;
         listener.onError(
           detail == null || detail.isEmpty
@@ -266,20 +299,26 @@ class AndroidVpnCore extends VpnCore {
       await runTunnelReadyGate(
         listener: listener,
         probe: monitor.probeTunnelReadiness,
-        isAborted: () => isDisposed || !_connecting,
+        isAborted: aborted,
       );
-      if (isDisposed || !_connecting) return;
+      if (aborted()) {
+        if (seq == _attemptSeq) await _teardown(notifyStatus: false);
+        return;
+      }
 
       listener.onStatusChanged(VpnStatus.connected);
       // 预热起点用隧道建立那一刻，这样门控已经花掉的时间不会被重复计算。
       monitor.start(since: _tunnelSince);
     } on Object catch (e) {
+      // 取消/被取代不算启动失败：那是用户的选择，不该弹一句红字。
+      if (aborted()) {
+        if (seq == _attemptSeq) await _teardown(notifyStatus: false);
+        return;
+      }
       listener.onError('启动失败：$e');
       // 走 _teardown 而不是 disconnect：后者会立「用户断开」旗标，让紧随其后的
       // 健康自愈被误判成用户主动断开。这个区分与桌面端 `_stopCore` 保持一致。
       await _teardown(notifyStatus: true);
-    } finally {
-      _connecting = false;
     }
   }
 
@@ -300,9 +339,9 @@ class AndroidVpnCore extends VpnCore {
   /// [notifyStatus] 为 false 时不广播「已断开」：连接与自愈重启的过程中会先
   /// 拆旧实例，那一刻界面不该闪回未连接。
   Future<void> _teardown({required bool notifyStatus}) async {
-    // 先落旗标：就绪门控可能正在等待，旗标不到位它会把一个已经拆掉的隧道
-    // 接着宣布成「已连接」。
-    _connecting = false;
+    // 就绪门控靠 _userDisconnect / 取消令牌 / 尝试代际号判断「要不要收手」，
+    // 这三者都由调用方（disconnect、取消、新一轮 _startTunnel）先立好，
+    // 因此这里只负责拆服务本身。
     monitor.stop();
     try {
       await _channel.invokeMethod<void>('disconnect');
@@ -367,7 +406,8 @@ class AndroidVpnCore extends VpnCore {
     final settings = _lastSettings;
     if (profile == null || settings == null) return;
     await _teardown(notifyStatus: false);
-    await _startTunnel(profile, settings);
+    // 内部自愈重启没有用户令牌，取消由 _userDisconnect 表达。
+    await _startTunnel(profile, settings, null);
   }
 
   @override

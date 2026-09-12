@@ -2,6 +2,8 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../app_state.dart';
+import '../core/screen_navigation.dart';
+import '../core/system_tray.dart';
 import '../core/window_controls.dart';
 import '../models.dart';
 import '../theme.dart';
@@ -36,16 +38,46 @@ class _XvShellState extends State<XvShell> {
 
   String? _shownError;
 
+  /// 把版本 / 连接状态 / 更新提示推给 Windows 原生托盘。
+  ///
+  /// 外壳是唯一的推送点：它一启动就存在、且本来就在监听 [AppState]。
+  /// 推送是去重的（见 [SystemTray.sync]），因此它会在每次状态通知时都走一遍
+  /// 也不算浪费——状态没变时不会碰平台通道。
+  late final SystemTray _tray;
+
   @override
   void initState() {
     super.initState();
     widget.state.addListener(_onStateChanged);
+    _tray = SystemTray(state: widget.state)..attach();
+    // 页面自己够不到本层持有的标签索引，跨页跳转因此走 [ScreenNavigation]
+    // 的意图通道（同 UpdateCenter.notice 的做法）。
+    ScreenNavigation.instance.addListener(_onNavigationRequested);
   }
 
   @override
   void dispose() {
+    ScreenNavigation.instance.removeListener(_onNavigationRequested);
+    _tray.dispose();
     widget.state.removeListener(_onStateChanged);
     super.dispose();
+  }
+
+  /// 把页面的跳转意图翻译成本布局下的标签索引。
+  ///
+  /// 同时给两个索引赋值是有意的：只有当前生效的那个布局会去读它自己那一个
+  /// （[_buildDesktop] 读 `_desktopTab`、[_buildMobile] 读 `_mobileTab`），
+  /// 而「配置」在两端的落点恰好都是各自的索引 2——桌面是侧栏的「配置文件」
+  /// 页，移动端是设置标签（配置列表内嵌其中）。在两端分别判断当前布局只会
+  /// 多出一份可能与实际分支脱节的推理。
+  void _onNavigationRequested() {
+    if (ScreenNavigation.instance.value != AppSection.profiles) return;
+    // 先清空再跳转：否则下一次重建会重复触发同一个请求。
+    ScreenNavigation.instance.consume();
+    setState(() {
+      _desktopTab = 2;
+      _mobileTab = 2;
+    });
   }
 
   /// 用 SnackBar 呈现导入失败等错误，错误文本直接来自解析器，面向用户可读。
@@ -112,7 +144,13 @@ class _XvShellState extends State<XvShell> {
       children: <Widget>[
         // 自绘标题栏：与侧边栏同色且没有底部分割线，两者因此连成一体。
         // 品牌与运行计时只在这里出现，侧边栏不再重复。
-        XvTitleBar(theme: widget.theme, state: widget.state),
+        XvTitleBar(
+          theme: widget.theme,
+          state: widget.state,
+          // 标题栏不拥有导航：有更新时点它，由外壳切到设置页（3）的
+          // 「版本更新」卡片，那里才是下载与安装的入口。
+          onOpenUpdate: () => setState(() => _desktopTab = 3),
+        ),
         Expanded(
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.stretch,

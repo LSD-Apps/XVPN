@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import '../app_state.dart';
 import '../core/core_log.dart';
 import '../core/dns_monitor.dart';
+import '../core/screen_navigation.dart';
 import '../core/wireguard_handshake.dart';
 import '../format.dart';
 import '../models.dart';
@@ -145,17 +146,19 @@ class ConnectScreen extends StatelessWidget {
     required bool compact,
   }) {
     final connected = state.isConnected;
-    final connecting = state.isConnecting;
+    // connecting 与 warmingUp 对「主控件该做什么」完全一致：都表示一次尝试
+    // 正在飞，此时点它是取消。合并成一个判断，避免两处各写一遍后走偏。
+    final busy = state.isConnecting;
 
     final ring = ConnectRing(
       size: compact ? ConnectRing.mobileSize : ConnectRing.desktopSize,
-      active: connected || connecting,
+      active: connected || busy,
       icon: Icons.power_settings_new,
-      // 预热与「连接中」必须分开说：内核其实已经就绪，用户此时点断开也是有
+      // 预热与「连接中」必须分开说：内核其实已经就绪，用户此时点取消也是有
       // 意义的，含混成一句「连接中…」会让人以为还在启动阶段。
       title: state.isWarmingUp
           ? '正在建立隧道…'
-          : (connecting ? '连接中…' : (connected ? '已连接' : '未连接')),
+          : (busy ? '连接中…' : (connected ? '已连接' : '未连接')),
       // 预热期间叠加流转弧：这一段要等几秒到二十秒，光有一句静止的文案
       // 看不出程序在动还是卡住了。
       warmup: state.isWarmingUp,
@@ -166,13 +169,15 @@ class ConnectScreen extends StatelessWidget {
               color: connected ? XV.greenSoft : XV.muted,
             )
           : null,
-      // 未连接时与桌面端计时器保持一致，显示占位而不是 00:00:00，
-      // 否则会让人以为「已经连了 0 秒」。
-      sublabel: compact && connected
-          ? fmtDuration(state.elapsed)
-          : (compact ? '--:--:--' : null),
-      // 连接中不允许再次点击：圆环没有禁用态，重复触发会并发跑两遍 connect()。
-      onTap: connecting ? null : state.toggleConnection,
+      // 建立隧道期间圆环是可点的，且必须一眼看出点它是「取消」：一份坏配置的
+      // 预热会一直卡到门控超时（最多 20 秒），没有出口就只能干等。此前这里
+      // 在连接中直接传 null，把整个取消诉求挡掉了。
+      sublabel: busy
+          ? '点击取消'
+          : (compact && connected
+                ? fmtDuration(state.elapsed)
+                : (compact ? '--:--:--' : null)),
+      onTap: busy ? state.cancelConnect : state.toggleConnection,
     );
 
     final info = Column(
@@ -231,19 +236,25 @@ class ConnectScreen extends StatelessWidget {
                   icon: Icons.power_settings_new,
                   onPressed: state.disconnect,
                 )
+              else if (busy)
+                // 连接中 / 建立隧道中：主按钮变成取消，而不是一个点不动的
+                // 「连接中…」。坏配置的预热会一直等到门控超时，必须给出口。
+                XvButton(
+                  label: '取消连接',
+                  icon: Icons.close,
+                  onPressed: state.cancelConnect,
+                )
               else
                 XvButton(
-                  label: state.isWarmingUp
-                      ? '正在建立隧道…'
-                      : (connecting ? '连接中…' : '连接'),
+                  label: '连接',
                   kind: XvButtonKind.primary,
                   icon: Icons.bolt_outlined,
-                  onPressed: connecting ? null : state.connect,
+                  onPressed: state.connect,
                 ),
               const SizedBox(width: 10),
               XvButton(
                 label: '切换配置',
-                onPressed: () => _showProfilePicker(context),
+                onPressed: () => showProfilePicker(context, state),
               ),
             ],
           ),
@@ -1089,106 +1100,146 @@ class ConnectScreen extends StatelessWidget {
       ),
     );
   }
+}
 
-  // ---------------------------------------------------------------- 选择配置
+// ---------------------------------------------------------------- 选择配置
 
-  Future<void> _showProfilePicker(BuildContext context) async {
-    await showDialog<void>(
-      context: context,
-      barrierColor: Colors.black.withValues(alpha: 0.6),
-      builder: (BuildContext dialogContext) {
-        return Dialog(
-          backgroundColor: XV.panel,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(XV.rCard),
-            side: BorderSide(color: XV.line),
-          ),
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 440),
-            child: Padding(
-              padding: const EdgeInsets.all(18),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: <Widget>[
-                  Text(
-                    '切换配置',
-                    style: TextStyle(
-                      fontSize: 15,
-                      fontWeight: FontWeight.w700,
-                      color: XV.text,
-                    ),
+/// 打开「切换配置」弹窗。
+///
+/// 做成顶层函数而不是 `ConnectScreen` 的私有方法，是为了能在**空配置**下直接
+/// 测到它：连接页在没有配置时走的是导入引导，根本不渲染「切换配置」按钮，而空
+/// 列表恰恰是这个弹窗最该帮上忙的时候——用户需要一条去添加配置的路。测试从这
+/// 个入口单独打开弹窗，不依赖按钮是否渲染。
+Future<void> showProfilePicker(BuildContext context, AppState state) async {
+  await showDialog<void>(
+    context: context,
+    barrierColor: Colors.black.withValues(alpha: 0.6),
+    builder: (BuildContext dialogContext) {
+      return Dialog(
+        backgroundColor: XV.panel,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(XV.rCard),
+          side: BorderSide(color: XV.line),
+        ),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 440),
+          child: Padding(
+            padding: const EdgeInsets.all(18),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: <Widget>[
+                Text(
+                  '切换配置',
+                  style: TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.w700,
+                    color: XV.text,
                   ),
-                  const SizedBox(height: 12),
-                  for (final p in state.profiles)
-                    Padding(
-                      padding: const EdgeInsets.only(bottom: 4),
-                      child: MouseRegion(
-                        cursor: SystemMouseCursors.click,
-                        child: GestureDetector(
-                          behavior: HitTestBehavior.opaque,
-                          onTap: () {
-                            state.setActiveProfile(p.id);
-                            Navigator.of(dialogContext).pop();
-                          },
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 11,
-                              vertical: 10,
-                            ),
-                            decoration: BoxDecoration(
-                              borderRadius: BorderRadius.circular(XV.rCtl),
-                              color: p.id == state.activeProfile?.id
-                                  ? XV.panel3
-                                  : Colors.transparent,
-                            ),
-                            child: Row(
-                              children: <Widget>[
-                                Expanded(
-                                  child: Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: <Widget>[
-                                      Text(
-                                        p.name,
-                                        style: XvText.bodyMuted.copyWith(
-                                          color: XV.text,
+                ),
+                const SizedBox(height: 12),
+                if (state.profiles.isEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 4),
+                    child: Text('还没有导入任何配置', style: XvText.caption),
+                  )
+                else
+                  // 配置多时必须能滚。弹窗高度受屏幕限制，把全部行直接排进
+                  // Column 会在配置较多时抛 RenderFlex overflow。
+                  Flexible(
+                    child: SingleChildScrollView(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: <Widget>[
+                          for (final p in state.profiles)
+                            Padding(
+                              padding: const EdgeInsets.only(bottom: 4),
+                              child: MouseRegion(
+                                cursor: SystemMouseCursors.click,
+                                child: GestureDetector(
+                                  behavior: HitTestBehavior.opaque,
+                                  onTap: () {
+                                    state.setActiveProfile(p.id);
+                                    Navigator.of(dialogContext).pop();
+                                  },
+                                  child: Container(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 11,
+                                      vertical: 10,
+                                    ),
+                                    decoration: BoxDecoration(
+                                      borderRadius: BorderRadius.circular(
+                                        XV.rCtl,
+                                      ),
+                                      color: p.id == state.activeProfile?.id
+                                          ? XV.panel3
+                                          : Colors.transparent,
+                                    ),
+                                    child: Row(
+                                      children: <Widget>[
+                                        Expanded(
+                                          child: Column(
+                                            crossAxisAlignment:
+                                                CrossAxisAlignment.start,
+                                            children: <Widget>[
+                                              Text(
+                                                p.name,
+                                                style: XvText.bodyMuted
+                                                    .copyWith(color: XV.text),
+                                              ),
+                                              const SizedBox(height: 3),
+                                              Text(
+                                                p.endpointDisplay,
+                                                style: XvText.monoSmall,
+                                              ),
+                                            ],
+                                          ),
                                         ),
-                                      ),
-                                      const SizedBox(height: 3),
-                                      Text(
-                                        p.endpointDisplay,
-                                        style: XvText.monoSmall,
-                                      ),
-                                    ],
+                                        if (p.id == state.activeProfile?.id)
+                                          RouteTag.green('当前'),
+                                      ],
+                                    ),
                                   ),
                                 ),
-                                if (p.id == state.activeProfile?.id)
-                                  RouteTag.green('当前'),
-                              ],
+                              ),
                             ),
-                          ),
-                        ),
+                        ],
                       ),
                     ),
-                  const SizedBox(height: 8),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.end,
-                    children: <Widget>[
-                      XvButton(
-                        label: '关闭',
-                        onPressed: () => Navigator.of(dialogContext).pop(),
-                      ),
-                    ],
                   ),
-                ],
-              ),
+                const SizedBox(height: 10),
+                // 引导入口：「切换配置」只解决「切到已有哪一份」，用户想新增
+                // 一份时由这里给出去配置页的路。措辞沿用配置页里两条导入路径
+                // 的原文（「选择配置文件」「手动填写」），不另造同义词。
+                ImportActionTile(
+                  icon: Icons.tune,
+                  title: '管理 / 添加配置',
+                  description: '用「选择配置文件」或「手动填写」添加新配置',
+                  onTap: () {
+                    // 先关弹窗再发出跳转意图：用户看到的是弹窗消失、页面切
+                    // 过去，而不是弹窗仍盖在新页面上。跳转本身由外壳监听
+                    // [ScreenNavigation] 完成——页面这一层够不到外壳的索引。
+                    Navigator.of(dialogContext).pop();
+                    ScreenNavigation.instance.request(AppSection.profiles);
+                  },
+                ),
+                const SizedBox(height: 10),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.end,
+                  children: <Widget>[
+                    XvButton(
+                      label: '关闭',
+                      onPressed: () => Navigator.of(dialogContext).pop(),
+                    ),
+                  ],
+                ),
+              ],
             ),
           ),
-        );
-      },
-    );
-  }
+        ),
+      );
+    },
+  );
 }
 
 // ------------------------------------------------------------------ 子组件
@@ -1503,7 +1554,8 @@ class _EmptyStateState extends State<_EmptyState> {
                           icon: Icons.edit_outlined,
                           expand: true,
                           height: 46,
-                          onPressed: () => startManualConfigForm(context, state),
+                          onPressed: () =>
+                              startManualConfigForm(context, state),
                         ),
                         const SizedBox(height: 20),
                         Padding(

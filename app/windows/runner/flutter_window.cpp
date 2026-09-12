@@ -1,12 +1,16 @@
 #include "flutter_window.h"
 
 #include <flutter/standard_method_codec.h>
+#include <flutter_windows.h>
 #include <tlhelp32.h>
 #include <wininet.h>
 
+#include <cstdint>
+#include <cstring>
 #include <optional>
 #include <string>
 #include <variant>
+#include <vector>
 
 #include "flutter/generated_plugin_registrant.h"
 #include "resource.h"
@@ -300,6 +304,161 @@ bool CleanupResources() {
   return proxy_restored;
 }
 
+// ---------------------------------------------------------------- 托盘图标
+
+// Dart 侧的状态文案是 UTF-8（含中文），必须走 MultiByteToWideChar 转宽字符。
+//
+// 之前的 setSystemProxy 参数是 "host:port"（纯 ASCII），可以直接
+// std::wstring(begin(), end()) 逐字节扩展；换成状态文案后用那种写法会得到乱码。
+std::wstring Utf8ToWide(const std::string& utf8) {
+  if (utf8.empty()) {
+    return std::wstring();
+  }
+  const int size = MultiByteToWideChar(CP_UTF8, 0, utf8.data(),
+                                       static_cast<int>(utf8.size()), nullptr,
+                                       0);
+  if (size <= 0) {
+    return std::wstring();
+  }
+  std::wstring wide(static_cast<size_t>(size), L'\0');
+  MultiByteToWideChar(CP_UTF8, 0, utf8.data(), static_cast<int>(utf8.size()),
+                      wide.data(), size);
+  return wide;
+}
+
+const flutter::EncodableValue* MapValue(const flutter::EncodableMap& map,
+                                        const char* key) {
+  const auto it = map.find(flutter::EncodableValue(key));
+  return it == map.end() ? nullptr : &it->second;
+}
+
+std::string MapString(const flutter::EncodableMap& map, const char* key) {
+  const flutter::EncodableValue* value = MapValue(map, key);
+  if (value == nullptr) {
+    return std::string();
+  }
+  const std::string* text = std::get_if<std::string>(value);
+  return text == nullptr ? std::string() : *text;
+}
+
+// 用 32 位 BGRA 像素造一个 HICON。
+HICON IconFromPixels(int width, int height,
+                     const std::vector<uint32_t>& pixels) {
+  BITMAPINFO bmi = {};
+  bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+  bmi.bmiHeader.biWidth = width;
+  // 负高度 = top-down，像素顺序与 pixels 一致（左上角在前）。
+  bmi.bmiHeader.biHeight = -height;
+  bmi.bmiHeader.biPlanes = 1;
+  bmi.bmiHeader.biBitCount = 32;
+  bmi.bmiHeader.biCompression = BI_RGB;
+
+  HDC screen = GetDC(nullptr);
+  void* bits = nullptr;
+  HBITMAP color =
+      CreateDIBSection(screen, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
+  if (screen != nullptr) {
+    ReleaseDC(nullptr, screen);
+  }
+  if (color == nullptr || bits == nullptr) {
+    if (color != nullptr) {
+      DeleteObject(color);
+    }
+    return nullptr;
+  }
+  memcpy(bits, pixels.data(), pixels.size() * sizeof(uint32_t));
+
+  // 颜色位图自带 alpha 时掩码全 0：是否透明完全由 alpha 决定。
+  //
+  // 掩码显式传一块零缓冲而不是 CreateBitmap(..., nullptr)：后者的文档写的是
+  // 「内容未定义」，虽然实测会清零，但这里不值得把图标能不能画出来押在
+  // 一个未定义行为上。1bpp 的行跨距按 16 像素对齐。
+  const size_t mask_stride = ((static_cast<size_t>(width) + 15) / 16) * 2;
+  const std::vector<uint8_t> empty_mask(mask_stride * height, 0);
+  HBITMAP mask = CreateBitmap(width, height, 1, 1, empty_mask.data());
+  ICONINFO info = {};
+  info.fIcon = TRUE;
+  info.hbmColor = color;
+  info.hbmMask = mask;
+  HICON icon = CreateIconIndirect(&info);
+  DeleteObject(color);
+  if (mask != nullptr) {
+    DeleteObject(mask);
+  }
+  return icon;
+}
+
+// 把图标去饱和，做「未连接」用的灰色变体。失败返回 nullptr。
+//
+// 用 GetIconInfo + GetDIBits 直接读图标的 32 位像素，而不是把图标
+// DrawIconEx 到一块 DIB 上再处理：后者在部分系统/图标格式下不会写入 alpha
+// 通道，得到的是一张**全透明**的图标——托盘上会直接看不见图标，而不是变灰。
+//
+// 读到的 alpha 若全为 0（图标本身没有 alpha 通道），同样返回 nullptr 交给调用方
+// 退回彩色图标：最坏情况是「没变灰」，而不是「图标消失」。
+HICON CreateDesaturatedIcon(HICON source) {
+  ICONINFO info = {};
+  if (!GetIconInfo(source, &info)) {
+    return nullptr;
+  }
+
+  HICON result = nullptr;
+  BITMAP bitmap = {};
+  if (info.hbmColor != nullptr &&
+      GetObjectW(info.hbmColor, sizeof(bitmap), &bitmap) != 0) {
+    const int width = bitmap.bmWidth;
+    const int height = bitmap.bmHeight;
+    if (width > 0 && height > 0) {
+      std::vector<uint32_t> pixels(static_cast<size_t>(width) * height, 0);
+      BITMAPINFO bmi = {};
+      bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+      bmi.bmiHeader.biWidth = width;
+      bmi.bmiHeader.biHeight = -height;
+      bmi.bmiHeader.biPlanes = 1;
+      bmi.bmiHeader.biBitCount = 32;
+      bmi.bmiHeader.biCompression = BI_RGB;
+
+      HDC screen = GetDC(nullptr);
+      const int scanned = GetDIBits(screen, info.hbmColor, 0, height,
+                                    pixels.data(), &bmi, DIB_RGB_COLORS);
+      if (screen != nullptr) {
+        ReleaseDC(nullptr, screen);
+      }
+
+      if (scanned == height) {
+        bool has_alpha = false;
+        for (uint32_t& pixel : pixels) {
+          const uint32_t alpha = pixel & 0xFF000000u;
+          if (alpha != 0) {
+            has_alpha = true;
+          }
+          const int blue = static_cast<int>(pixel & 0xFFu);
+          const int green = static_cast<int>((pixel >> 8) & 0xFFu);
+          const int red = static_cast<int>((pixel >> 16) & 0xFFu);
+          // Rec.601 亮度权重，与 GDI 的去饱和（ColorMatrix）口径一致。
+          const int luminance =
+              (red * 299 + green * 587 + blue * 114) / 1000;
+          pixel = alpha | (static_cast<uint32_t>(luminance) << 16) |
+                  (static_cast<uint32_t>(luminance) << 8) |
+                  static_cast<uint32_t>(luminance);
+        }
+        if (has_alpha) {
+          result = IconFromPixels(width, height, pixels);
+        }
+      }
+    }
+  }
+
+  // GetIconInfo 会创建两张位图，用完必须由我们释放。
+  if (info.hbmColor != nullptr) {
+    DeleteObject(info.hbmColor);
+  }
+  if (info.hbmMask != nullptr) {
+    DeleteObject(info.hbmMask);
+  }
+  return result;
+}
+
 }  // namespace
 
 FlutterWindow::FlutterWindow(const flutter::DartProject& project)
@@ -408,6 +567,17 @@ bool FlutterWindow::OnCreate() {
           result->Success(flutter::EncodableValue(RestoreSystemProxy()));
         } else if (method == "hasProxyBackup") {
           result->Success(flutter::EncodableValue(HasProxyBackup()));
+        } else if (method == "setTrayState") {
+          // 托盘状态由 Dart 在状态变化时推来一次（见 core/system_tray.dart），
+          // 原生不轮询、也不自己查更新。
+          const flutter::EncodableMap* state =
+              std::get_if<flutter::EncodableMap>(call.arguments());
+          if (state == nullptr) {
+            result->Error("bad_args", "setTrayState 需要一个状态表");
+            return;
+          }
+          ApplyTrayState(*state);
+          result->Success();
         } else {
           result->NotImplemented();
         }
@@ -449,19 +619,125 @@ void FlutterWindow::InstallTrayIcon() {
   tray_icon_.uID = 1;
   tray_icon_.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
   tray_icon_.uCallbackMessage = kTrayCallbackMessage;
-  tray_icon_.hIcon =
-      LoadIconW(GetModuleHandle(nullptr), MAKEINTRESOURCEW(IDI_APP_ICON));
-  if (tray_icon_.hIcon == nullptr) {
-    tray_icon_.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
-  }
+  tray_icon_.hIcon = NormalTrayIcon();
+  // 首帧之前 Dart 还没推来状态，先用品牌名占位；一旦收到 setTrayState
+  // （很快，外壳 initState 就会推一次）就会换成「XVPN <版本> · <状态>」。
   wcscpy_s(tray_icon_.szTip, L"XVPN · 智能分流");
   tray_installed_ = Shell_NotifyIconW(NIM_ADD, &tray_icon_) == TRUE;
 }
 
 void FlutterWindow::RemoveTrayIcon() {
-  if (!tray_installed_) return;
-  Shell_NotifyIconW(NIM_DELETE, &tray_icon_);
-  tray_installed_ = false;
+  if (tray_installed_) {
+    Shell_NotifyIconW(NIM_DELETE, &tray_icon_);
+    tray_installed_ = false;
+  }
+  // 无论通知区那一项是否真的加成功，句柄都在这里释放：NIM_ADD 失败时
+  // 上面那两个图标仍然是已加载的，不能泄漏。
+  DestroyTrayIcons();
+}
+
+int FlutterWindow::TrayIconSize() {
+  // 通知区图标要按当前 DPI 选尺寸。清单里声明了 PerMonitorV2（见
+  // runner.exe.manifest），系统不会替我们缩放，因此必须自己算：100% 是
+  // 16px，150% 是 24px，200% 是 32px。
+  //
+  // DPI 取自窗口所在显示器，用的是 runner 里已有的
+  // FlutterDesktopGetDpiForMonitor（见 win32_window.cpp），不额外依赖
+  // GetDpiForWindow / GetSystemMetricsForDpi 这类需要较新 SDK 才声明的 API。
+  constexpr int kBaseSize = 16;  // 100% DPI 下 SM_CXSMICON 的值。
+  HWND handle = GetHandle();
+  UINT dpi = 0;
+  if (handle != nullptr) {
+    dpi = FlutterDesktopGetDpiForMonitor(
+        MonitorFromWindow(handle, MONITOR_DEFAULTTONEAREST));
+  }
+  if (dpi == 0) {
+    dpi = 96;
+  }
+  const int size = MulDiv(kBaseSize, static_cast<int>(dpi), 96);
+  return size > 0 ? size : kBaseSize;
+}
+
+HICON FlutterWindow::NormalTrayIcon() {
+  if (tray_icon_normal_ != nullptr) return tray_icon_normal_;
+  const int size = TrayIconSize();
+  // 按 DPI 显式选尺寸加载：LoadIconW 只会给出系统默认的图标尺寸，
+  // 在 150% / 200% 缩放下托盘会拿到一张被放大的模糊图。
+  tray_icon_normal_ = static_cast<HICON>(
+      LoadImageW(GetModuleHandle(nullptr), MAKEINTRESOURCEW(IDI_APP_ICON),
+                 IMAGE_ICON, size, size, 0));
+  tray_normal_owned_ = tray_icon_normal_ != nullptr;
+  if (tray_icon_normal_ == nullptr) {
+    // 资源图标取不到时退回系统默认图标。它是共享句柄，**不能** DestroyIcon。
+    tray_icon_normal_ = LoadIconW(nullptr, IDI_APPLICATION);
+  }
+  return tray_icon_normal_;
+}
+
+HICON FlutterWindow::GreyTrayIcon() {
+  if (tray_icon_grey_ != nullptr) return tray_icon_grey_;
+  const HICON source = NormalTrayIcon();
+  if (source == nullptr) return nullptr;
+  tray_icon_grey_ = CreateDesaturatedIcon(source);
+  return tray_icon_grey_;
+}
+
+void FlutterWindow::DestroyTrayIcons() {
+  if (tray_icon_normal_ != nullptr && tray_normal_owned_) {
+    DestroyIcon(tray_icon_normal_);
+  }
+  tray_icon_normal_ = nullptr;
+  tray_normal_owned_ = false;
+  if (tray_icon_grey_ != nullptr) {
+    DestroyIcon(tray_icon_grey_);
+  }
+  tray_icon_grey_ = nullptr;
+}
+
+void FlutterWindow::UpdateTrayIcon() {
+  std::wstring tooltip = L"XVPN";
+  if (!tray_version_.empty()) {
+    tooltip += L" " + tray_version_;
+  }
+  if (!tray_status_.empty()) {
+    tooltip += L" · " + tray_status_;
+  }
+  if (!tray_update_.empty()) {
+    tooltip += L" · 发现新版本 v" + tray_update_;
+  }
+  // szTip 是定长数组（含结尾 0 共 128 个宽字符）。用 _TRUNCATE 而不是报错：
+  // tooltip 少了尾巴也不该让整次图标更新失败。
+  wcsncpy_s(tray_icon_.szTip, tooltip.c_str(), _TRUNCATE);
+
+  // 只有「已连接」用彩色图标；未连接 / 连接中 / 建立隧道中一律灰掉，
+  // 让「现在是不是真的在隧道里」在最小化到托盘后也能一眼看到。
+  //
+  // 灰度图标做不出来时（图标没有 alpha 通道等）退回彩色图标：宁可「没灰」，
+  // 也不能把 hIcon 留成一个刚被 DestroyTrayIcons 释放掉的悬空句柄。
+  HICON desired = tray_connected_ ? NormalTrayIcon() : GreyTrayIcon();
+  if (desired == nullptr) {
+    desired = NormalTrayIcon();
+  }
+  if (desired != nullptr) {
+    tray_icon_.hIcon = desired;
+  }
+  tray_icon_.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
+
+  // Shell_NotifyIcon 会把图标**复制**一份，因此这里换掉/释放旧句柄是安全的。
+  if (tray_installed_) {
+    Shell_NotifyIconW(NIM_MODIFY, &tray_icon_);
+  }
+}
+
+void FlutterWindow::ApplyTrayState(const flutter::EncodableMap& state) {
+  tray_version_ = Utf8ToWide(MapString(state, "version"));
+  tray_status_ = Utf8ToWide(MapString(state, "status"));
+  tray_update_ = Utf8ToWide(MapString(state, "updateVersion"));
+  const flutter::EncodableValue* connected = MapValue(state, "connected");
+  const bool* flag = connected == nullptr ? nullptr
+                                          : std::get_if<bool>(connected);
+  tray_connected_ = flag != nullptr && *flag;
+  UpdateTrayIcon();
 }
 
 void FlutterWindow::ShowMainWindow() {
@@ -479,6 +755,20 @@ void FlutterWindow::ShowTrayMenu() {
   HMENU menu = CreatePopupMenu();
   if (menu == nullptr) return;
   AppendMenuW(menu, MF_STRING, kTrayMenuShow, L"显示主界面");
+  // 版本与更新提示是**纯信息项**（MF_GRAYED，且 id 为 0），不是可点动作。
+  // 理由：托盘现在的命令全部在原生侧闭环处理（显示 / 退出），没有一条
+  // 「原生告诉 Dart 去做什么」的现成通道；把「发现新版本」做成可点会是一个
+  // 按了没反应的承诺。要让它可点，需要的是一条新的 native → Dart 推送，
+  // 与 maximizedChanged 同一形状。
+  if (!tray_version_.empty()) {
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(menu, MF_STRING | MF_GRAYED, 0,
+                (L"XVPN " + tray_version_).c_str());
+    if (!tray_update_.empty()) {
+      AppendMenuW(menu, MF_STRING | MF_GRAYED, 0,
+                  (L"发现新版本 v" + tray_update_).c_str());
+    }
+  }
   AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
   AppendMenuW(menu, MF_STRING, kTrayMenuQuit, L"退出 XVPN");
 
@@ -589,6 +879,16 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
           "maximizedChanged",
           std::make_unique<flutter::EncodableValue>(maximized == 1));
     }
+  }
+
+  // 换到不同 DPI 的显示器之后，缓存的托盘图标是旧尺寸的。丢掉重建并按新
+  // DPI 更新一次通知区。
+  //
+  // **不 return**：窗口自身的缩放与定位还要交给基类
+  // （Win32Window::MessageHandler 的 WM_DPICHANGED 分支）。
+  if (message == WM_DPICHANGED) {
+    DestroyTrayIcons();
+    UpdateTrayIcon();
   }
 
   // Give Flutter, including plugins, an opportunity to handle window messages.

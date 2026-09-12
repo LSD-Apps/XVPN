@@ -793,16 +793,20 @@ class _ConfigFormDialogState extends State<_ConfigFormDialog> {
       _input('配置名称', _name, field: 'name', hint: '显示在配置列表里的名字'),
       ...fields,
     ];
-    return SingleChildScrollView(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: <Widget>[
-          for (var i = 0; i < children.length; i++) ...<Widget>[
-            if (i > 0) const SizedBox(height: 12),
-            children[i],
-          ],
+    // 复用 [XvScrollableColumn] 而不是裸的 [SingleChildScrollView]：它内部已经
+    // 给滚动内容右侧留出了滚动条的宽度。
+    //
+    // 桌面端 Flutter 的滚动条是**浮在内容之上**的（不占布局宽度），裸用
+    // SingleChildScrollView 时，滚动条会正好压在字段右边缘上——手动添加配置
+    // 有十几个字段，这一点在矮窗口里尤其明显。该 widget 的注释里记录了同一处
+    // 现象与它的取值理由，这里不再重复一套。
+    return XvScrollableColumn(
+      children: <Widget>[
+        for (var i = 0; i < children.length; i++) ...<Widget>[
+          if (i > 0) const SizedBox(height: 12),
+          children[i],
         ],
-      ),
+      ],
     );
   }
 

@@ -65,6 +65,20 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
   /// 而不是每次都要手动点一次圆环。
   bool _wantConnected = false;
 
+  /// 当前在飞的连接尝试的取消令牌。null 表示没有用户发起的尝试在飞
+  /// （未连接、已连接，或正在自动重连）。
+  ConnectAttempt? _connectAttempt;
+
+  /// 连接尝试的代际号。每次用户发起连接自增，便于测试与日志区分是哪一轮。
+  int _connectGeneration = 0;
+
+  /// 上一轮 `_core.connect` 的 Future，用来把两轮连接**串行化**。
+  ///
+  /// 内核的进程句柄与系统代理都是全局资源，两轮同时在飞时，旧的一轮可能在
+  /// 任意 await 之后把新一轮刚设好的代理覆盖掉或撤掉。让新一轮等旧一轮彻底
+  /// 收手，整类竞态就不存在了，而不必在每个副作用上再叠一层归属判断。
+  Future<void>? _inFlightConnect;
+
   late final VpnCore _core = coreFactory?.call(this) ?? DemoVpnCore(this);
 
   /// 分流记录上限，与设计稿脚注「最多保留最近 500 条」一致。
@@ -536,16 +550,82 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
       notifyListeners();
       return;
     }
+
+    // 新的一轮：作废上一轮仍在飞的尝试。它可能在任意 await 之后醒来，若不带上
+    // 「已被取代」这个信息，就会把新一轮刚建立的状态覆盖掉。
+    _connectAttempt?.cancel();
+    final attempt = ConnectAttempt(++_connectGeneration);
+    _connectAttempt = attempt;
     _lastError = null;
     // 先记意图再拨号：中途失败时下次启动会重试，符合用户「我要连着」的预期。
     _wantConnected = true;
     _persist();
-    await _core.connect(profile, _settings);
+
+    // 等上一轮真正收手，再发起新一轮（见 [_inFlightConnect]）。等待期间用户
+    // 可能点了取消，状态也可能已经被释放，因此醒来后要复查。
+    final previous = _inFlightConnect;
+    if (previous != null) {
+      try {
+        await previous;
+      } on Object {
+        // 上一轮的失败与本轮无关。
+      }
+    }
+    if (_disposed || attempt.isCancelled) return;
+
+    final run = _core.connect(profile, _settings, attempt: attempt);
+    _inFlightConnect = run;
+    try {
+      await run;
+    } finally {
+      if (identical(_inFlightConnect, run)) _inFlightConnect = null;
+    }
+    // 核心返回后复查：本轮若已被取消/取代，绝不再碰状态。状态与错误都由核心
+    // 经回调更新，这里只是不给自己记「本轮已结束」的账。
+    if (attempt.isCancelled) return;
+    if (identical(_connectAttempt, attempt)) _connectAttempt = null;
   }
 
   Future<void> disconnect() async {
+    // 在飞的尝试一并作废：显式断开同样是「不要继续了」。已连接时没有在飞的
+    // 尝试，这一步无副作用，行为与从前一致。
+    //
+    // 刻意不等待在飞的那一轮：它的收尾由令牌驱动，会在下一个 await 之后自己
+    // 完成清理；在这里 await 会把一次同步的断开变成异步，widget / 持久化用例里
+    // 「断开后立刻 dispose」就会撞上「通知已销毁对象」。
+    _connectAttempt?.cancel();
+    _connectAttempt = null;
     _wantConnected = false;
     _persist();
+    await _core.disconnect();
+  }
+
+  /// 取消正在进行的连接尝试。
+  ///
+  /// 与 [disconnect] 的区别在**语义**而不是清理：取消会作废本轮尝试，让它在
+  /// 下一个 await 之后收手，绝不把状态翻回已连接，也不留下错误——那是用户
+  /// 自己的选择。清理仍复用 [disconnect] 那条路径（内核、系统代理、PID 文件
+  /// 的回收只有一套），避免出现第二种「收不干净」的写法。
+  ///
+  /// 三种情形：
+  ///   * 没有尝试在飞（未连接）：无害的 no-op；
+  ///   * 尝试还没成功（连接中 / 建立隧道中）：作废并收干净；
+  ///   * 尝试已经成功（已连接）：按普通断开处理。
+  Future<void> cancelConnect() async {
+    final attempt = _connectAttempt;
+    if (attempt == null && !isConnecting && _status != VpnStatus.connected) {
+      return;
+    }
+    attempt?.cancel();
+    _connectAttempt = null;
+    _wantConnected = false;
+    // 取消是用户的选择，不该留下「错误」。核心在收尾时若发现系统代理没能
+    // 还原，那是必须让用户知道的事实——因此先清掉本轮留下的提示，随后的
+    // 清理仍可写入新的错误。
+    _lastError = null;
+    _persist();
+    // 清理动作与 [disconnect] 完全共用（内核、系统代理、PID 文件只有一套
+    // 收尾）；区别只在语义：这里先作废令牌，让在飞的那一轮自己收手。
     await _core.disconnect();
   }
 
