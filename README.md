@@ -9,7 +9,7 @@ resolvers to avoid poisoning.
 
 | | |
 | --- | --- |
-| Desktop | Windows |
+| Desktop | Windows · Linux |
 | Mobile | Android |
 | Core | [sing-box](https://github.com/SagerNet/sing-box) 1.14.0 |
 | UI | Flutter — one state layer and one palette shared by both platforms |
@@ -75,7 +75,8 @@ Behaviour, limits, and the measurements behind them are documented in
 1. Launch the app.
 2. Drag your `.conf` / `.ovpn` into the window (Windows), or use your phone's file
    manager "Open with" → XVPN. You can also pick a file or paste the config text.
-3. On first connect, Windows sets the system proxy; Android asks for VPN permission.
+3. On first connect, Windows / Linux sets the system proxy; Android asks for VPN
+   permission.
 
 On Windows, closing the window minimizes the app to the system tray without
 dropping the connection. To actually quit, use the tray menu's "Quit XVPN" — it
@@ -84,9 +85,36 @@ broken network.
 
 > **On traffic takeover:** desktop uses the system proxy (no admin rights, works
 > immediately for browsers and most apps); Android uses the VpnService TUN (the
-> only option there). Desktop TUN would need the wintun driver and admin rights,
-> which are not bundled, so the settings page deliberately **does not offer** that
-> option — see "Directions not supported" in [`docs/PROTOCOLS.md`](docs/PROTOCOLS.md).
+> only option there). Desktop TUN would need the wintun driver or a privileged
+> helper plus admin rights, which are not bundled, so the settings page
+> deliberately **does not offer** that option — see "Directions not supported" in
+> [`docs/PROTOCOLS.md`](docs/PROTOCOLS.md).
+
+### Linux desktop
+
+Linux follows the same path as Windows: the core runs as a child process and only
+the system proxy is configured. **No root, no privileges.** It therefore also
+tunnels **only apps that honour the system proxy** (browsers and most desktop
+apps); games and CLI tools have to wait for the TUN phase.
+
+- **Desktop environments:** GNOME-family (gsettings) and KDE (kioslaverc + KIO
+  reload) only. Other environments (XFCE, sway, i3, …) expose no common interface,
+  so the app reports "could not set the system proxy" instead of pretending.
+- **Secrets:** the system keyring (libsecret's `secret-tool`) is preferred. If it
+  is missing, credentials are stored **in plain text** and the import form says so
+  — the app never claims encryption it does not have.
+- **Window:** under X11 the title bar is custom-drawn like on Windows; under
+  Wayland move/resize are unreliable, so the custom buttons are hidden and native
+  decorations are used.
+
+Runtime dependencies (usually already installed; a missing one only degrades the
+matching feature, it never crashes the app):
+
+| Feature | Dependency | Debian/Ubuntu | Fedora / Arch |
+| --- | --- | --- | --- |
+| System proxy (GNOME) | `gsettings` | `libglib2.0-bin` | `glib2` / `glib2` |
+| System proxy (KDE) | `kwriteconfig5/6`, `dbus-send` | `kde-cli-tools`, `dbus` | `kde-cli-tools`, `dbus` |
+| Secret storage | libsecret's `secret-tool` | `libsecret-tools` | `libsecret` / `libsecret` |
 
 ## Diagnostics
 
@@ -198,17 +226,27 @@ limitations are.
 ## Building from source
 
 Requires Flutter 3.44+, Visual Studio (Windows, with the "Desktop development with
-C++" workload), and Android SDK + NDK (for Android).
+C++" workload), and Android SDK + NDK (for Android). For Linux you additionally
+need `clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev`.
 
 ```powershell
 # Desktop
 cd app
 flutter build windows
 
+# Linux desktop
+cd app
+flutter build linux --release
+
 # Android: build the core library first, then package
 pwsh scripts/build-libbox.ps1      # produces app/android/app/libs/libbox.aar
 cd app; flutter build apk
 ```
+
+The desktop core binary ships with the repository: `app/assets/bin/sing-box.exe`
+on Windows and `app/assets/bin/sing-box` on Linux (both sing-box 1.14.0; origin
+and licence in [`NOTICE.md`](NOTICE.md)). The build scripts place them next to the
+executable.
 
 `scripts/build-libbox.ps1` fetches the sing-box source and compiles `libbox.aar`
 with gomobile. The pitfalls along that toolchain (Go version, linkname checks,
@@ -264,6 +302,8 @@ app/lib/
   theme.dart     Dual-theme palette (dark / light); the UI only reads colours via XV.*
 app/tool/        Dev tools: generate core config, validate config, build China IP index
 app/windows/     Custom borderless window, tray, system proxy takeover and restore
+app/linux/       Custom borderless window (Wayland fallback) and window channel;
+                 packaging/ holds the .desktop file and hicolor icons
 app/android/     VpnService implementation, VpnService ↔ libbox bridge
 design/          Brand assets and UI mockups
 docs/            Protocols, rules, self-healing and diagnostics, Android
@@ -315,10 +355,12 @@ forms a combined work under the GPL.
 - Full text: [`LICENSE`](LICENSE)
 - Third-party components, the upstream additional terms (sing-box restricts the use
   of its name), rule set provenance, and export-control notes: [`NOTICE.md`](NOTICE.md)
+- Aggregated licences of the Go modules statically linked into the core binaries:
+  [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md)
 
-If you redistribute, keep `LICENSE` and `NOTICE.md`, provide a way to obtain the
-corresponding sing-box source, and **do not** use the sing-box name or imply any
-affiliation with the upstream project.
+If you redistribute, keep `LICENSE`, `NOTICE.md` and `THIRD-PARTY-NOTICES.md`,
+provide a way to obtain the corresponding sing-box source, and **do not** use the
+sing-box name or imply any affiliation with the upstream project.
 
 ## Usage notice
 
@@ -332,3 +374,11 @@ of your jurisdiction. The analysis (including feasibility by market) is in
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) (Chinese). The short version: explain *why*
 in comments and commit messages, verify protocol behaviour against a real
 `sing-box check`, and don't ship UI that promises something the code doesn't do.
+
+## Security
+
+XVPN handles your credentials and decides where all your traffic goes, so security
+reports are taken seriously. Report vulnerabilities **privately** via
+[GitHub Security Advisories](https://github.com/LSD-Apps/XVPN/security/advisories/new);
+see [`SECURITY.md`](SECURITY.md) for scope and supported versions. Release history is
+in [`CHANGELOG.md`](CHANGELOG.md).

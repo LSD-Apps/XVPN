@@ -8,7 +8,7 @@
 
 | | |
 | --- | --- |
-| 桌面端 | Windows |
+| 桌面端 | Windows · Linux |
 | 移动端 | Android |
 | 内核 | [sing-box](https://github.com/SagerNet/sing-box) 1.14.0 |
 | 界面 | Flutter，两端共用一套状态层与调色板 |
@@ -67,15 +67,37 @@
 1. 启动程序。
 2. 把 `.conf` / `.ovpn` 拖进窗口（Windows），或在手机上用文件管理器
    「打开方式」选择 XVPN，也可以点「选择配置文件」或粘贴配置文本。
-3. 首次连接时 Windows 会设置系统代理、Android 会请求 VPN 授权。
+3. 首次连接时 Windows / Linux 会设置系统代理、Android 会请求 VPN 授权。
 
 Windows 端关闭主窗口会收进系统托盘，连接不中断；要真正退出走托盘右键菜单的
 「退出 XVPN」——退出时会还原系统代理并结束内核进程，不会留下断网的烂摊子。
 
 > **关于接管方式**：桌面端走系统代理（免管理员权限，浏览器与绝大多数软件
 > 立即生效）；安卓端走 VpnService 的 TUN（唯一可行方式）。桌面端的 TUN 需要
-> wintun 驱动与管理员权限，当前版本未内置，因此设置页**不提供**该选项——
-> 详见 [`docs/PROTOCOLS.md`](docs/PROTOCOLS.md) 的「暂不支持的方向」。
+> wintun 驱动或提权的辅助进程与管理员权限，当前版本未内置，因此设置页**不提供**
+> 该选项——详见 [`docs/PROTOCOLS.md`](docs/PROTOCOLS.md) 的「暂不支持的方向」。
+
+### Linux 桌面端
+
+Linux 与 Windows 走同一条路径：内核以子进程运行，只设置系统代理，
+**不需要 root、不需要任何特权**。因此它同样**只接管认系统代理的程序**
+（浏览器与绝大多数桌面软件）；游戏、命令行工具等要等后续的 TUN 阶段。
+
+- **桌面环境**：目前只支持 GNOME 系（gsettings）与 KDE（kioslaverc + KIO 重载）。
+  其它桌面环境（XFCE、sway、i3……）没有统一接口，程序会如实报「无法设置系统
+  代理」，而不是假装成功。
+- **凭据存储**：优先使用系统钥匙串（libsecret 的 `secret-tool`）。依赖缺失时
+  会降级为**明文落盘**，导入表单会明确显示这件事，不会谎称已加密。
+- **窗口**：X11 下与 Windows 一样是自绘无边框标题栏；Wayland 下窗口移动/缩放
+  不可靠，程序会隐藏自绘按钮、改用系统装饰。
+
+运行时依赖（多数发行版默认已装，缺失只影响对应功能，不会导致崩溃）：
+
+| 功能 | 依赖 | Debian/Ubuntu | Fedora / Arch |
+| --- | --- | --- | --- |
+| 系统代理（GNOME 系） | `gsettings` | `libglib2.0-bin` | `glib2` / `glib2` |
+| 系统代理（KDE） | `kwriteconfig5/6`、`dbus-send` | `kde-cli-tools`、`dbus` | `kde-cli-tools`、`dbus` |
+| 凭据加密 | libsecret 的 `secret-tool` | `libsecret-tools` | `libsecret` / `libsecret` |
 
 ## 分流与检测
 
@@ -184,17 +206,26 @@ DNS 与自检结论都是**采样**结果，界面上都带「重测」入口，
 ## 从源码构建
 
 需要 Flutter 3.44+、Visual Studio（Windows 端，含「使用 C++ 的桌面开发」工作负载）、
-Android SDK + NDK（安卓端）。
+Android SDK + NDK（安卓端）；Linux 端需要 `clang cmake ninja-build pkg-config
+libgtk-3-dev liblzma-dev`。
 
 ```powershell
 # 桌面端
 cd app
 flutter build windows
 
+# Linux 桌面端
+cd app
+flutter build linux --release
+
 # 安卓端：先编译内核库，再打包
 pwsh scripts/build-libbox.ps1      # 产出 app/android/app/libs/libbox.aar
 cd app; flutter build apk
 ```
+
+桌面端的内核二进制随仓库分发：Windows 用 `app/assets/bin/sing-box.exe`，
+Linux 用 `app/assets/bin/sing-box`（两者都是 sing-box 1.14.0，来源与许可见
+[`NOTICE.md`](NOTICE.md)）。构建脚本会把它们放到可执行文件旁边。
 
 `scripts/build-libbox.ps1` 会拉取 sing-box 源码并用 gomobile 编译出 `libbox.aar`；
 编译链路上的坑（Go 工具链版本、linkname 校验、脚本编码）记在
@@ -246,6 +277,8 @@ app/lib/
   version.dart   版本号唯一来源（构建期注入，与 pubspec 同步）
 app/tool/        开发工具：生成内核配置、校验配置、生成中国 IP 索引
 app/windows/     自绘无边框窗口、托盘、系统代理接管与还原
+app/linux/       自绘无边框窗口（Wayland 回退）、窗口通道；packaging/ 下为
+                 .desktop 与 hicolor 图标
 app/android/     VpnService 实现、VpnService 与 libbox 的桥接
 design/          品牌资源与界面原型
 docs/            协议、规则、自愈与观测、安卓接入、发布分析、上架材料
@@ -279,10 +312,13 @@ testdata/        用于测试的样例配置
 
 - 完整许可见 [`LICENSE`](LICENSE)；
 - 第三方组件、上游附加条款（sing-box 对名称使用有限制）、
-  规则库来源与出口管制提示见 [`NOTICE.md`](NOTICE.md)。
+  规则库来源与出口管制提示见 [`NOTICE.md`](NOTICE.md)；
+- 内核二进制静态链接的 Go 模块许可聚合见
+  [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md)。
 
-再分发时请保留 `LICENSE` 与 `NOTICE.md`，提供 sing-box 对应版本的源码获取方式，
-并且**不要**使用 sing-box 的名称或暗示与上游有关联。
+再分发时请保留 `LICENSE`、`NOTICE.md` 与 `THIRD-PARTY-NOTICES.md`，提供
+sing-box 对应版本的源码获取方式，并且**不要**使用 sing-box 的名称或暗示与
+上游有关联。
 
 ## 使用须知
 
@@ -291,6 +327,8 @@ testdata/        用于测试的样例配置
 见 [`docs/RELEASE.md`](docs/RELEASE.md)。
 
 - **隐私**：不收集任何数据。完整说明见 [`PRIVACY.md`](PRIVACY.md)。
+- **安全**：漏洞请通过 GitHub 私密渠道报告，范围与支持版本见 [`SECURITY.md`](SECURITY.md)。
+- **更新日志**：见 [`CHANGELOG.md`](CHANGELOG.md)。
 - **贡献**：见 [`CONTRIBUTING.md`](CONTRIBUTING.md)。
 - **上架材料**（Google Play 的 VpnService 声明、Data safety 答案等）：
   见 [`docs/STORE_LISTING.md`](docs/STORE_LISTING.md)。

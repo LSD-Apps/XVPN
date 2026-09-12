@@ -2,14 +2,34 @@
 # Flutter / Dart
 app/.dart_tool/
 app/build/
+# Android Gradle 中间产物（含 build/reports/ 等）：可由构建重新生成，不进球。
+app/android/build/
 app/.flutter-plugins-dependencies
 app/windows/flutter/ephemeral/
 app/windows/x64/
 app/android/.gradle/
 app/android/local.properties
+# Android 发行签名材料：密钥库与口令绝不进仓库（CI 走 GitHub Secrets，
+# 本机走 app/android/key.properties + app/android/keystore/）。
+app/android/key.properties
+app/android/keystore/
+*.jks
+*.keystore
 app/android/app/debug/
 app/android/app/profile/
 app/android/app/release/
+
+# 发布脚本/CI 在打包前从仓库根复制进来的许可副本（Android native assets，
+# Dart 的 rootBundle 读不到，仅用于满足「许可证随 APK 分发」）。
+# 内容可在打包前重新生成，且真正随包分发的是产物里的副本而不是工作区这份，
+# 因此不入库——避免生成物被误提交。
+# 注意：应用内「开源许可」界面读的是 app/assets/legal/（Flutter assets），
+# 与这个 Android native assets 目录用途不同，不要混淆。
+app/android/app/src/main/assets/licenses/
+
+# 发布产物：scripts/build-release.ps1 与 GitHub Actions 的本地输出目录。
+# 内容可由脚本/流水线重新生成，且体积很大（Windows 压缩包约 80 MB），不进球。
+dist/
 
 # 桌面端编译中间件
 *.obj

@@ -216,7 +216,34 @@ Apple 对 VPN 应用依 Guideline 5.4 审核，需要 `NEVPNManager` 与相应 e
 - [x] **双语 README**：[README.md](../README.md) 为英文（GitHub 默认渲染英文，有利于被检索与收录）、[README.zh-CN.md](../README.zh-CN.md) 为中文，两者互为语言切换
 - [x] **GitHub 仓库已发布**：<https://github.com/LSD-Apps/XVPN>
       （描述、15 个 topics、许可证识别、Pages、CITATION.cff、llms.txt 均已就位）
-- [x] **GitHub Releases**：已发布首个 tag
+- [x] **GitHub Releases**：已发布首个 tag，并已接上 **GitHub Actions 自动构建三端产物**（见下文「五、构建与发布流水线」）
+- [x] **分发物随附许可与声明**：`.github/workflows/release.yml` 与
+      `scripts/build-release.ps1` 把 `LICENSE`、`NOTICE.md` 与
+      `THIRD-PARTY-NOTICES.md` 放进 Windows / Linux 压缩包根；Android APK 内含
+      `assets/licenses/` 下的同名文件。CI 在打包后**断言**这些条目确实存在，
+      避免「复制了但没进包」。
+- [x] **应用内「开源许可」界面**：设置页「关于」卡片新增入口，用
+      `showLicensePage` 展示 Flutter 自动聚合的依赖许可，并用
+      `LicenseRegistry.addLicense` 额外注册本项目的 `LICENSE`、`NOTICE.md` 与
+      `THIRD-PARTY-NOTICES.md`（见 `app/lib/core/licenses.dart`）。
+      三份文本作为 Flutter assets 声明在 `assets/legal/`，其副本与仓库根文件的
+      一致性由 `app/test/legal_assets_test.dart` 逐字节断言、并叠加 CI 的
+      「复制根文件后断言 git 无差异」双重把关。
+      **注意**：Android APK 内的 `assets/licenses/*` 是 **Android native assets**，
+      Dart 的 `rootBundle` 读不到；界面读的是 `assets/legal/` 下的 **Flutter assets**
+      副本，两者用途不同。
+- [x] **内核静态依赖的第三方声明**：由
+      [`scripts/build-third-party-notices.ps1`](../scripts/build-third-party-notices.ps1)
+      对三个实际分发目标执行 `go list -deps` 求出真实链接的 Go 模块并集，生成
+      [`THIRD-PARTY-NOTICES.md`](../THIRD-PARTY-NOTICES.md)（sing-box v1.14.0 下
+      111 个模块，含许可标识与全文），随产物与 APK 分发，应用内也能读到。
+- [x] **标准开源文件齐备**：[`CHANGELOG.md`](../CHANGELOG.md)（Keep a Changelog）、
+      [`SECURITY.md`](../SECURITY.md)（私密漏洞报告）、
+      [`CODE_OF_CONDUCT.md`](../CODE_OF_CONDUCT.md)（Contributor Covenant v2.1）；
+      `CITATION.cff` 已按 CFF 1.2.0 校正（补 Linux 平台与关键词）
+- [x] **第三方声明补全**：`NOTICE.md` 已补「内核静态内嵌的 Go 依赖」披露（并指向
+      聚合声明 `THIRD-PARTY-NOTICES.md`），并按上游证据更正规则库许可结论
+      （sing-geosite / sing-geoip 默认分支为 GPL-3.0-or-later）
 
 ### 发布前需补齐
 
@@ -225,22 +252,133 @@ Apple 对 VPN 应用依 Guideline 5.4 审核，需要 `NEVPNManager` 与相应 e
 - [ ] **截图与图标**：注意截图**不要**出现「翻墙」类表述或具体境外站点
 - [ ] **`CONTRIBUTING.md` 目前是中文**；若面向海外贡献者，建议补一份英文版
 - [ ] **iOS 工程**（若要做 iOS）
-- [ ] **Release 附件**：当前 Release 只有源码，尚未附上 Windows 构建产物
-      与 Android APK（`.apk` 约 120 MB，需确认是否随 Release 分发）
-- [ ] **发布脚本**：构建时必须同时带上
-      `--dart-define=XVPN_VERSION=<pubspec 的 version>`，
-      否则界面显示的是回落值（当前两者相同，因此暂未暴露差异）
+- [ ] **Android 发行签名密钥**：未配置时 release 构建会**直接失败**（不再回退
+      debug 密钥），因此正式分发前必须由维护者按「五、构建与发布流水线」
+      创建 secrets。密钥本身无法提交进仓库。
+- [x] **Release 附件**：已由 `.github/workflows/release.yml` 自动附上
+      Windows / Linux 压缩包、Android APK 与 `SHA256SUMS.txt`
+- [x] **发布脚本**：构建一律带 `--dart-define=XVPN_VERSION=<ver>`，
+      CI 与本地脚本都会先把 tag/输入与 `pubspec.yaml` 校验一致后再构建
 
 ### 建议的发布顺序
 
 1. 在 Play Console 补齐四项表单（文案已备好，隐私政策 URL 已可用）；
-2. 给 Release 附上 Windows 构建产物与 Android APK；
+2. 创建 `ANDROID_KEYSTORE_*` secrets，然后推一个 tag 让 CI 自动产出并附上三端产物；
 3. 再上 **Google Play**（Android 是主力场景，且政策路径明确）；
 4. iOS 视投入产出决定。
 
 ---
 
-## 五、一句话总结
+## 五、构建与发布流水线
+
+发布由 [`.github/workflows/release.yml`](../.github/workflows/release.yml) 在
+GitHub Actions 上完成：一条 tag 推送产出 Windows / Linux / Android 三端产物，
+打上校验和后挂到 GitHub Release。应用内「检查更新」直接消费这份 Release，
+因此**附件命名是契约**——改名字要同时改 CI、`scripts/build-release.ps1`
+和更新器三处。
+
+### 5.1 触发方式
+
+| 方式 | 用途 | 版本来源 |
+| --- | --- | --- |
+| push tag（`v*`） | 正式发布 | tag 名去掉前导 `v` |
+| 手动 `workflow_dispatch` | 补发 / 验证 | 输入 `version`；留空取 `app/pubspec.yaml` |
+
+两种方式都会把版本与 `app/pubspec.yaml` 的 `version:`（去掉 `+build` 后缀）
+**比对，不一致直接失败**。版本号唯一来源是 pubspec：想发 `v1.2.0` 就得先把
+pubspec 写成 `1.2.0+<build>`。
+
+> 为什么在这里「失败」而不是取其一：界面显示的版本来自构建期注入
+> `--dart-define=XVPN_VERSION=`（见 `app/lib/version.dart`），它必须与安装包
+> 实际版本一致，否则用户反馈问题时给出的版本号是错的。
+
+### 5.2 附件命名契约（exact）
+
+| 附件 | 内容 |
+| --- | --- |
+| `XVPN-<ver>-windows-x64.zip` | Windows release bundle 目录的**内容**（`xvpn.exe`、`sing-box.exe`、`data/` 等位于压缩包根），另含 `LICENSE`、`NOTICE.md` 与 `THIRD-PARTY-NOTICES.md` |
+| `XVPN-<ver>-linux-x64.zip` | Linux release bundle 目录的内容（`xvpn`、`sing-box`、`data/` 等），另含 `LICENSE`、`NOTICE.md` 与 `THIRD-PARTY-NOTICES.md` |
+| `XVPN-<ver>-android-arm64.apk` | **裸 APK**——更新器需要它才能调起系统安装器；内含 `assets/licenses/` 下的 `LICENSE`、`NOTICE.md` 与 `THIRD-PARTY-NOTICES.md` |
+| `XVPN-<ver>-android-arm64.zip` | 装着上面那份 APK 的 zip，让三端都有一个 zip 入口 |
+| `SHA256SUMS.txt` | 上面四个文件的 SHA-256（`sha256sum -c` 可直接校验） |
+
+`<ver>` 是 tag 去掉前导 `v`，例如 tag `v1.0.0` → `<ver>` = `1.0.0`。
+
+两个 zip 都采用「bundle 目录内容在压缩包根」的布局，解压即可就地覆盖安装目录。
+不要改成「外面再套一层目录名」——这是更新器的解压约定。
+
+### 5.3 需要的 Actions Secrets
+
+在 GitHub 仓库 `Settings → Secrets and variables → Actions` 新建：
+
+| Secret | 内容 |
+| --- | --- |
+| `ANDROID_KEYSTORE_BASE64` | 发行 keystore 文件的 base64（见下） |
+| `ANDROID_KEYSTORE_PASSWORD` | keystore 口令 |
+| `ANDROID_KEY_ALIAS` | 密钥别名 |
+| `ANDROID_KEY_PASSWORD` | 该别名对应的口令 |
+
+生成 keystore（只需做一次，**务必备份**——丢了就再也无法覆盖安装旧版本）。
+本仓库已生成一份 4096 位、有效期约 30 年的发行密钥库，口令由持有者单独保存：
+
+```bash
+keytool -genkeypair -v -storetype JKS \
+  -keystore app/android/keystore/xvpn-release.jks -alias xvpn \
+  -keyalg RSA -keysize 4096 -validity 10950 \
+  -dname "CN=XVPN, OU=LUSIDA, O=LUSIDA, C=CN"
+# Linux/macOS
+base64 -w0 app/android/keystore/xvpn-release.jks > release.keystore.b64
+# Windows PowerShell
+[Convert]::ToBase64String([IO.File]::ReadAllBytes('app/android/keystore/xvpn-release.jks')) |
+  Set-Content -NoNewline release.keystore.b64
+```
+
+把 `release.keystore.b64` 的全部内容填进 `ANDROID_KEYSTORE_BASE64`。
+
+**本机可选**：Gradle 也支持 Flutter 官方约定的 `app/android/key.properties`
+（已 gitignore），键名 `storeFile / storePassword / keyAlias / keyPassword`，
+`storeFile` 相对 `app/android/` 解析。`app/android/keystore/` 同样已忽略，
+把 `.jks` 放进去即可。CI 用的是上面四个环境变量，两者二选一，CI 优先。
+
+**release 不再回退 debug**：签名材料缺失时不再用 debug 密钥凑合，而是在 Gradle
+任务图阶段**直接失败**并打印中文指引（`app/android/app/build.gradle.kts` 末尾的
+「发行签名守卫」）。原因：debug 密钥是**每台机器现生成**的，不同 runner 产出的 APK
+签名不同，用户无法覆盖安装后续版本，自动更新会失败；发一个签名不一致的「正式版」
+比构建失败严重得多。因此正式分发**必须**配置这四个 secret。
+
+### 5.4 内核（sing-box）从哪来
+
+三端必须来自同一版本，版本写在**唯一一个文件** [`scripts/sing-box-version.txt`](../scripts/sing-box-version.txt)
+（当前 `v1.14.0`），CI 直接读它：
+
+- Windows / Linux：从 `SagerNet/sing-box` 官方 release 下载对应平台压缩包，
+  放到 `app/assets/bin/sing-box[.exe]`，随后由 `app/windows/CMakeLists.txt`
+  或打包步骤放到可执行文件旁（与既有「外部进程」模型一致）。
+- Android：`app/android/app/libs/libbox.aar`。仓库里已提交一份；默认直接使用，
+  只有勾选 `rebuild_libbox`（或需要换版本）时才由
+  [`scripts/build-libbox.sh`](../scripts/build-libbox.sh) 从源码用 gomobile 重编。
+
+CI 在下载后会执行 `sing-box version` 并校验版本号与 `with_openvpn / with_quic /
+with_gvisor / with_clash_api / with_naive_outbound` 等构建标签，缺标签会**构建期
+失败**而不是等运行期用户点「连接」才报错。官方 release 二进制实测包含这些标签，
+因此无需自建；若上游某天砍掉某个标签，这条检查会挡下来（届时需要按
+[`docs/ANDROID.md`](ANDROID.md) 的标签集自建桌面端二进制）。
+
+### 5.5 本地打包（Windows 开发机）
+
+```powershell
+pwsh scripts/build-release.ps1            # 只构建 Windows
+pwsh scripts/build-release.ps1 -Android   # Windows + Android APK
+```
+
+产物写入 `dist/` 并生成 `SHA256SUMS.txt`。脚本在
+`app/assets/bin/sing-box.exe` 缺失时**直接报错**（不会打出一个连不上的包）。
+Linux 只能在 Linux 上编译，因此本地脚本**不含** Linux（见 `scripts/build-release.ps1`
+顶部注释）；Linux 一律交给 CI。
+
+---
+
+## 六、一句话总结
 
 | 市场 | 可行性 | 关键前提 |
 | --- | --- | --- |

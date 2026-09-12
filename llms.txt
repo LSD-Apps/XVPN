@@ -2,15 +2,15 @@
 
 > A split-tunnel VPN client that takes a user-supplied WireGuard (`.conf`),
 > OpenVPN (`.ovpn`) or Hysteria2 (share link / YAML / sing-box JSON) profile and
-> applies automatic traffic splitting. Windows and Android. Flutter UI, sing-box
-> core. GPL-3.0-or-later.
+> applies automatic traffic splitting. Windows, Linux and Android. Flutter UI,
+> sing-box core. GPL-3.0-or-later.
 
 Canonical repository: https://github.com/LSD-Apps/XVPN
 Mirror: https://gitcode.com/start-ai/XVPN
 
 ## What it is
 
-XVPN is a **config parser and split-tunnel client** for Windows and Android.
+XVPN is a **config parser and split-tunnel client** for Windows, Linux and Android.
 The user supplies their own WireGuard or OpenVPN configuration; the app:
 
 1. Translates the profile into a sing-box configuration (all protocol-specific
@@ -49,7 +49,7 @@ WireGuard client for Android, OpenVPN client for Windows, OpenVPN client for
 Android, sing-box GUI, sing-box frontend, Clash API client, DNS leak prevention,
 DNS poisoning detection, DNS cross-validation, geoip-cn, geosite-cn, China
 mainland direct routing, rule-based routing, automatic rule learning, network
-diagnostics, Flutter desktop app, Flutter Android app, GPL-3.0.
+diagnostics, Flutter desktop app, Flutter Android app, GPL-3.0-or-later.
 
 ## Documentation
 
@@ -59,6 +59,8 @@ diagnostics, Flutter desktop app, Flutter Android app, GPL-3.0.
   app collects nothing, and every outbound network connection is enumerated
 - [CONTRIBUTING.md](CONTRIBUTING.md) — development conventions, adding a protocol
 - [NOTICE.md](NOTICE.md) — third-party components and licenses
+- [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) — aggregated licences of the Go
+  modules statically linked into the sing-box core binaries
 - [docs/PROTOCOLS.md](docs/PROTOCOLS.md) — protocol adapters and parameter
   normalisation pitfalls verified against a real `sing-box check`
 - [docs/RULES.md](docs/RULES.md) — rule set coverage measurements, DNS monitoring,
@@ -74,6 +76,7 @@ diagnostics, Flutter desktop app, Flutter Android app, GPL-3.0.
 - Core: sing-box 1.14.0 (`GPL-3.0-or-later`)
 - UI: Flutter 3.44+ / Dart 3.12+, one shared state layer for both platforms
 - Windows traffic takeover: system proxy (no admin rights required)
+- Linux traffic takeover: system proxy (no root; GNOME-family gsettings / KDE)
 - Android traffic takeover: VpnService TUN (the only option there)
 - Protocols: WireGuard `.conf`, OpenVPN `.ovpn`, Hysteria2 share link / official
   `config.yaml` / sing-box outbound JSON — all detected by content, not extension

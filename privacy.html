@@ -52,7 +52,7 @@
 <body>
 <main>
 <h1 id="--privacy-policy">隐私政策 · Privacy Policy</h1>
-<p><strong>XVPN</strong> · 最后更新：2026-02-14</p>
+<p><strong>XVPN</strong> · 最后更新：2026-09-12</p>
 <hr />
 <h2 id="">摘要</h2>
 <p><strong>XVPN 不收集、不上传、不共享你的任何个人数据。</strong> 它没有账号体系、没有
@@ -112,8 +112,32 @@
 <p>本应用<strong>没有</strong>自建或第三方的服务器来接收你的数据。我们不运营任何后端。</p>
 <hr />
 <h2 id="-3">二、本地保存的数据</h2>
-<p>以下数据保存在设备上应用的私有目录中（Android：应用私有 <code>filesDir</code>；
-Windows：<code>%LOCALAPPDATA%\XVPN</code>）。<strong>不会离开设备。</strong></p>
+<p>以下数据保存在设备上应用的私有目录中。<strong>不会离开设备。</strong></p>
+<table>
+<thead>
+<tr>
+<th>平台</th>
+<th>存放位置</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Android</td>
+<td>应用私有 <code>filesDir</code>（系统按应用隔离）</td>
+</tr>
+<tr>
+<td>Windows</td>
+<td><code>%LOCALAPPDATA%\XVPN</code></td>
+</tr>
+<tr>
+<td>Linux</td>
+<td><code>$XDG_DATA_HOME/XVPN</code>；未设置该变量时为 <code>~/.local/share/XVPN</code></td>
+</tr>
+</tbody>
+</table>
+<p>Linux 上内核生成的运行期文件（<code>config.json</code>、<code>core.pid</code>）另放在
+<code>$XDG_RUNTIME_DIR/XVPN</code>；该目录是登录期的临时文件系统，注销即清空，因此
+上次意外退出留下的进程记录不会跨会话存活。</p>
 <table>
 <thead>
 <tr>
@@ -155,16 +179,47 @@ Windows：<code>%LOCALAPPDATA%\XVPN</code>）。<strong>不会离开设备。</s
 </tr>
 </tbody>
 </table>
-<h3 id="-4">两点需要你知情</h3>
-<p><strong>1. 配置原文可能包含敏感凭据。</strong>
-WireGuard 的私钥、OpenVPN 的客户端证书与私钥、Hysteria2 的认证密码与混淆密码、
-账号密码都在其中。
-它们以<strong>明文</strong>存储在应用私有目录——这与所有同类客户端一致（内核必须读取
-可用的原文件），但请知悉：<strong>设备的磁盘加密是你这些凭据的主要保护</strong>。
-应用不额外加密这些文件，因为密钥本身也只能存在同一台设备上，那只是
-把锁和钥匙放在一起。</p>
-<p><strong>2. 应用私有目录受系统沙箱保护。</strong>
-其他应用无法读取。<strong>卸载应用会一并删除这些数据</strong>，删除后需要重新导入配置。</p>
+<h3 id="-4">三点需要你知情</h3>
+<p><strong>1. 配置原文中的密钥与密码以明文存储。</strong>
+WireGuard 的私钥、OpenVPN 的客户端证书与私钥、Hysteria2 的认证密码与混淆密码
+都在配置原文里。内核必须读取<strong>可用的原文件</strong>，因此这些内容在三个平台都以
+<strong>明文</strong>存放在上表的私有目录中——这与所有同类客户端一致。请知悉：<strong>设备的
+磁盘加密是这些凭据的主要保护</strong>。应用不额外加密配置原文，因为解密密钥也只能
+存在同一台设备上，那只是把锁和钥匙放在一起。</p>
+<p><strong>2. <code>auth-user-pass</code> 的账号密码按平台尽力加密。</strong>
+它与配置原文分开单独落盘，并按当前平台选择保护方式：</p>
+<table>
+<thead>
+<tr>
+<th>平台</th>
+<th>保护方式</th>
+<th>何时退回明文</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Windows</td>
+<td><strong>DPAPI</strong>（系统 <code>CryptProtectData</code>），密钥由当前 Windows 账户派生</td>
+<td>仅在系统缺少 crypt32 等极少数环境；界面会如实提示</td>
+</tr>
+<tr>
+<td>Linux</td>
+<td>系统钥匙串（<strong>Secret Service / libsecret</strong>，经 <code>secret-tool</code>），落盘的是不透明 key，密码本体在钥匙串里</td>
+<td>未安装 <code>secret-tool</code>、或钥匙串守护进程不可达时；界面提示「未加密」</td>
+</tr>
+<tr>
+<td>Android</td>
+<td><strong>尚未接入</strong>系统 Keystore</td>
+<td>目前始终为明文（接入 Keystore 后会自动升级，旧数据仍可读）</td>
+</tr>
+</tbody>
+</table>
+<p>DPAPI 密文与 Linux 钥匙串条目都<strong>绑定当前用户</strong>：换个 Windows 账户、换台机器
+或换一个 Linux 用户就解不开。这是保护本身的特性，不是缺陷——此时应用会让你
+重新填一次密码，而不是把无法解密的凭据当成明文使用。</p>
+<p><strong>3. 应用私有目录受系统沙箱保护。</strong>
+其他应用无法读取（Android 由系统沙箱强制，桌面端由文件权限与用户账户隔离）。
+<strong>卸载应用会一并删除这些数据</strong>，删除后需要重新导入配置。</p>
 <hr />
 <h2 id="-5">三、分流记录与失败记录</h2>
 <p>应用会在<strong>内存中</strong>保留最近若干条分流判定与连接失败记录，用于：
