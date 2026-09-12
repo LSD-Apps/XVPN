@@ -114,14 +114,14 @@ void main() {
       expect(decision.reason, contains('2/3'));
     });
 
-    test('疑似投毒时一次失败即纠正', () {
+    test('解析结果不一致时一次失败即纠正', () {
       final table = AutoRouteTable(promotionThreshold: 3);
       final decision = table.recordDirectFailure(
-        'poisoned.example',
+        'inconsistent.example',
         reason: '连接超时',
         dnsVerdict: 'suspectPoisoning',
       );
-      expect(decision.reason, contains('投毒'));
+      expect(decision.reason, contains('解析结果不一致'));
       expect(decision.entry!.dnsVerdict, 'suspectPoisoning');
     });
 

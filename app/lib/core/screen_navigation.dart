@@ -11,7 +11,7 @@ enum AppSection { connect, split, profiles, settings }
 ///
 /// 页面切换由外壳（`XvShell`）持有的索引驱动，页面自己够不到它。项目里已有的
 /// 跨页动作（标题栏「发现新版本」）是外壳把回调逐层透传下去的，但连接页的
-/// 「切换配置」弹窗要触发的跳转隔着一整页 widget，为它逐层加参数会污染一串
+/// 「切换配置」弹窗要触发的跳转隔着一整页 widget，为它逐层加参数会牵连一串
 /// 构造函数。这里改用与 `WindowControls.maximized` / `UpdateCenter.notice`
 /// 同一种做法：进程级 [ValueNotifier] 承载**意图**，外壳监听它、翻译成本布局
 /// 下的索引，处理完调用 [consume] 清空。

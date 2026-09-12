@@ -21,14 +21,14 @@ enum InboundMode {
 /// 三条关键设计：
 ///
 ///  1. **.conf 里的 AllowedIPs 不参与路由**。它只描述原作者想要的隧道范围，
-///     而分流由内置规则库决定。出站方向统一用 0.0.0.0/0 + ::/0，否则被墙的
-///     地址根本进不了隧道。
+///     而分流由内置规则库决定。出站方向统一用 0.0.0.0/0 + ::/0，否则未命中
+///     规则集、需要走隧道的地址根本进不了隧道。
 ///
-///  2. **DNS 必须分流，否则一切白搭**。被墙域名会被污染解析，如果这类域名
-///     拿到假 IP，再按 IP 判定就会误判成直连。所以国内域名走国内 DNS，
+///  2. **DNS 必须分流，否则一切白搭**。如果域名解析到错误的地址，再按 IP 判定
+///     就可能误判成直连。所以命中规则集的域名走直连 DNS，
 ///     其余域名走隧道内的解析器。
 ///
-///  3. **默认走代理，国内才直连**。命中 geosite-cn / geoip-cn 的直连，
+///  3. **默认走代理，命中规则集才直连**。命中 geosite-cn / geoip-cn 的直连，
 ///     其余全部走隧道——白名单式直连比黑名单式代理可靠得多。
 class SingBoxConfigBuilder {
   SingBoxConfigBuilder._();
@@ -44,7 +44,7 @@ class SingBoxConfigBuilder {
   /// Clash API 端口：用于读取实时连接与流量，界面上的「分流记录」由此而来。
   static const int defaultClashApiPort = 2081;
 
-  /// 国内 DNS。走直连，用于解析国内域名，保证拿到离用户最近的节点。
+  /// 直连 DNS。走直连出站，用于解析命中规则集的域名，保证拿到离用户最近的节点。
   static const List<String> domesticDns = <String>['223.5.5.5', '119.29.29.29'];
 
   /// 兜底的外部 DNS。.conf 里没有声明时使用。
@@ -143,7 +143,7 @@ class SingBoxConfigBuilder {
         // 路由与 final 都是按 tag 引用的。
         if (!isEndpoint) endpoint,
         // direct 出站必须带一个域解析器，否则它在 sing-box 眼里是「空出站」，
-        // 国内 DNS 的 detour=direct 会被拒绝（实测报错：
+        // 直连 DNS 的 detour=direct 会被拒绝（实测报错：
         // 「detour to an empty direct outbound makes no sense」）。
         // 顺带也解决了直连出站解析域名时的解析器问题。
         <String, Object?>{
@@ -241,7 +241,7 @@ class SingBoxConfigBuilder {
   /// dns: lookup failed for www.youtube.com: context deadline exceeded   ← 10 秒后超时
   /// ```
   ///
-  /// 同一时刻走**国内**解析器的域名（`vpn.example.net` → 223.5.5.5）以及走直连的
+  /// 同一时刻走**直连**解析器的域名（`vpn.example.net` → 223.5.5.5）以及走直连的
   /// 域名都正常解析。失败的共同特征是「**首次**解析该域名」——成功过的域名进了
   /// 缓存，之后再查就正常。
   ///
@@ -289,11 +289,11 @@ class SingBoxConfigBuilder {
 
     return <String, Object?>{
       'servers': <Object?>[
-        // 国内域名用国内 DNS：既快，又能拿到就近的 CDN 节点。
+        // 命中规则集的域名用直连 DNS：既快，又能拿到就近的 CDN 节点。
         //
         // detour 必须显式指向 direct：路由规则**不作用于** DNS 服务器自己的
         // 出站连接，只写路由规则的话这些查询会跟着 final 一起走隧道，
-        // 实测表现为「解析国内域名也超时」。这不是推测，是通过
+        // 实测表现为「解析命中规则集的域名也超时」。这不是推测，是通过
         // 「只改 detour、其它不动」的对照实验确认的。
         for (var i = 0; i < domesticDns.length; i++)
           <String, Object?>{
@@ -313,7 +313,7 @@ class SingBoxConfigBuilder {
           <String, Object?>{
             'type': 'udp',
             // 第一个沿用 remoteTag（'dns-remote'），后面的加序号后缀，
-            // 与国内解析器的命名方式保持一致。
+            // 与直连解析器的命名方式保持一致。
             'tag': i == 0 ? remoteTag : '$remoteTag-$i',
             'server': remoteServers[i],
             'detour': 'vpn',
@@ -335,7 +335,7 @@ class SingBoxConfigBuilder {
       // 隧道只有 IPv4 地址时只解析 IPv4。
       //
       // 否则目的地有 AAAA 记录时内核会尝试 IPv6，而隧道内没有可用的 IPv6
-      // 本地地址，直接报「missing IPv6 local address」，表现为部分国外站点
+      // 本地地址，直接报「missing IPv6 local address」，表现为部分走隧道的站点
       // 打不开而另一些正常（实测 youtube 失败、google 与 github 正常）。
       // 是否具备 IPv6 完全由用户导入的配置决定，这里自动跟随。
       //
@@ -375,7 +375,7 @@ class SingBoxConfigBuilder {
         //
         // 位置很关键：它必须早于下面的 geosite-cn / geoip-cn，否则规则库会先把
         // 域名判成直连，纠正永远不生效——而这正是需要纠正的场景
-        // （被墙站点解析到国内 IP 时，geoip-cn 会「正确地」命中）。
+        // （域名解析到 geoip-cn 内的地址时，规则集「正确地」命中）。
         ...learnedRules,
         // 局域网与本机地址始终直连。
         //

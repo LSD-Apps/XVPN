@@ -54,7 +54,7 @@ abstract class SecretProtector {
   }) {
     // 只缓存**纯生产调用**：Linux 上探测钥匙串要真的跑几次外部进程，而
     // [forPlatform] 每次构造 AppState 都会被调用（测试里成百上千次）。
-    // 带注入参数的调用永远重新计算，测试之间因此不会互相污染。
+    // 带注入参数的调用永远重新计算，测试之间因此不会互相干扰。
     final bool cacheable =
         isWindows == null && isLinux == null && secretService == null;
     if (cacheable && _cached != null) return _cached!;

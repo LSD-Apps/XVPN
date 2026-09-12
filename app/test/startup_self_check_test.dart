@@ -97,7 +97,7 @@ void main() {
       expect(dns.detail, contains('198.51.100.14'));
     });
 
-    test('两组答案不同不算异常——域名本来就有国内外双部署', () async {
+    test('两组答案不同不算异常——域名本来就有两套部署', () async {
       final report = await _check(
         direct: 12,
         tunnel: 180,
@@ -109,7 +109,7 @@ void main() {
       expect(report.conclusion, '两条路径都正常');
     });
 
-    test('国内解析失败 → DNS 报异常', () async {
+    test('直连解析失败 → DNS 报异常', () async {
       final report = await _check(
         direct: 12,
         tunnel: 180,
@@ -119,7 +119,7 @@ void main() {
 
       final dns = report.probeNamed(StartupSelfCheck.dnsName)!;
       expect(dns.failed, isTrue);
-      expect(dns.detail, contains('国内直接解析失败'));
+      expect(dns.detail, contains('直连解析失败'));
     });
 
     test('两条解析都失败 → 直指 DNS 是根源', () async {
@@ -136,7 +136,7 @@ void main() {
       expect(report.conclusion, 'DNS 解析异常');
     });
 
-    test('内核没有返回独立答案时不误报——该域名可能被判为国内直连', () async {
+    test('内核没有返回独立答案时不误报——该域名可能被判为直连', () async {
       final report = await _check(
         direct: 12,
         tunnel: 180,
@@ -148,9 +148,9 @@ void main() {
       expect(
         dns.passed,
         isTrue,
-        reason: 'baidu 命中 geosite-cn，内核按 DNS 规则用国内解析器解析是正确行为',
+        reason: 'baidu 命中 geosite-cn，内核按 DNS 规则用直连解析器解析是正确行为',
       );
-      expect(dns.detail, contains('国内直连'));
+      expect(dns.detail, contains('判定为直连'));
     });
   });
 

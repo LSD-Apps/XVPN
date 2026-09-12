@@ -101,6 +101,29 @@ class WindowControls {
   /// window-state-event），这里接住并广播。
   static final ValueNotifier<bool> maximized = ValueNotifier<bool>(false);
 
+  /// 原生请求退出（托盘「退出 XVPN」、SIGTERM/SIGINT）。由入口注册。
+  ///
+  /// 存在的意义很具体：Linux 上没有 Windows 的 WM_DESTROY / WM_QUERYENDSESSION
+  /// 那样的退出钩子，而 Dart 的收尾是异步的——还原系统代理要执行 gsettings 这类
+  /// 外部命令、结束 sing-box 要等子进程真的退出。原生直接结束进程会把这两步一起
+  /// 打断，留下一个指向死端口的系统代理和一个孤儿内核。因此原生不自己退出，而是
+  /// 先把这件事推给 Dart；这里跑完收尾后由 [quit] 关闭。
+  ///
+  /// 回调**失败也必须继续退出**：卡住不关比清理不干净更糟。
+  static Future<void> Function()? onQuitRequested;
+
+  /// 请原生真正退出进程。只在 [onQuitRequested] 收尾完成（或失败）之后调用。
+  ///
+  /// 刻意不用 `exit()`：让 GTK 正常走完 shutdown。原生另有兜底超时，即使这条
+  /// 调用没能送达，进程也不会永远不退。
+  static Future<void> quit() async {
+    try {
+      await _channel.invokeMethod<void>('quitNow');
+    } on Object {
+      // 通道不可用时忽略：原生兜底超时会结束进程。
+    }
+  }
+
   /// 接住原生推来的窗口状态。应在应用启动时调用一次。
   ///
   /// Linux 上还要先问一句「这个会话能不能自绘窗口边框」：Wayland 下原生
@@ -115,16 +138,33 @@ class WindowControls {
         // 这里不静默当成 Wayland——那会让 X11 用户白丢自绘标题栏。
       }
     }
-    if (!supported) return;
+    // **一个通道只能有一个方法处理器**：后设置的会顶掉前面的。原生在同一个
+    // 通道上既推窗口状态（maximizedChanged）又推托盘退出（quitRequested，见
+    // linux/runner/my_application.cc），因此这里统一接住再按方法名分发；拆成
+    // 两个 setMethodCallHandler 的话，先注册的那条推送会被静默丢弃。
+    //
+    // 处理器在 Linux Wayland 下也要装（此时 [supported] 为 false）：那里的窗口
+    // 装饰交回了原生，但托盘退出依然依赖这条推送。
+    final bool desktopChannel =
+        defaultTargetPlatform == TargetPlatform.windows ||
+        defaultTargetPlatform == TargetPlatform.linux;
+    if (!desktopChannel) return;
     _channel.setMethodCallHandler((MethodCall call) async {
       if (call.method == 'maximizedChanged') {
         final value = call.arguments;
         if (value is bool) maximized.value = value;
+      } else if (call.method == 'quitRequested') {
+        try {
+          await onQuitRequested?.call();
+        } on Object {
+          // 收尾失败也要继续退出：下一次启动还有 recoverIfNeeded 兜底。
+        }
+        await quit();
       }
       return null;
     });
     // 启动时先同步一次，避免「以最大化状态启动」时要等第一次 WM_SIZE 才纠正。
-    maximized.value = await isMaximized();
+    if (supported) maximized.value = await isMaximized();
   }
 
   static Future<void> _invoke(String method, [Object? arguments]) async {

@@ -96,6 +96,22 @@ set(INSTALL_BUNDLE_LIB_DIR "${CMAKE_INSTALL_PREFIX}/lib")
 install(TARGETS ${BINARY_NAME} RUNTIME DESTINATION "${CMAKE_INSTALL_PREFIX}"
   COMPONENT Runtime)
 
+# 托盘与任务栏图标：与 Windows 端「从应用资源里取图标」对称，把打包用的
+# hicolor 图标一并装进 bundle。原生侧从可执行文件旁边按同样的 hicolor 布局查找
+# （见 runner/my_application.cc 的 find_icon_file），因此自编译（flutter run）
+# 的产物也有图标，不依赖系统里是否预装了 xvpn。
+#
+# 只装 16..256 这几档：托盘要的是小尺寸，512 档留给系统图标主题的安装包。
+foreach(_icon_size 16 24 32 48 64 128 256)
+  set(_icon_src
+    "${CMAKE_CURRENT_SOURCE_DIR}/packaging/icons/hicolor/${_icon_size}x${_icon_size}/apps/xvpn.png")
+  if(EXISTS "${_icon_src}")
+    install(FILES "${_icon_src}"
+      DESTINATION "${CMAKE_INSTALL_PREFIX}/share/icons/hicolor/${_icon_size}x${_icon_size}/apps"
+      COMPONENT Runtime)
+  endif()
+endforeach()
+
 # sing-box 内核（Linux amd64，约 77 MB）。它体量大且与平台绑定，因此不走
 # Flutter 资源体系，而是直接放到 bundle 里、可执行文件旁边——与 Windows 端
 # 完全对称（见 windows/CMakeLists.txt）。Dart 侧从

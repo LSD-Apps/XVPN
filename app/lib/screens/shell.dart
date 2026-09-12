@@ -38,7 +38,7 @@ class _XvShellState extends State<XvShell> {
 
   String? _shownError;
 
-  /// 把版本 / 连接状态 / 更新提示推给 Windows 原生托盘。
+  /// 把版本 / 连接状态 / 更新提示推给桌面原生托盘（Windows / Linux）。
   ///
   /// 外壳是唯一的推送点：它一启动就存在、且本来就在监听 [AppState]。
   /// 推送是去重的（见 [SystemTray.sync]），因此它会在每次状态通知时都走一遍

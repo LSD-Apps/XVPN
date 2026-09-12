@@ -145,7 +145,7 @@ void main() {
       );
     });
 
-    test('疑似污染时结论直接点破，并说明该怎么办', () {
+    test('答案不一致时结论直接点破，并说明该怎么办', () {
       final check = buildDomainCheck(
         domain: 'blocked.example.com',
         records: const <SplitRecord>[],
@@ -160,7 +160,7 @@ void main() {
       );
 
       expect(check.conclusion, contains('可疑'));
-      expect(check.conclusion, contains('污染'));
+      expect(check.conclusion, contains('不一致'));
       expect(check.conclusion, contains('隧道'), reason: '要说清这类域名必须走隧道解析');
     });
 
@@ -179,7 +179,7 @@ void main() {
       );
 
       expect(
-        check.facts.firstWhere((f) => f.label == '国内解析').value,
+        check.facts.firstWhere((f) => f.label == '直连解析').value,
         '1.2.3.4、5.6.7.8',
       );
       expect(check.facts.firstWhere((f) => f.label == '隧道解析').value, '9.9.9.9');
@@ -199,7 +199,7 @@ void main() {
         ),
       );
 
-      expect(check.facts.firstWhere((f) => f.label == '国内解析').value, '无结果');
+      expect(check.facts.firstWhere((f) => f.label == '直连解析').value, '无结果');
     });
   });
 

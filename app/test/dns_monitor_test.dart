@@ -49,9 +49,9 @@ DnsOutcome _ok(
   elapsed: Duration(milliseconds: millis),
 );
 
-/// 构造一份最小的「国内」IP 索引：只含 192.0.2.0/25 与 192.0.2.128/25。
+/// 构造一份最小的 IP 前缀索引：只含 192.0.2.0/25 与 192.0.2.128/25。
 ///
-/// 刻意用 RFC 5737 的文档保留段，而不是真实的国内网段：
+/// 刻意用 RFC 5737 的文档保留段，而不是真实网段：
 ///
 ///   * 这里要验的是**归属判定的逻辑**，不是「哪一段地址在中国」。真实网段的
 ///     归属会变，把某一段写成测试事实迟早会过期；
@@ -233,7 +233,7 @@ void main() {
       expect(index.contains('2001:db8::1'), isFalse);
     });
 
-    test('空索引不做任何判定，而不是把一切判成境外', () {
+    test('空索引不做任何判定，而不是把一切判成索引之外', () {
       expect(CnIpIndex.empty.contains('192.0.2.1'), isFalse);
       expect(
         classifyRegion(CnIpIndex.empty, <String>['192.0.2.1']),
@@ -242,7 +242,7 @@ void main() {
       );
     });
 
-    test('一组地址里有一个国内就算国内', () {
+    test('一组地址里有一个命中索引就算命中', () {
       final index = _cnIndex();
       expect(
         classifyRegion(index, <String>['8.8.8.8', '192.0.2.1']),
@@ -261,7 +261,7 @@ void main() {
       expect(CnIpIndex.parse(wrongMagic), isNull);
     });
 
-    test('真实的出厂索引能加载并覆盖国内一线地址', () async {
+    test('真实的出厂索引能加载并覆盖常见地址', () async {
       // 这份索引由 tool/build_cn_ip_index.dart 从 geoip-cn.srs 生成，
       // 随包分发。如果它没被构建进来，这个测试会失败——
       // 那样 DNS 交叉校验会退化成「无法判断」，属于静默失效。
@@ -271,9 +271,9 @@ void main() {
         return;
       }
       expect(index.length, greaterThan(1000));
-      expect(index.contains('114.114.114.114'), isTrue, reason: '114 DNS 在国内');
-      expect(index.contains('223.5.5.5'), isTrue, reason: '阿里 DNS 在国内');
-      expect(index.contains('8.8.8.8'), isFalse, reason: 'Google DNS 不在国内');
+      expect(index.contains('114.114.114.114'), isTrue, reason: '114 DNS 命中索引');
+      expect(index.contains('223.5.5.5'), isTrue, reason: '阿里 DNS 命中索引');
+      expect(index.contains('8.8.8.8'), isFalse, reason: 'Google DNS 不命中索引');
     });
   });
 
@@ -294,7 +294,7 @@ void main() {
 
       final report = await monitor.runOnce();
 
-      expect(report.resolvers, hasLength(3), reason: '两个国内解析器 + 隧道');
+      expect(report.resolvers, hasLength(3), reason: '两个直连解析器 + 隧道');
       for (final health in report.resolvers) {
         expect(health.healthy, isTrue);
         expect(health.statusLabel, '正常');
@@ -425,7 +425,7 @@ void main() {
   });
 
   group('DNS 交叉校验结论', () {
-    test('国内答案在国内、与隧道不同 → 国内外双部署', () async {
+    test('直连答案命中索引、与隧道不同 → 双部署', () async {
       final resolver = _StubResolver(<String, DnsOutcome>{
         '223.5.5.5|www.example.com': _ok(
           '223.5.5.5',
@@ -446,7 +446,7 @@ void main() {
       expect(DnsVerdict.dualStack.advice, contains('按域名判定分流'));
     });
 
-    test('国内答案不在国内且与隧道不同 → 疑似投毒', () async {
+    test('直连答案不命中索引且与隧道不同 → 答案不一致', () async {
       final resolver = _StubResolver(<String, DnsOutcome>{
         '223.5.5.5|www.blocked.com': _ok(
           '223.5.5.5',
@@ -465,7 +465,7 @@ void main() {
       expect(DnsVerdict.suspectPoisoning.advice, contains('走隧道'));
     });
 
-    test('国内答案在国内且与隧道一致 → 一致', () async {
+    test('直连答案命中索引且与隧道一致 → 一致', () async {
       final resolver = _StubResolver(<String, DnsOutcome>{
         '223.5.5.5|www.example.com': _ok(
           '223.5.5.5',
@@ -483,7 +483,7 @@ void main() {
       expect(check.disjoint, isFalse);
     });
 
-    test('国内解析器单次全失败 → 不下异常结论（一次丢包不足以定性）', () async {
+    test('直连解析器单次全失败 → 不下异常结论（一次丢包不足以定性）', () async {
       final resolver = _StubResolver(const <String, DnsOutcome>{});
       final monitor = _monitor(resolver, tunnelDelay: 60);
       monitor.tunnelResolveProbe = (String domain) async => <String>['1.2.3.4'];
@@ -496,7 +496,7 @@ void main() {
       );
     });
 
-    test('国内解析器连续两次全失败 → 判定为国内解析异常', () async {
+    test('直连解析器连续两次全失败 → 判定为直连解析异常', () async {
       final resolver = _StubResolver(const <String, DnsOutcome>{});
       final monitor = _monitor(resolver, tunnelDelay: 60);
       monitor.tunnelResolveProbe = (String domain) async => <String>['1.2.3.4'];
@@ -509,7 +509,7 @@ void main() {
       expect(check.verdict, DnsVerdict.directResolverDown);
     });
 
-    test('拿不到地理信息时不下「投毒」结论，宁可保守', () async {
+    test('拿不到地理信息时不下「答案不一致」结论，宁可保守', () async {
       final resolver = _StubResolver(<String, DnsOutcome>{
         '223.5.5.5|www.example.com': _ok(
           '223.5.5.5',
@@ -531,11 +531,11 @@ void main() {
       expect(
         check.verdict,
         DnsVerdict.consistent,
-        reason: '没有地理依据就断言投毒，会把正常流量误推进隧道',
+        reason: '没有地理依据就断言答案不可信，会把正常流量误推进隧道',
       );
     });
 
-    test('第二个国内解析器能兜住第一个的失败', () async {
+    test('第二个直连解析器能兜住第一个的失败', () async {
       final resolver = _StubResolver(<String, DnsOutcome>{
         // 223.5.5.5 查这个域名失败
         '119.29.29.29|www.example.com': _ok(

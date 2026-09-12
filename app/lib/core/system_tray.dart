@@ -10,14 +10,14 @@ import 'update_center.dart';
 
 /// 把托盘要显示的三件事推给原生：版本号、连接状态、有没有新版本。
 ///
-/// 托盘本身在 **Windows 原生侧**（windows/runner/flutter_window.cpp），走的是与
-/// 窗口控制同一个平台通道 `com.xvpn.xvpn/platform`。这里只负责「推送」，不做
-/// 任何检查——[UpdateCenter] 已经在启动时查过一次，托盘只是把那件事**显示**
-/// 出来；它自己绝不联网，否则同一件事会出现两份可能互相矛盾的结果，也违背
-/// 「一个进程只查一次」这条纪律。
+/// 托盘在**原生侧**：Windows 见 windows/runner/flutter_window.cpp，Linux 见
+/// linux/runner/my_application.cc（libayatana-appindicator3，运行时 dlopen）。
+/// 两端走的是与窗口控制同一个平台通道 `com.xvpn.xvpn/platform`，载荷也完全
+/// 相同。这里只负责「推送」，不做任何检查——[UpdateCenter] 已经在启动时查过
+/// 一次，托盘只是把那件事**显示**出来；它自己绝不联网，否则同一件事会出现两份
+/// 可能互相矛盾的结果，也违背「一个进程只查一次」这条纪律。
 ///
-/// 只在 Windows 上有意义：Linux runner 没有托盘（见 CONTRIBUTING 之外的
-/// 平台现状），安卓用前台服务通知而不是托盘。
+/// 安卓用前台服务通知而不是托盘，因此 [supported] 为 false。
 ///
 /// 推送是**去重**的：界面每秒都会重建，不去重会让平台通道被同一份状态反复
 /// 淹没。比较的是整份载荷，因此「状态没变」不会有任何通道调用，「更新提示从
@@ -34,8 +34,10 @@ class SystemTray {
   final UpdateCenter _updateCenter;
   final MethodChannel _channel;
 
-  /// 是否支持托盘。只有 Windows 的 runner 装了托盘。
-  static bool get supported => defaultTargetPlatform == TargetPlatform.windows;
+  /// 是否支持托盘。Windows 与 Linux 的 runner 都装了托盘。
+  static bool get supported =>
+      defaultTargetPlatform == TargetPlatform.windows ||
+      defaultTargetPlatform == TargetPlatform.linux;
 
   /// 上一次成功发给原生（或至少发出过）的载荷。null 表示还没推过。
   Map<String, Object?>? _lastSent;

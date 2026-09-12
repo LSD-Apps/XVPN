@@ -14,10 +14,11 @@ import 'package:xvpn/version.dart';
 
 /// 托盘状态的推送。
 ///
-/// 托盘本身在 Windows 原生侧（windows/runner/flutter_window.cpp），这里能测的
-/// 只有 Dart 这一半：**推出的载荷对不对**，以及**该不该推**。原生侧渲染不出灰色
-/// 图标、tooltip 有没有显示对，只能靠真机 `flutter build windows` 之后看——这条
-/// 边界必须说清楚，不能靠单元测试假装覆盖了。
+/// 托盘本身在原生侧（Windows：windows/runner/flutter_window.cpp；Linux：
+/// linux/runner/my_application.cc），这里能测的只有 Dart 这一半：**推出的载荷
+/// 对不对**，以及**该不该推**。两端的原生渲染（灰色图标、tooltip、菜单项）只能
+/// 靠真机 `flutter build windows` / `flutter build linux` 之后看——这条边界必须
+/// 说清楚，不能靠单元测试假装覆盖了。
 ///
 /// 断言集中在用户可见的事实上：版本号、状态文案（与 [VpnStatusX.label] 同一份
 /// 来源）、更新版本号，以及「状态没变就别碰平台通道」。
@@ -161,7 +162,7 @@ void main() {
     debugDefaultTargetPlatformOverride = null;
   });
 
-  testWidgets('非 Windows 平台不推送：托盘只在 Windows 存在', (WidgetTester tester) async {
+  testWidgets('Linux 同样推送：载荷与 Windows 完全一致', (WidgetTester tester) async {
     debugDefaultTargetPlatformOverride = TargetPlatform.linux;
     final state = AppState();
     addTearDown(state.dispose);
@@ -171,10 +172,44 @@ void main() {
     addTearDown(tray.dispose);
 
     tray.attach();
+    await tester.pumpAndSettle();
+    expect(trayCalls(), hasLength(1), reason: 'Linux runner 也有托盘，挂上时应推一次');
+
     state.onStatusChanged(VpnStatus.connecting);
     await tester.pumpAndSettle();
 
-    expect(trayCalls(), isEmpty, reason: 'Linux runner 没有托盘，不该有这条通道调用');
+    final args = argsOf(trayCalls().last);
+    expect(
+      args,
+      tray.payload(),
+      reason: '两端必须是同一份载荷：托盘文案只有 VpnStatusX.label 一个来源',
+    );
+    expect(args['version'], appVersion);
+    expect(args['status'], VpnStatus.connecting.label);
+    expect(args['connected'], isFalse);
+
+    debugDefaultTargetPlatformOverride = null;
+  });
+
+  testWidgets('原生侧不存在时静默：推送失败不影响连接主流程', (WidgetTester tester) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.linux;
+    final state = AppState();
+    addTearDown(state.dispose);
+    final center = centerWithoutUpdate();
+    addTearDown(center.dispose);
+    // 没有任何处理器的通道，模拟「原生忘记注册 / 通道不可用」：invokeMethod 会抛
+    // MissingPluginException，必须被吞掉，否则托盘会把主流程带崩。
+    final tray = SystemTray(
+      state: state,
+      updateCenter: center,
+      channel: const MethodChannel('com.xvpn.xvpn/no-such-native-side'),
+    );
+    addTearDown(tray.dispose);
+
+    tray.attach();
+    state.onStatusChanged(VpnStatus.connecting);
+    // 走到这里不抛异常，即说明异常被接住了。
+    await tester.pumpAndSettle();
 
     debugDefaultTargetPlatformOverride = null;
   });

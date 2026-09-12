@@ -129,11 +129,11 @@ CC0-1.0 / MPL-2.0 / Unlicense 各 1）与许可全文。
 
 | 文件 | 来源 | 说明 |
 | --- | --- | --- |
-| `app/assets/rulesets/geosite-cn.srs` | [SagerNet/sing-geosite](https://github.com/SagerNet/sing-geosite) `rule-set` 分支 | 国内域名列表 |
-| `app/assets/rulesets/geoip-cn.srs` | [SagerNet/sing-geoip](https://github.com/SagerNet/sing-geoip) `rule-set` 分支 | 国内 IP 段列表 |
+| `app/assets/rulesets/geosite-cn.srs` | [SagerNet/sing-geosite](https://github.com/SagerNet/sing-geosite) `rule-set` 分支 | 域名规则集 |
+| `app/assets/rulesets/geoip-cn.srs` | [SagerNet/sing-geoip](https://github.com/SagerNet/sing-geoip) `rule-set` 分支 | IP 规则集 |
 | `app/assets/rulesets/cn-ip.bin` | 由 `geoip-cn.srs` 派生 | 见下 |
 
-`cn-ip.bin` 是本项目从 `geoip-cn.srs` 摊平出来的中国 IP 前缀索引
+`cn-ip.bin` 是本项目从 `geoip-cn.srs` 摊平出来的 `geoip-cn` 前缀索引
 （由 `app/tool/build_cn_ip_index.dart` 生成），属于对上游数据的**格式转换**，
 不是独立数据源。它同样按上游规则库的条款分发。
 

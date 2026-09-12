@@ -242,9 +242,9 @@ class SettingsScreen extends StatelessWidget {
                     style: TextStyle(fontSize: 11, color: XV.muted2),
                   ),
                 ),
-                // 标签跟着当前模式走，写死「国内直连」在另外两种模式下是错的。
+                // 标签跟着当前模式走，写死「规则直连」在另外两种模式下是错的。
                 switch (state.settings.splitMode) {
-                  SplitMode.smart => RouteTag.direct('国内直连'),
+                  SplitMode.smart => RouteTag.direct('规则直连'),
                   SplitMode.globalProxy => RouteTag.kind(RouteKind.proxy),
                   SplitMode.globalDirect => RouteTag.direct('全部直连'),
                 },
@@ -284,7 +284,7 @@ class SettingsScreen extends StatelessWidget {
             title: '规则库',
             description: compact
                 ? 'geosite-cn · geoip-cn · ${fmtDate(state.ruleSetUpdatedAt)}'
-                : '国内域名 geosite-cn · 国内 IP geoip-cn · 更新于 ${fmtDate(state.ruleSetUpdatedAt)}',
+                : 'geosite-cn · geoip-cn · 更新于 ${fmtDate(state.ruleSetUpdatedAt)}',
             control: XvButton(label: '检查更新', onPressed: state.refreshRuleSet),
           ),
           SettingRow(

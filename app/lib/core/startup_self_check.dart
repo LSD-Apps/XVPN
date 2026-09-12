@@ -44,7 +44,7 @@ class ProbeResult {
     this.millis,
   });
 
-  /// 探针名，例如「国内直连」。
+  /// 探针名，例如「规则直连」。
   final String name;
 
   final ProbeStatus status;
@@ -111,7 +111,7 @@ class StartupSelfCheck {
   /// 经内核 DNS 模块解析（隧道内解析器）。
   final Future<List<String>> Function(String domain) coreResolve;
 
-  /// 经国内解析器解析。
+  /// 经直连解析器解析。
   final Future<List<String>> Function(String domain) domesticResolve;
 
   final String directProbeHost;
@@ -119,7 +119,7 @@ class StartupSelfCheck {
   final String domesticResolveDomain;
 
   /// 探针名。界面按名字取结果，因此做成常量。
-  static const String directName = '国内直连';
+  static const String directName = '规则直连';
   static const String tunnelName = '隧道出口';
   static const String dnsName = 'DNS 解析';
 
@@ -191,7 +191,7 @@ class StartupSelfCheck {
 
   /// DNS 探针：两条解析路径是否都能拿到答案。
   ///
-  /// 只关心「有没有拿到地址」，不比较两者是否相同：域名有国内外双部署时
+  /// 只关心「有没有拿到地址」，不比较两者是否相同：域名有两套部署时
   /// 两组答案本来就不同，那是正常现象，不该报成异常。
   Future<ProbeResult> _runDnsProbe() async {
     List<String> domestic = const <String>[];
@@ -218,25 +218,25 @@ class StartupSelfCheck {
       return const ProbeResult(
         name: dnsName,
         status: ProbeStatus.failed,
-        detail: '国内直接解析失败，只有隧道解析可用',
+        detail: '直连解析失败，只有隧道解析可用',
       );
     }
     if (viaCore.isEmpty) {
       // 隧道解析拿不到结果不一定是故障：如果这个域名命中 geosite-cn，
-      // 内核会按 DNS 规则用国内解析器解析，`/dns/query` 返回的仍是国内答案。
+      // 内核会按 DNS 规则用直连解析器解析，`/dns/query` 返回的仍是直连答案。
       // 因此这里给「通过」但说明清楚，避免误报。
       return ProbeResult(
         name: dnsName,
         status: ProbeStatus.passed,
         detail:
-            '国内解析正常（${domestic.first}）；'
-            '内核未返回独立答案，该域名可能被判定为国内直连',
+            '直连解析正常（${domestic.first}）；'
+            '内核未返回独立答案，该域名可能被判定为直连',
       );
     }
     return ProbeResult(
       name: dnsName,
       status: ProbeStatus.passed,
-      detail: '国内 ${domestic.first} · 内核 ${viaCore.first}',
+      detail: '直连 ${domestic.first} · 内核 ${viaCore.first}',
     );
   }
 
@@ -253,7 +253,7 @@ class StartupSelfCheck {
         checkedAt: DateTime.now(),
         probes: probes,
         conclusion: '两条路径都正常',
-        advice: '国内站点直连、国外站点走隧道，可以正常使用',
+        advice: '命中规则集的站点直连、其余站点走隧道，可以正常使用',
       );
     }
 
@@ -264,7 +264,7 @@ class StartupSelfCheck {
         conclusion: '直连这条腿不通，隧道是通的',
         advice:
             '问题在本地网络或 DNS，不在节点。'
-            '请检查本机网络；若只有国内站点打不开，可先切换为「全局代理」应急。',
+            '请检查本机网络；若只有直连站点打不开，可先切换为「全局代理」应急。',
       );
     }
 
@@ -297,7 +297,7 @@ class StartupSelfCheck {
         conclusion: 'DNS 解析异常',
         advice:
             '解析环节有问题，即使隧道连通也会表现为网站打不开。'
-            '可尝试在设置里更新规则库，或检查是否被本地 DNS 劫持。',
+            '可尝试在设置里更新规则库，或检查本地解析是否正常。',
       );
     }
 

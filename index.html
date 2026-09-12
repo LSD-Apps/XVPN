@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>XVPN — split-tunnel VPN client for Windows, Linux &amp; Android</title>
-<meta name="description" content="XVPN is a split-tunnel VPN client for Windows, Linux and Android. Import your own WireGuard, OpenVPN or Hysteria2 profile and get automatic geo-based traffic splitting, dual-resolver DNS cross-validation, and self-correcting routing rules. Open source, GPL-3.0-or-later. Collects no data.">
+<meta name="description" content="XVPN is a split-tunnel VPN client for Windows, Linux and Android. Import your own WireGuard, OpenVPN or Hysteria2 profile and get automatic rule-set based traffic splitting, dual-resolver DNS cross-validation, and self-correcting routing rules. Open source, GPL-3.0-or-later. Collects no data.">
 <meta name="keywords" content="split-tunnel VPN client, WireGuard client, OpenVPN client, Hysteria2 client, sing-box GUI, Windows VPN, Linux VPN, Android VPN, DNS leak prevention, geoip-cn, geosite-cn, automatic rule learning, open source VPN">
 <link rel="canonical" href="https://lsd-apps.github.io/XVPN/">
 <meta property="og:type" content="website">
@@ -82,17 +82,19 @@ implements no cryptography — that comes from
 <h2>What it does</h2>
 <ul>
   <li><strong>Automatic split tunnelling</strong> — bundled <code>geosite-cn</code> and
-      <code>geoip-cn</code> rule sets; domestic domains and IPs go direct, everything else
+      <code>geoip-cn</code> rule sets; flows matched by them go direct, everything else
       goes through the tunnel. No rules to write.</li>
-  <li><strong>Dual-resolver DNS</strong> — domestic domains resolve via a domestic
-      resolver, everything else inside the tunnel, so poisoned answers never drive routing.</li>
+  <li><strong>Dual-resolver DNS</strong> — rule-set matches resolve via a direct
+      resolver, everything else inside the tunnel; the two answer sets are
+      cross-validated so a bad answer never drives routing.</li>
   <li><strong>Failure attribution</strong> — "judged direct but failed" (a rule gap),
       "went through the tunnel but failed" (a node problem), and "direct itself is down"
       (a local network problem) look identical to a user but need opposite responses.
       XVPN tells them apart.</li>
-  <li><strong>DNS cross-validation</strong> — the same domain is resolved via the domestic
-      resolver and via the core, the answer sets are compared, and geolocated against a
-      China IP prefix index to distinguish dual deployment from suspected poisoning.</li>
+  <li><strong>DNS cross-validation</strong> — the same domain is resolved via the direct
+      resolver and via the core, the answer sets are compared, and geolocated against the
+      <code>geoip-cn</code> prefix index to distinguish dual deployment from an
+      inconsistent answer.</li>
   <li><strong>Self-correcting routing</strong> — a domain judged direct that keeps failing
       is switched to the tunnel at highest priority. Counter-evidence is respected: one
       successful direct connection resets the failure streak, and two revoke a learned rule.</li>

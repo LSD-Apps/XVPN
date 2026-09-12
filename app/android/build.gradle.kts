@@ -1,6 +1,6 @@
 allprojects {
     repositories {
-        // 国内镜像优先：maven.google.com 在部分网络下不可达，直连会超时。
+        // 镜像优先：maven.google.com 在部分网络下不可达，直连会超时。
         maven { url = uri("https://maven.aliyun.com/repository/google") }
         maven { url = uri("https://maven.aliyun.com/repository/public") }
         google()

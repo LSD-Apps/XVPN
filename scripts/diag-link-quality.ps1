@@ -1,6 +1,6 @@
 ﻿<#
 .SYNOPSIS
-  跨境链路体检：按目的地给出 TCP 握手丢包率与 RTT 分位，并（可选）采样隧道内时延。
+  链路质量体检：按目的地给出 TCP 握手丢包率与 RTT 分位，并（可选）采样隧道内时延。
 
 .DESCRIPTION
   为什么量 TCP 握手而不是 ping：
@@ -18,14 +18,14 @@
   「隧道自身开销」。
 
 .PARAMETER Targets
-  逗号分隔的 host:port 列表。建议同时给一个国内对照与一个国际对照。
+  逗号分隔的 host:port 列表。建议同时给一个近端对照与一个远端对照。
 
 .PARAMETER Samples
   每个目的地的采样次数。丢包率的分辨率约为 1/Samples，默认 60 够用。
 
 .EXAMPLE
   # 早高峰跑一次、晚高峰再跑一次，两次之差就是线路拥塞的证据
-  .\scripts\diag-crossborder.ps1 -Targets "你的服务器IP:22,223.5.5.5:443,1.1.1.1:80"
+  .\scripts\diag-link-quality.ps1 -Targets "你的服务器IP:22,223.5.5.5:443,1.1.1.1:80"
 #>
 param(
   [string]$Targets = '223.5.5.5:443,1.1.1.1:80',

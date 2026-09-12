@@ -55,7 +55,7 @@ void main() {
     });
 
     test('忽略 .conf 的 AllowedIPs，出站方向覆盖全部地址', () {
-      // 这是零配置分流的命门：若沿用 10.0.0.0/24，被墙的地址根本进不了隧道。
+      // 这是零配置分流的命门：若沿用 10.0.0.0/24，未命中规则集的地址根本进不了隧道。
       final endpoint = _map(_list(_build()['endpoints'])[0]);
       final peer = _map(_list(endpoint['peers'])[0]);
       expect(peer['allowed_ips'], <String>['0.0.0.0/0', '::/0']);
@@ -82,7 +82,7 @@ Endpoint = 1.2.3.4:51820
   });
 
   group('DNS 分流', () {
-    test('国内 DNS 走 direct 出站，隧道内 DNS 走 vpn', () {
+    test('直连 DNS 走 direct 出站，隧道内 DNS 走 vpn', () {
       final dns = _map(_build()['dns']);
       final servers = _list(dns['servers']).map(_map).toList();
 
@@ -105,7 +105,7 @@ Endpoint = 1.2.3.4:51820
       expect(resolver['server'], 'dns-cn');
     });
 
-    test('国内域名交给国内 DNS，其余交给隧道内 DNS', () {
+    test('命中规则集的域名交给直连 DNS，其余交给隧道内 DNS', () {
       final dns = _map(_build()['dns']);
       final rules = _list(dns['rules']).map(_map).toList();
       expect(rules, hasLength(1));
@@ -139,7 +139,7 @@ Endpoint = 1.2.3.4:51820
   });
 
   group('路由', () {
-    test('默认走隧道，国内域名与国内 IP 直连', () {
+    test('默认走隧道，命中规则集的域名与 IP 直连', () {
       final route = _map(_build()['route']);
       expect(route['final'], 'vpn');
 
@@ -154,7 +154,7 @@ Endpoint = 1.2.3.4:51820
       expect(rules.any((r) => r['action'] == 'sniff'), isTrue);
     });
 
-    test('全局直连模式不做国内规则，全部直连', () {
+    test('全局直连模式不做规则集判定，全部直连', () {
       final route = _map(_build(mode: SplitMode.globalDirect)['route']);
       expect(route['final'], 'direct');
       final rules = _list(route['rules']).map(_map).toList();

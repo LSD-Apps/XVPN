@@ -79,8 +79,8 @@ flutter:
     # CI 的 prepare 任务也会重新复制并断言 git 无差异。
     - assets/legal/
     # 分流规则集：随包分发，用户无需任何配置。
-    # 目录里除 .srs 之外还有 cn-ip.bin：中国 IP 前缀索引，
-    # 供 DNS 交叉校验判断「解析出的地址是不是国内的」，由
+    # 目录里除 .srs 之外还有 cn-ip.bin：geoip-cn 前缀索引，
+    # 供 DNS 交叉校验判断「解析出的地址是否属于该规则集」，由
     # tool/build_cn_ip_index.dart 从 geoip-cn.srs 生成（Dart 标准库没有
     # zlib，无法在运行时解压 .srs，因此在构建期摊平）。
     - assets/rulesets/

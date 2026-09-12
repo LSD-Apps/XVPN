@@ -16,20 +16,21 @@ The user supplies their own WireGuard or OpenVPN configuration; the app:
 1. Translates the profile into a sing-box configuration (all protocol-specific
    fields are mapped automatically, and invalid/outdated parameter names are
    normalised into what the core accepts).
-2. Routes traffic: domestic domains and IPs go direct (bundled `geosite-cn` +
-   `geoip-cn` rule sets); everything else goes through the tunnel.
-3. Resolves DNS with two resolvers — a domestic resolver direct, an
-   in-tunnel resolver for everything else — to avoid poisoned answers.
+2. Routes traffic: flows matched by the bundled `geosite-cn` + `geoip-cn` rule
+   sets go direct; everything else goes through the tunnel.
+3. Resolves DNS with two resolvers — a direct resolver for rule-set matches, an
+   in-tunnel resolver for everything else — and cross-validates their answers so
+   a bad answer cannot drive routing.
 4. Reads the core's connection list (Clash API, loopback only) to show split
    records, per-outbound byte counts, and live rates.
 5. Attributes connection failures: "judged direct but failed" (a rule coverage
    problem) versus "went through the tunnel but failed" (a node/server problem)
    versus "direct itself is down" (a local network or DNS problem). These three
    look identical to a user but require opposite responses.
-6. Cross-validates DNS: resolves a domain via the domestic resolver and via the
-   core's `/dns/query`, compares the answer sets, and geolocates them against a
-   China IP prefix index to distinguish "dual deployment (CN + overseas)" from
-   "suspected poisoning".
+6. Cross-validates DNS: resolves a domain via the direct resolver and via the
+   core's `/dns/query`, compares the answer sets, and geolocates them against the
+   `geoip-cn` prefix index to distinguish "dual deployment" from "answers
+   inconsistent".
 7. Automatically corrects routing: a domain that is judged direct and fails
    repeatedly is switched to the tunnel at highest priority (injected before the
    rule sets), with counter-evidence handling — a single successful direct
@@ -47,8 +48,8 @@ analytics, advertising, tracking, or crash reporting, and no backend.
 split-tunnel VPN client, zero-config VPN client, WireGuard client for Windows,
 WireGuard client for Android, OpenVPN client for Windows, OpenVPN client for
 Android, sing-box GUI, sing-box frontend, Clash API client, DNS leak prevention,
-DNS poisoning detection, DNS cross-validation, geoip-cn, geosite-cn, China
-mainland direct routing, rule-based routing, automatic rule learning, network
+DNS answer cross-validation, geoip-cn, geosite-cn, rule-set based routing,
+automatic rule learning, network
 diagnostics, Flutter desktop app, Flutter Android app, GPL-3.0-or-later.
 
 ## Documentation
@@ -66,7 +67,7 @@ diagnostics, Flutter desktop app, Flutter Android app, GPL-3.0-or-later.
 - [docs/RULES.md](docs/RULES.md) — rule set coverage measurements, DNS monitoring,
   automatic correction design
 - [docs/ANDROID.md](docs/ANDROID.md) — VpnService + libbox integration
-- [docs/RELEASE.md](docs/RELEASE.md) — release and compliance analysis by market
+- [docs/RELEASE.md](docs/RELEASE.md) — release engineering and platform compliance
 - [docs/STORE_LISTING.md](docs/STORE_LISTING.md) — Google Play listing materials
 - [docs/RESEARCH.md](docs/RESEARCH.md) — why sing-box was chosen over a WireGuard
   plugin

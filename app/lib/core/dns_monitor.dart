@@ -4,9 +4,9 @@
 ///
 /// | 现象 | 结论 | 该做什么 |
 /// | --- | --- | --- |
-/// | 国内解析器超时或极慢 | 直连路径的解析环节坏了 | 换解析器；被投毒的域名更要走隧道 |
-/// | 国内与隧道解析答案完全不一致，且国内那组在国内 | 域名有国内外两套部署（CDN 就近） | 按域名判定分流，不要一刀切 |
-/// | 国内答案「不在国内」，且与隧道答案不一致 | 大概率被投毒 | 强制走隧道，否则直连必然失败 |
+/// | 直连解析器超时或极慢 | 直连路径的解析环节坏了 | 换解析器；答案不可信的域名更要走隧道 |
+/// | 直连与隧道解析答案完全不一致，且直连那组在索引内 | 域名有两套部署（CDN 就近） | 按域名判定分流，不要一刀切 |
+/// | 直连答案不在索引内，且与隧道答案不一致 | 大概率答案不可信 | 强制走隧道，否则直连必然失败 |
 ///
 /// 之所以要单独做一层监测，而不是读内核日志：sing-box 的 `/connections`
 /// 快照在服务端就把 DNS 流量过滤掉了
@@ -40,7 +40,7 @@ class ResolverHealth {
   /// 解析器地址。
   final String server;
 
-  /// 用途：国内直连用，还是隧道内用。
+  /// 用途：直连解析用，还是隧道内用。
   final String role;
 
   /// 参与统计的样本数（成功与失败都算）。
@@ -177,7 +177,7 @@ class DnsReport {
       final delta = directMedian - tunnelMedian;
       if (delta > 120) {
         return '直连解析比隧道慢 ${delta}ms（$directMedian vs $tunnelMedian），'
-            '国内域名可能正在走隧道解析';
+            '命中规则集的域名可能正在走隧道解析';
       }
       return '直连解析 ${directMedian}ms · 隧道解析 ${tunnelMedian}ms';
     }
@@ -192,16 +192,16 @@ enum DnsVerdict {
   /// 还没做过校验。
   unknown,
 
-  /// 国内与隧道答案一致，或差异不足以支撑结论。
+  /// 直连与隧道答案一致，或差异不足以支撑结论。
   consistent,
 
-  /// 国内答案在国内、隧道答案在境外——典型的国内外双部署。
+  /// 直连答案在索引内、隧道答案在索引外——典型的两套部署。
   dualStack,
 
-  /// 国内答案不在国内，或与隧道答案完全无关——疑似投毒。
+  /// 直连答案不在索引内，或与隧道答案完全无关——解析结果不一致。
   suspectPoisoning,
 
-  /// 国内解析器整体不可用。
+  /// 直连解析器整体不可用。
   directResolverDown,
 
   /// **本机无法执行 DNS 探测**（探测套接字都建不起来），而不是解析器坏了。
@@ -216,18 +216,18 @@ extension DnsVerdictX on DnsVerdict {
   String get label => switch (this) {
     DnsVerdict.unknown => '尚未校验（连接后会自动校验一次）',
     DnsVerdict.consistent => '一致',
-    DnsVerdict.dualStack => '国内外双部署',
-    DnsVerdict.suspectPoisoning => '疑似投毒',
-    DnsVerdict.directResolverDown => '国内解析异常',
+    DnsVerdict.dualStack => '双部署',
+    DnsVerdict.suspectPoisoning => '答案不一致',
+    DnsVerdict.directResolverDown => '直连解析异常',
     DnsVerdict.probeUnavailable => '探测不可用',
   };
 
   String get advice => switch (this) {
     DnsVerdict.unknown => '连接后会自动完成一次校验',
     DnsVerdict.consistent => '域名按规则库判定即可，无需额外干预',
-    DnsVerdict.dualStack => '两套答案分别指向国内外节点，按域名判定分流是正确的',
-    DnsVerdict.suspectPoisoning => '这类域名直连必然失败，已自动改为走隧道',
-    DnsVerdict.directResolverDown => '检查是否被本地 DNS 或运营商劫持，可尝试更换国内解析器',
+    DnsVerdict.dualStack => '两套答案指向不同的部署，按域名判定分流是正确的',
+    DnsVerdict.suspectPoisoning => '这类域名的答案不可信，已自动改为走隧道',
+    DnsVerdict.directResolverDown => '检查本地解析是否正常，可尝试更换直连解析器',
     DnsVerdict.probeUnavailable =>
       '本机不允许建立 DNS 探测套接字（安全软件或系统策略），这不是节点问题，'
           '也不影响隧道使用；分流与隧道解析照常工作',
@@ -273,7 +273,7 @@ class DnsMonitorConfig {
     this.tunnelProbeDomain = 'www.gstatic.com',
   });
 
-  /// 国内解析器地址列表，与内核配置里的 `dns-cn` 系列保持一致。
+  /// 直连解析器地址列表，与内核配置里的 `dns-cn` 系列保持一致。
   final List<String> domesticServers;
 
   /// 隧道解析器的探测方式：让内核经隧道访问这个地址并计时。
@@ -287,7 +287,7 @@ class DnsMonitorConfig {
 
   /// 用于测量「直连解析」的域名。
   ///
-  /// 选国内一线站点：它必须被国内解析器秒回，如果它都慢了，
+  /// 选一个稳定的公开站点：它必须被直连解析器秒回，如果它都慢了，
   /// 说明本地 DNS 链路有问题。
   final String domesticProbeDomain;
 
@@ -356,13 +356,13 @@ class DnsMonitor {
   DateTime? _lastRunAt;
   bool _running = false;
 
-  /// 「国内解析器全部失败」连续出现了几次。
+  /// 「直连解析器全部失败」连续出现了几次。
   ///
-  /// 用它给「国内解析异常」这条结论加一道门槛：单次失败可能只是丢了一个 UDP 包，
+  /// 用它给「直连解析异常」这条结论加一道门槛：单次失败可能只是丢了一个 UDP 包，
   /// 而界面上它是一条要用户去改设置的重结论。
   int _domesticAllFailedStreak = 0;
 
-  /// 连续几次全失败才认定国内解析真的不可用。
+  /// 连续几次全失败才认定直连解析真的不可用。
   static const int domesticFailureThreshold = 2;
 
   /// 正在探测时返回 true。上层据此跳过本轮，避免慢探测把定时器堆起来。
@@ -403,7 +403,7 @@ class DnsMonitor {
       );
       _record(server, role: '直连', outcome: outcome);
     }
-    // 直连路径的耗时取「最快的那台」：国内解析器通常配了两台，
+    // 直连路径的耗时取「最快的那台」：直连解析器通常配了两台，
     // 内核也是谁先答应用谁，取最快才与真实体验一致。
     final fastest = <int>[];
     for (final server in config.domesticServers) {
@@ -483,7 +483,7 @@ class DnsMonitor {
     );
   }
 
-  /// 对一个域名做交叉校验：国内解析器 vs 隧道。
+  /// 对一个域名做交叉校验：直连解析器 vs 隧道。
   ///
   /// 结果会缓存 [crossCheckTtl]，因为同一个域名短时间内反复校验没有意义，
   /// 而每次校验都要占用一次隧道往返。
@@ -506,7 +506,7 @@ class DnsMonitor {
   }
 
   Future<DnsCrossCheck> _runCrossCheck(String domain) async {
-    // 1) 国内解析器：逐个查，取第一个成功的答案。
+    // 1) 直连解析器：逐个查，取第一个成功的答案。
     var domesticAnswers = const <String>[];
     int? domesticMillis;
     var domesticAllFailed = true;
@@ -592,7 +592,7 @@ class DnsMonitor {
     if (domesticAllFailed) {
       // 先区分「本机探测跑不起来」与「解析器真的不通」——两者的处置方式相反。
       if (domesticAllLocalFailure) return DnsVerdict.probeUnavailable;
-      // 单次失败不足以定性「国内解析异常」。
+      // 单次失败不足以定性「直连解析异常」。
       //
       // 这里的探测是明文 UDP，丢一个包就会走到这条分支；而界面上它是一条**醒目
       // 的异常结论**，用户会照它去改解析器设置。要求连续两次全失败才下结论：
@@ -612,13 +612,13 @@ class DnsMonitor {
         !domesticAnswers.any(tunnelAnswers.toSet().contains);
 
     if (region == AddressRegion.domestic) {
-      // 国内解析器给出国内地址：这是最正常的情况。
-      // 即便与隧道答案不同，也只是国内外双部署，按域名判定是对的。
+      // 直连解析器给出索引内的地址：这是最正常的情况。
+      // 即便与隧道答案不同，也只是两套部署，按域名判定是对的。
       return disjoint ? DnsVerdict.dualStack : DnsVerdict.consistent;
     }
     if (region == AddressRegion.overseas) {
-      // 国内解析器给出境外地址：可能是域名本就用境外 CDN，
-      // 也可能是被投毒成了别人的地址。只有「与隧道答案也不一样」才能定性。
+      // 直连解析器给出索引外的地址：可能是域名本就用规则集外的 CDN，
+      // 也可能是答案不可信。只有「与隧道答案也不一样」才能定性。
       return disjoint ? DnsVerdict.suspectPoisoning : DnsVerdict.consistent;
     }
     // 拿不到地理信息（索引缺失或全是 IPv6）时不下结论，

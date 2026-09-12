@@ -67,7 +67,7 @@ class WireGuardAdapter implements VpnProtocolAdapter {
       // 这是域名型端点的引导问题：隧道还没建立时无法通过隧道解析，
       // 而解析不出来就建不了隧道。实测报错形如
       // 「failed to resolve endpoints: lookup <端点域名>: context deadline exceeded」，
-      // 表现为国外站点全部不通、国内站点却正常。
+      // 表现为未命中规则集的站点全部不通、命中规则集的站点却正常。
       'domain_resolver': <String, Object?>{'server': context.resolverTag},
       'peers': <Object?>[
         <String, Object?>{
@@ -77,7 +77,7 @@ class WireGuardAdapter implements VpnProtocolAdapter {
           if (peer.presharedKey != null && peer.presharedKey!.isNotEmpty)
             'pre_shared_key': peer.presharedKey,
           // 无论 .conf 写了什么，出站方向都要覆盖全部地址：
-          // 否则「国外走隧道」根本无从谈起。
+          // 否则「其余流量走隧道」根本无从谈起。
           'allowed_ips': <String>['0.0.0.0/0', '::/0'],
           // 保活：只在配置**显式声明**时才下发。
           //

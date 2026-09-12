@@ -17,7 +17,7 @@
 #
 # 依赖的环境变量（CI 已就绪，本机需自行设置）：
 #   * ANDROID_SDK_ROOT / ANDROID_HOME：Android SDK 根目录；
-#   * GOPROXY（可选）：默认 https://proxy.golang.org,direct，国内可设 goproxy.cn；
+#   * GOPROXY（可选）：默认 https://proxy.golang.org,direct，网络受限时可设 goproxy.cn；
 #   * ANDROID_NDK_VERSION（可选）：默认 28.2.13676358（与 Flutter 的
 #     flutter.ndkVersion 相同，见 FlutterExtension.kt）。
 #
@@ -56,7 +56,7 @@ out_aar="$repo/app/android/app/libs/libbox.aar"
 # ---------------------------------------------------------------- 工具链环境
 
 # 走模块代理：CI 上直连 proxy.golang.org 通常没问题；保留可覆盖能力，
-# 国内环境设为 https://goproxy.cn,direct 即可。
+# 网络受限时设为 https://goproxy.cn,direct 即可。
 # 不要设 GOSUMDB=off——它会让工具链下载无法校验而直接失败。
 export GOPROXY="${GOPROXY:-https://proxy.golang.org,direct}"
 # GOTOOLCHAIN=auto：sing-box 与 gomobile 各自要求不同的最低 Go 版本，

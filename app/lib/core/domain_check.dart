@@ -13,7 +13,7 @@ import 'dns_monitor.dart';
 /// 这里把三份已有的证据按域名汇总起来：
 ///   * 内核**实际**把它判到了哪条路（来自分流记录，不是推测）；
 ///   * 有没有规则覆盖它（程序学到的，或用户手工指定的）；
-///   * 两路 DNS 的解析结果是否一致（污染/就近判定的依据）。
+///   * 两路 DNS 的解析结果是否一致（答案一致性 / 就近判定的依据）。
 ///
 /// 刻意不做的一件事：**不预测分流结果**。geosite-cn 是二进制规则集，Dart 侧
 /// 读不了（没有 zlib），因此「这个域名会不会命中 geosite-cn」在客户端根本
@@ -50,8 +50,8 @@ class DomainCheck {
       return '没有关于 $domain 的任何记录。访问一次后再来看，或者先确认域名拼写。';
     }
     if (dns != null && dns!.verdict == DnsVerdict.suspectPoisoning) {
-      return '$domain 的解析结果可疑：国内解析器与隧道解析器给出的答案不一致，'
-          '很可能是 DNS 污染。这类域名必须走隧道解析。';
+      return '$domain 的解析结果可疑：直连解析器与隧道解析器给出的答案不一致。'
+          '这类域名走隧道解析更可靠。';
     }
     if (rule != null && !observed) {
       return '$domain 已被规则覆盖（${rule!.preference.label}），但还没有观察到实际连接。';
@@ -83,7 +83,7 @@ class DomainCheck {
     }
     if (dns != null) {
       rows.add((label: 'DNS 对照', value: dns!.verdict.label));
-      rows.add((label: '国内解析', value: _join(dns!.domesticAnswers)));
+      rows.add((label: '直连解析', value: _join(dns!.domesticAnswers)));
       rows.add((label: '隧道解析', value: _join(dns!.tunnelAnswers)));
     } else {
       rows.add((label: 'DNS 对照', value: '尚未探测'));

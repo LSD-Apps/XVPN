@@ -110,19 +110,19 @@ void main() {
     );
     await tester.pump();
 
-    expect(find.textContaining('国内解析异常'), findsOneWidget);
+    expect(find.textContaining('直连解析异常'), findsOneWidget);
     expect(dnsRow(tester).warn, isTrue, reason: '解析器确实不响应了，这一行必须报警');
     await stop(tester, state);
   });
 
-  testWidgets('疑似投毒必须变黄', (WidgetTester tester) async {
+  testWidgets('答案不一致必须变黄', (WidgetTester tester) async {
     final state = await pumpConnect(tester);
     state.onDnsReport(
       reportWith(consecutiveFailures: 0, verdict: DnsVerdict.suspectPoisoning),
     );
     await tester.pump();
 
-    expect(find.textContaining('疑似投毒'), findsOneWidget);
+    expect(find.textContaining('答案不一致'), findsOneWidget);
     expect(dnsRow(tester).warn, isTrue);
     await stop(tester, state);
   });

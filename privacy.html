@@ -267,7 +267,7 @@ WireGuard 的私钥、OpenVPN 的客户端证书与私钥、Hysteria2 的认证�
 <td><code>223.5.5.5</code>、<code>119.29.29.29</code>（阿里/腾讯公共 DNS）</td>
 <td>连接期间约每 45 秒</td>
 <td>对<strong>固定探测域名</strong>的 DNS A 查询</td>
-<td>DNS 健康监测：判断国内解析器是否变慢或被劫持</td>
+<td>DNS 健康监测：判断直连解析器是否变慢、解析结果是否正常</td>
 </tr>
 <tr>
 <td><code>cdn.jsdelivr.net</code></td>
@@ -275,16 +275,42 @@ WireGuard 的私钥、OpenVPN 的客户端证书与私钥、Hysteria2 的认证�
 <td>下载规则库 <code>.srs</code> 文件</td>
 <td>更新分流规则库。不点击则不会发生</td>
 </tr>
+<tr>
+<td><code>api.github.com</code>（GitHub Releases API）</td>
+<td><strong>每次启动时一次</strong>（设置页也可手动「检查更新」重试）</td>
+<td>仅这一次 HTTPS 请求本身，不带设备标识</td>
+<td>判断是否有新版本</td>
+</tr>
+<tr>
+<td><code>github.com</code> 的 Release 附件（<code>XVPN-…-windows-x64.zip</code> / <code>-linux-x64.zip</code> / <code>-android-arm64.apk</code> 与 <code>SHA256SUMS.txt</code>）</td>
+<td><strong>仅当你选择更新时</strong></td>
+<td>仅下载请求本身，不带设备标识</td>
+<td>下载新版本，并用校验文件核对完整性后再安装</td>
+</tr>
 </tbody>
 </table>
 <p>补充说明：</p>
 <ul>
-<li><strong>内核不自带任何服务器。</strong> 它连接的服务器地址来自<strong>你导入的配置</strong>，
-数据直接在你的设备与你自己的服务器之间传输，<strong>不经过我们</strong>。</li>
-<li>DNS 探测查询的是<strong>固定的探测域名</strong>（用于测量解析器健康状况），
-<strong>不是</strong>你访问的网站。它们走系统网络直接发出，不经过隧道。</li>
-<li>应用的诊断功能不会把你的域名清单、流量或配置发送给任何第三方。</li>
-<li><strong>没有遥测</strong>：上述请求都不带设备标识，也不上报结果到任何服务器。</li>
+<li>
+<p><strong>更新请求不带任何标识，结论也不外传。</strong> 启动检查只向 <code>api.github.com</code>
+发一次请求，不带设备标识、账号或使用情况；「有没有新版本」这个结论只留在
+设备内存里用于界面提示（桌面端标题栏 / 移动端设置页），<strong>不上报给任何服务器</strong>。
+启动检查失败与「没有新版本」在用户侧完全一致，不会弹窗、不会重试。</p>
+</li>
+<li>
+<p><strong>内核不自带任何服务器。</strong> 它连接的服务器地址来自<strong>你导入的配置</strong>，
+数据直接在你的设备与你自己的服务器之间传输，<strong>不经过我们</strong>。</p>
+</li>
+<li>
+<p>DNS 探测查询的是<strong>固定的探测域名</strong>（用于测量解析器健康状况），
+<strong>不是</strong>你访问的网站。它们走系统网络直接发出，不经过隧道。</p>
+</li>
+<li>
+<p>应用的诊断功能不会把你的域名清单、流量或配置发送给任何第三方。</p>
+</li>
+<li>
+<p><strong>没有遥测</strong>：上述请求都不带设备标识，也不上报结果到任何服务器。</p>
+</li>
 </ul>
 <hr />
 <h2 id="-7">五、自动纠正：本地运行的自动化判断</h2>

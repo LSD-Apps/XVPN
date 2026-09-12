@@ -34,7 +34,7 @@ $buildRoot = Join-Path $repo '.build'
 $srcDir = Join-Path $buildRoot "sing-box-$version"
 $outAar = Join-Path $repo 'app\android\app\libs\libbox.aar'
 
-# 走国内代理：直连 GitHub 时通时断，模块代理稳定得多。
+# 走模块代理：直连 GitHub 时通时断，模块代理稳定得多。
 # 不要设 GOSUMDB=off——它会让工具链下载无法校验而直接失败。
 $env:GOPROXY = 'https://goproxy.cn,direct'
 $env:GOTOOLCHAIN = 'auto'

@@ -23,4 +23,9 @@ add_definitions(-DAPPLICATION_ID="${APPLICATION_ID}")
 target_link_libraries(${BINARY_NAME} PRIVATE flutter)
 target_link_libraries(${BINARY_NAME} PRIVATE PkgConfig::GTK)
 
+# 系统托盘用 libayatana-appindicator3，但**只在运行期 dlopen**（见
+# my_application.cc 里的说明），因此这里不链接它，只链 dl。这正是「构建机不需要
+# 装 appindicator、运行机没装也不影响启动」的前提。
+target_link_libraries(${BINARY_NAME} PRIVATE ${CMAKE_DL_LIBS})
+
 target_include_directories(${BINARY_NAME} PRIVATE "${CMAKE_SOURCE_DIR}")

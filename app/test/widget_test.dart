@@ -80,6 +80,24 @@ void main() {
     expect(find.text('设置'), findsOneWidget);
   });
 
+  testWidgets('拖拽落点占满内容列宽度，不按内容收缩', (WidgetTester tester) async {
+    // 原型 `design/ui-mockup.html` 写的是 `.drop{width:100%;max-width:520px}`。
+    // 早先漏了 width:100%，落点于是按内容收缩成一条窄框：
+    // 既不像一个可拖放的区域，与上下两段文字的宽度也参差不齐。
+    tester.view.physicalSize = const Size(1400, 900);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    await tester.pumpWidget(const XvpnApp());
+    await tester.pumpAndSettle();
+
+    expect(
+      tester.getSize(find.byType(DashedBox)).width,
+      closeTo(520, 1),
+      reason: '拖拽落点应占满内容列（原型 max-width:520px），而不是按内容收缩',
+    );
+  });
+
   testWidgets('窄屏切换为底部标签栏布局', (WidgetTester tester) async {
     tester.view.physicalSize = const Size(390, 844);
     tester.view.devicePixelRatio = 1.0;
@@ -258,7 +276,7 @@ void main() {
     // 表头改为「流量 / 失败 / 延迟」：规则名移到每行的第二行小字里
     // （它解释「为什么走这条路」，但不该占据一个宽列）。
     expect(find.text('流量 ↓/↑'), findsOneWidget);
-    // 国内直连的域名应命中 geosite-cn。
+    // 命中规则集的域名应命中 geosite-cn。
     //
     // 这里期望的是**归一化之后**的名字：内核返回的 rule 是一整句描述
     // （`rule_set=[geosite-cn geoip-cn] => route`，且 rulePayload 恒为空），
@@ -510,7 +528,7 @@ void main() {
     await _stopCore(tester, state);
   });
 
-  testWidgets('移动端分流标签跟随实际分流模式，不再恒为「国内直连」', (WidgetTester tester) async {
+  testWidgets('移动端分流标签跟随实际分流模式，不再恒为「规则直连」', (WidgetTester tester) async {
     final state = AppState();
     addTearDown(state.dispose);
     await _pumpShell(tester, state, size: const Size(390, 844));
@@ -518,13 +536,13 @@ void main() {
     state.importConf(text: _conf, fileName: 'wg-hk-01.conf');
     await tester.pump();
     await tester.pump(const Duration(seconds: 1));
-    expect(find.text('国内直连'), findsWidgets);
+    expect(find.text('规则直连'), findsWidgets);
 
     state.updateSettings(
       state.settings.copyWith(splitMode: SplitMode.globalProxy),
     );
     await tester.pumpAndSettle();
-    expect(find.text('国内直连'), findsNothing, reason: '全局代理下显示「国内直连」是错误信息');
+    expect(find.text('规则直连'), findsNothing, reason: '全局代理下显示「规则直连」是错误信息');
     expect(find.textContaining('全局代理'), findsWidgets);
 
     state.updateSettings(

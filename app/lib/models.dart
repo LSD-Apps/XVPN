@@ -38,7 +38,7 @@ enum ImportOutcome {
 /// 一条连接被判定的结果。UI 用它渲染「代理 / 直连」标签。
 enum RouteKind { proxy, direct }
 
-/// 分流模式。默认智能分流即「国内直连、国外走代理」。
+/// 分流模式。默认智能分流即「命中规则集的流量直连、其余走代理」。
 enum SplitMode { smart, globalProxy, globalDirect }
 
 extension SplitModeX on SplitMode {
@@ -49,7 +49,7 @@ extension SplitModeX on SplitMode {
   };
 
   String get description => switch (this) {
-    SplitMode.smart => '国内域名与 IP 直连，其余走隧道',
+    SplitMode.smart => '命中规则集的域名与 IP 直连，其余走隧道',
     SplitMode.globalProxy => '所有流量都经过隧道',
     SplitMode.globalDirect => '不使用隧道，仅保持连接',
   };

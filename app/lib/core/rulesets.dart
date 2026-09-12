@@ -20,7 +20,7 @@ class RuleSetStore {
 
   /// 需要维护的规则库。键是文件名，值是上游地址。
   ///
-  /// 上游走 jsDelivr 的 `rule-set` 分支——GitHub 直连在国内时通时断，
+  /// 上游走 jsDelivr 的 `rule-set` 分支——GitHub 直连在部分网络下时通时断，
   /// 而 CDN 稳定得多（安装阶段也是从同一个地址拉取的）。
   static const Map<String, String> sources = <String, String>{
     'geosite-cn.srs':

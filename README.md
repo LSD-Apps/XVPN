@@ -7,9 +7,9 @@
 **A split-tunnel VPN client that just takes your `.conf`.**
 
 No node picking, no rule writing, no need to know what a geosite is — drop in your
-config file and the app handles the rest: domestic domains and IPs go direct,
-everything else goes through the tunnel, and DNS is resolved by two separate
-resolvers to avoid poisoning.
+config file and the app handles the rest: traffic matched by the bundled rule sets
+goes direct, everything else goes through the tunnel, and DNS is cross-validated by
+two separate resolvers.
 
 | | |
 | --- | --- |
@@ -41,7 +41,7 @@ reasoning is in [`docs/RELEASE.md`](docs/RELEASE.md).
 | What you might expect to configure | What the app does instead |
 | --- | --- |
 | Choose which traffic goes where | Bundled `geosite-cn` + `geoip-cn` rule sets — domain and IP, belt and braces |
-| Set up DNS to avoid poisoning | Generates two resolvers: domestic DNS for domestic domains, in-tunnel DNS for the rest |
+| Set up DNS with a consistency check | Generates two resolvers: a direct resolver for rule-set matches, an in-tunnel resolver for the rest |
 | Understand WireGuard / OpenVPN / Hysteria2 parameters | Parses the config and maps every field to the core; invalid or outdated parameters are corrected automatically |
 | Reconfigure on every switch | Remembers multiple profiles; switching reconnects |
 
@@ -82,8 +82,9 @@ Behaviour, limits, and the measurements behind them are documented in
 3. On first connect, Windows / Linux sets the system proxy; Android asks for VPN
    permission.
 
-On Windows, closing the window minimizes the app to the system tray without
-dropping the connection. To actually quit, use the tray menu's "Quit XVPN" — it
+On Windows and Linux, closing the window minimizes the app to the system tray
+without dropping the connection (on Linux this needs a StatusNotifierItem host —
+without one, closing quits). To actually quit, use the tray menu's "Quit XVPN" — it
 restores the system proxy and stops the core process, so you are never left with a
 broken network.
 
@@ -136,11 +137,12 @@ three failures that look identical but need opposite responses:
 Two long-tail cases aren't covered by the bundled rule sets, and both look like
 "the site won't open and the user has no idea why":
 
-- A blocked site resolving to a **domestic IP** (foreign service behind a domestic
-  CDN) → matches `geoip-cn`, is judged direct, and **fails outright**. The rule set
-  can't fix this — it matched *correctly*.
-- A domain being poisoned, so the domestic resolver returns an address that isn't
-  the real site.
+- A host judged direct that resolves to an address inside `geoip-cn` but is not
+  actually reachable that way (for example a service fronted by a CDN in the rule
+  set's range) → judged direct, and it **fails outright**. The rule set can't fix
+  this — it matched *correctly*.
+- A domain whose direct-resolved answer differs from the in-tunnel answer, so the
+  routing decision was based on an address the app cannot trust.
 
 The app observes the shared consequence: **judged direct, but the connection
 failed**. It records such domains, and after 3 consecutive failures switches them
@@ -162,24 +164,24 @@ sing-box's `/connections` snapshot filters DNS traffic out **server-side**
 (`metadata.OutboundType != C.TypeDNS`), so DNS behaviour never shows up in the
 connection list — it has to be probed.
 
-1. UDP queries straight to the domestic resolvers, timed, to spot a slow or dead one.
+1. UDP queries straight to the direct resolvers, timed, to spot a slow or dead one.
 2. The Clash API's `/proxies/vpn/delay` makes the core **actually resolve through
    the tunnel**, giving the latency you really feel.
-3. **Cross-validation**: the same domain is resolved by the domestic resolver and by
+3. **Cross-validation**: the same domain is resolved by the direct resolver and by
    the core's `/dns/query`; the two answer sets are compared and geolocated against
-   a China IP prefix index.
+   the `geoip-cn` prefix index.
 
-| Domestic answer | vs tunnel answer | Verdict | Action |
+| Direct answer | vs tunnel answer | Verdict | Action |
 | --- | --- | --- | --- |
-| In China | Different | Dual deployment (CN + overseas) | Domain-based routing is correct, no action |
-| Not in China | Completely different | Suspected poisoning | Force through the tunnel (one failure is enough) |
-| In China | Same | Consistent | No action |
-| All failed | — | Domestic resolution broken | Suggest checking for local DNS hijacking |
+| Inside `geoip-cn` | Different | Dual deployment | Domain-based routing is correct, no action |
+| Outside `geoip-cn` | Completely different | Answers inconsistent | Force through the tunnel (one failure is enough) — a bad answer cannot drive routing |
+| Inside `geoip-cn` | Same | Consistent | No action |
+| All failed | — | Direct resolution broken | Suggest checking local resolution |
 
-**With no geolocation data, the app does not conclude "poisoning"** — it would rather
-miss one automatic correction than push healthy traffic into the tunnel. Latency
-statistics use a rolling-window median rather than a mean: one 3-second timeout
-drags the mean from 20 ms past 100 ms, while the median barely moves.
+**With no geolocation data, the app does not conclude "inconsistent"** — it would
+rather miss one automatic correction than push healthy traffic into the tunnel.
+Latency statistics use a rolling-window median rather than a mean: one 3-second
+timeout drags the mean from 20 ms past 100 ms, while the median barely moves.
 
 ### Statistics
 
@@ -281,10 +283,10 @@ dart run tool/build_singbox_config.dart ..\testdata\sample.ovpn build\ovpn.json
 assets/bin/sing-box.exe check -c build\ovpn.json
 ```
 
-### Updating rule sets and the China IP index
+### Updating rule sets and the `geoip-cn` prefix index
 
 "Check for updates" in settings genuinely fetches new `.srs` files from upstream.
-After a rule set update, the China IP prefix index used for DNS cross-validation
+After a rule set update, the `geoip-cn` prefix index used for DNS cross-validation
 must be regenerated (it is derived from `geoip-cn.srs`):
 
 ```powershell
@@ -297,22 +299,23 @@ pwsh scripts/build-cn-ip-index.ps1
 app/lib/
   core/          Core integration: sing-box process (Windows), libbox (Android),
                  observation engine, Clash API parsing, DNS client and monitoring,
-                 China IP index, auto-correction table, startup self-check,
+                 `geoip-cn` prefix index, auto-correction table, startup self-check,
                  core log attribution, rule sets, system proxy
   protocols/     Protocol factory: detects protocol by content, parses into a
                  unified ParsedProfile, normalises parameters into what the core accepts
   screens/       Four pages (connect / split records / profiles / settings) + import flow
   widgets/       Shared components, custom title bar, connect ring, auto-route card
   theme.dart     Dual-theme palette (dark / light); the UI only reads colours via XV.*
-app/tool/        Dev tools: generate core config, validate config, build China IP index
+app/tool/        Dev tools: generate core config, validate config, build `geoip-cn` prefix index
 app/windows/     Custom borderless window, tray, system proxy takeover and restore
-app/linux/       Custom borderless window (Wayland fallback) and window channel;
-                 packaging/ holds the .desktop file and hicolor icons
+app/linux/       Custom borderless window (Wayland fallback), window channel and
+                 tray (libayatana-appindicator3, dlopen at runtime — no tray if
+                 absent); packaging/ holds the .desktop file and hicolor icons
 app/android/     VpnService implementation, VpnService ↔ libbox bridge
 design/          Brand assets and UI mockups
 docs/            Protocols, rules, self-healing and diagnostics, Android
-                 integration, release analysis, store listing
-scripts/         Core build script, China IP index generator
+                 integration, release and platform compliance, store listing
+scripts/         Core build script, `geoip-cn` prefix index generator
 testdata/        Sample configs used by tests
 ```
 
@@ -370,8 +373,8 @@ sing-box name or imply any affiliation with the upstream project.
 
 This project is a **client tool** and provides no nodes or services. You are
 responsible for ensuring that the configs and services you use comply with the laws
-of your jurisdiction. The analysis (including feasibility by market) is in
-[`docs/RELEASE.md`](docs/RELEASE.md) (Chinese).
+of your jurisdiction. Release engineering, platform compliance and the release
+checklist are documented in [`docs/RELEASE.md`](docs/RELEASE.md) (Chinese).
 
 ## Contributing
 

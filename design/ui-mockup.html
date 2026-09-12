@@ -271,7 +271,7 @@
     <h1>XVPN 界面原型 <span>v1 · 桌面端 + 移动端 · 静态稿</span></h1>
     <p>
       产品定位：<b>导入一个 .conf，点一下连接，其他什么都不用管。</b>
-      所有分流判断（国内直连 / 国外走隧道）由 App 内置的规则库自动完成，界面上不出现任何需要用户填写的规则、IP 段或路由表。
+      所有分流判断（命中规则集直连 / 其余走隧道）由 App 内置的规则库自动完成，界面上不出现任何需要用户填写的规则、IP 段或路由表。
     </p>
     <p>
       界面设计的核心不只是"一个开关"，而是让<b>自动识别这件事变得可见可验证</b>：用户能随时看到某个域名是被判为直连还是走代理、命中了哪条规则，从而在"某网站打不开"时立刻判断是分流判错还是节点问题。
@@ -397,7 +397,7 @@
                 <div class="meta">
                   <span><span class="k">服务器</span><b>203.0.113.42:51820</b></span>
                   <span><span class="k">隧道地址</span><b>10.7.0.2</b></span>
-                  <span><span class="k">分流</span><b>国内直连 · 国外走代理</b></span>
+                  <span><span class="k">分流</span><b>规则直连 · 其余走代理</b></span>
                 </div>
                 <div class="hero-actions">
                   <button class="btn ghost-danger">断开连接</button>
@@ -434,7 +434,7 @@
                   </div>
                   <div class="check">
                     <div class="ico">✓</div>
-                    <div><b>智能分流已生效</b><small>国内域名与 IP 直连，其余走隧道（规则库 2 项）</small></div>
+                    <div><b>智能分流已生效</b><small>命中规则集的流量直连，其余走隧道（规则库 2 项）</small></div>
                   </div>
                   <div class="check">
                     <div class="ico">✓</div>
@@ -620,13 +620,13 @@
             <section class="card">
               <h4>分流</h4>
               <div class="set-row">
-                <div><div class="t">分流模式</div><div class="d">智能分流：国内域名与 IP 直连，其余走隧道</div></div>
+                <div><div class="t">分流模式</div><div class="d">智能分流：命中规则集的流量直连，其余走隧道</div></div>
                 <div class="ctrl"><div class="seg"><span class="on">智能分流</span><span>全局代理</span><span>全局直连</span></div></div>
               </div>
               <div class="set-row">
                 <div>
                   <div class="t">规则库</div>
-                  <div class="d">国内域名 <span class="mono">geosite-cn</span> · 国内 IP <span class="mono">geoip-cn</span> · 更新于 2026-02-14</div>
+                  <div class="d">规则集 <span class="mono">geosite-cn</span> · <span class="mono">geoip-cn</span> · 更新于 2026-02-14</div>
                 </div>
                 <div class="ctrl"><button class="btn">检查更新</button></div>
               </div>
@@ -710,7 +710,7 @@
           <div class="m-card">
             <div class="ct">
               <span>智能分流 · 已启用</span>
-              <span class="tag direct">国内直连</span>
+              <span class="tag direct">规则直连</span>
             </div>
             <div class="m-line">
               <div class="l"><i class="dot-s" style="background:var(--blue)"></i><span>www.baidu.com</span></div>
@@ -794,7 +794,7 @@
           </div>
 
           <div class="m-card">
-            <div class="ct"><span>分流</span><span class="tag direct">国内直连</span></div>
+            <div class="ct"><span>分流</span><span class="tag direct">规则直连</span></div>
             <div class="m-line">
               <div class="l"><span>分流模式</span></div>
               <span style="font-size:12.5px;color:var(--muted)">智能分流 ›</span>

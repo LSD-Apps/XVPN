@@ -374,7 +374,7 @@ void main() {
       );
       await tester.pump();
 
-      expect(find.textContaining('疑似投毒'), findsOneWidget);
+      expect(find.textContaining('答案不一致'), findsOneWidget);
       expect(find.textContaining('走隧道'), findsWidgets);
 
       await tester.pump(const Duration(seconds: 3));

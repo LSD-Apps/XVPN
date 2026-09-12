@@ -119,7 +119,7 @@ class Hysteria2Adapter implements VpnProtocolAdapter {
       // 服务端域名必须用直连解析器解析。
       //
       // 与 WireGuard 端点同理：隧道建立在解析之后，走隧道解析会形成死锁，
-      // 表现为「国外站点全部不通、国内站点却正常」。
+      // 表现为「未命中规则集的站点全部不通、命中规则集的站点却正常」。
       'domain_resolver': <String, Object?>{'server': context.resolverTag},
       'tls': tls,
     };

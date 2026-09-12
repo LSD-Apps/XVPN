@@ -284,15 +284,15 @@ class ConnectScreen extends StatelessWidget {
   }
 
   String _splitDescription() => switch (state.settings.splitMode) {
-    SplitMode.smart => '国内直连 · 国外走代理',
+    SplitMode.smart => '规则直连 · 其余走代理',
     SplitMode.globalProxy => '全部走代理',
     SplitMode.globalDirect => '全部直连',
   };
 
   /// 分流模式的标签。三种模式的含义完全不同，标签必须跟着变，
-  /// 否则用户选了「全局代理」却看到「国内直连」，会以为设置没生效。
+  /// 否则用户选了「全局代理」却看到「规则直连」，会以为设置没生效。
   Widget _splitModeTag() => switch (state.settings.splitMode) {
-    SplitMode.smart => RouteTag.direct('国内直连'),
+    SplitMode.smart => RouteTag.direct('规则直连'),
     SplitMode.globalProxy => RouteTag.kind(RouteKind.proxy),
     SplitMode.globalDirect => RouteTag.direct('全部直连'),
   };
@@ -415,7 +415,7 @@ class ConnectScreen extends StatelessWidget {
       const SizedBox(height: 11),
       CheckRow(
         title: connected ? '智能分流已生效' : '智能分流已就绪',
-        detail: '国内域名与 IP 直连，其余走隧道（规则库 2 项）',
+        detail: '命中规则集的流量直连，其余走隧道（规则库 2 项）',
       ),
       const SizedBox(height: 11),
       // 两端各只有一条接管路径，因此这里直接按平台写明，不再跟随设置项——
@@ -707,7 +707,7 @@ class ConnectScreen extends StatelessWidget {
     if (report == null) {
       return CheckRow(
         title: '正在自检两条路径…',
-        detail: '分别验证国内直连与隧道出口是否可用',
+        detail: '分别验证直连与隧道出口两条路径是否可用',
         action: TapAction(
           label: '重测',
           onTap: () => unawaited(state.runSelfCheck()),
@@ -739,7 +739,7 @@ class ConnectScreen extends StatelessWidget {
     if (report == null || report.isEmpty) {
       return CheckRow(
         title: '正在探测 DNS…',
-        detail: '国内解析器与隧道解析器分别计时，并交叉校验解析结果',
+        detail: '直连解析器与隧道解析器分别计时，并交叉校验解析结果',
         action: retry,
       );
     }
@@ -803,7 +803,7 @@ class ConnectScreen extends StatelessWidget {
                 ),
                 const SizedBox(height: 6),
                 Text(
-                  '国内解析器与隧道解析器分别计时，并交叉校验同一个域名的答案。'
+                  '直连解析器与隧道解析器分别计时，并交叉校验同一个域名的答案。'
                   '这里的数字是最近若干次探测的滚动窗口。',
                   style: XvText.caption,
                 ),
@@ -1630,70 +1630,79 @@ class _EmptyStateState extends State<_EmptyState> {
                     ),
                   ),
                   const SizedBox(height: 26),
-                  DropTarget(
-                    onDragEntered: (_) => setState(() => _dragging = true),
-                    onDragExited: (_) => setState(() => _dragging = false),
-                    onDragDone: (DropDoneDetails detail) {
-                      setState(() => _dragging = false);
-                      if (detail.files.isEmpty) return;
-                      importConfFromPath(
-                        context,
-                        state,
-                        detail.files.first.path,
-                      );
-                    },
-                    child: DashedBox(
-                      // 只在真的拖拽中才高亮。
-                      //
-                      // 原型里那个 hover 态是**设计稿的静态示意**（展示悬停时什么样），
-                      // 早先照着它把 highlighted 写死成 true，结果平时也是绿框绿底，
-                      // 看起来像一直处于激活状态。
-                      highlighted: _dragging,
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(
-                          vertical: 30,
-                          horizontal: 20,
-                        ),
-                        child: Column(
-                          children: <Widget>[
-                            Text(
-                              _dragging ? '松开鼠标即可导入' : '把配置文件拖到这里',
-                              style: TextStyle(
-                                fontSize: 14,
-                                fontWeight: FontWeight.w600,
-                                color: XV.text,
-                              ),
-                            ),
-                            const SizedBox(height: 9),
-                            Container(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 7,
-                                vertical: 2,
-                              ),
-                              decoration: BoxDecoration(
-                                color: XV.green.withValues(alpha: 0.08),
-                                border: Border.all(
-                                  color: XV.green.withValues(alpha: 0.2),
-                                ),
-                                borderRadius: BorderRadius.circular(5),
-                              ),
-                              child: Text(
-                                '.conf / .ovpn / .yaml',
+                  // 拖拽区**占满内容列宽度**，与原型一致：
+                  // `design/ui-mockup.html` 里 `.drop{width:100%;max-width:520px}`。
+                  // 漏掉 width:100% 会让它按内容收缩成一条窄框（只有内容那么宽），
+                  // 既不像一个可拖放的落点，也与上下两段文字的宽度参差不齐。
+                  SizedBox(
+                    width: double.infinity,
+                    child: DropTarget(
+                      onDragEntered: (_) => setState(() => _dragging = true),
+                      onDragExited: (_) => setState(() => _dragging = false),
+                      onDragDone: (DropDoneDetails detail) {
+                        setState(() => _dragging = false);
+                        if (detail.files.isEmpty) return;
+                        importConfFromPath(
+                          context,
+                          state,
+                          detail.files.first.path,
+                        );
+                      },
+                      child: DashedBox(
+                        // 只在真的拖拽中才高亮。
+                        //
+                        // 原型里那个 hover 态是**设计稿的静态示意**（展示悬停时什么样），
+                        // 早先照着它把 highlighted 写死成 true，结果平时也是绿框绿底，
+                        // 看起来像一直处于激活状态。
+                        highlighted: _dragging,
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(
+                            vertical: 30,
+                            horizontal: 20,
+                          ),
+                          child: Column(
+                            children: <Widget>[
+                              Text(
+                                _dragging
+                                    ? '松开鼠标即可导入'
+                                    : '把配置文件拖到这里',
                                 style: TextStyle(
-                                  fontSize: 11,
-                                  color: XV.green,
-                                  fontFamilyFallback: XV.monoFallback,
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.w600,
+                                  color: XV.text,
                                 ),
                               ),
-                            ),
-                            // 原型里这一行是有的，早先漏掉了——它不只是文案，
-                            // 还决定这个框该有多高。
-                            const SizedBox(height: 9),
-                            Text(
-                              '或点击下方按钮选择文件',
-                              style: TextStyle(fontSize: 12, color: XV.muted2),
-                            ),
-                          ],
+                              const SizedBox(height: 9),
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 7,
+                                  vertical: 2,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: XV.green.withValues(alpha: 0.08),
+                                  border: Border.all(
+                                    color: XV.green.withValues(alpha: 0.2),
+                                  ),
+                                  borderRadius: BorderRadius.circular(5),
+                                ),
+                                child: Text(
+                                  '.conf / .ovpn / .yaml',
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    color: XV.green,
+                                    fontFamilyFallback: XV.monoFallback,
+                                  ),
+                                ),
+                              ),
+                              // 原型里这一行是有的，早先漏掉了——它不只是文案，
+                              // 还决定这个框该有多高。
+                              const SizedBox(height: 9),
+                              Text(
+                                '或点击下方按钮选择文件',
+                                style: TextStyle(fontSize: 12, color: XV.muted2),
+                              ),
+                            ],
+                          ),
                         ),
                       ),
                     ),

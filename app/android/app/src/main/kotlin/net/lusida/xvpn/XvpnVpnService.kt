@@ -380,7 +380,7 @@ class XvpnVpnService : VpnService(), PlatformInterface {
      * 默认网络变化监听。
      *
      * 内核靠它决定直连走哪张网卡。不实现的话 `auto_detect_interface` 拿不到
-     * 默认接口，直连部分会失败——表现是「国内网站打不开、国外正常」。
+     * 默认接口，直连部分会失败——表现是「直连站点打不开、其余正常」。
      */
     override fun startDefaultInterfaceMonitor(listener: InterfaceUpdateListener) {
         stopDefaultInterfaceMonitor()
@@ -675,7 +675,7 @@ class XvpnVpnService : VpnService(), PlatformInterface {
         }
         return builder
             .setContentTitle("XVPN 运行中")
-            .setContentText("智能分流已启用：国内直连，国外走隧道")
+            .setContentText("智能分流已启用：命中规则集的流量直连，其余走隧道")
             .setSmallIcon(R.drawable.ic_stat_xvpn)
             .setOngoing(true)
             .build()

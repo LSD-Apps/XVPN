@@ -22,7 +22,7 @@ import 'vpn_core.dart';
 ///
 /// 工作流程与「傻瓜式」的对应关系：
 ///   1. 把 .conf 翻译成 sing-box 配置（[SingBoxConfigBuilder]）；
-///   2. 启动内核，内核按内置规则库 + 自动纠正表自行判定国内直连 / 国外走隧道；
+///   2. 启动内核，内核按内置规则库 + 自动纠正表自行判定命中规则集的直连 / 其余走隧道；
 ///   3. 接管系统代理，让浏览器与绝大多数软件无需任何设置即可生效；
 ///   4. 从 Clash API 读取真实连接，界面上的「分流记录」由此而来——
 ///      不是模拟数据，而是内核实际做出的判定。
@@ -668,7 +668,7 @@ class SingBoxRunner extends VpnCore {
   /// 隧道健康判定结果。断线自愈的第二条路径：内核还活着，但隧道已经不通。
   ///
   /// 与「内核崩溃」相比，这种情况更隐蔽——界面上速率、连接数都还在动，
-  /// 用户却打不开任何国外网站。内核的 WireGuard 会话可能卡在一条早已失效的
+  /// 用户却打不开任何走隧道的网站。内核的 WireGuard 会话可能卡在一条早已失效的
   /// UDP 映射上，重启内核是唯一能立刻恢复的手段。
   void handleTunnelHealth(TunnelHealth health) {
     if (!health.isProblem) {
@@ -892,7 +892,7 @@ bool isSingBoxProcessIdentity({String? comm, String? exePath}) {
 /// 规则库决定「哪些域名与 IP 走直连」，缺了它分流就无从谈起。它随安装包分发，
 /// 用户侧没有可操作的地方，因此只需说清「重新安装」这一条路，外加位置便于排查。
 String missingRuleSetMessage(String path) =>
-    '缺少内置规则库，国内直连与分流无法工作。请重新安装 XVPN 以恢复。'
+    '缺少内置规则库，直连与分流无法工作。请重新安装 XVPN 以恢复。'
     '（缺失文件：$path）';
 
 /// 连接流程最多为「隧道就绪」等多久。

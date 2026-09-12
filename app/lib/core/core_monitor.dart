@@ -99,7 +99,7 @@ class CoreMonitorHooks {
   /// 拔网线来验证。
   final Future<int?> Function()? tunnelLatencyProbe;
 
-  /// 直连延迟探测。默认直连访问一个国内站点。
+  /// 直连延迟探测。默认直连访问一个固定的可达站点。
   ///
   /// 它是健康判定的对照组：只有「直连通、隧道不通」才说明问题在隧道这一侧。
   /// 同理做成可注入。
@@ -606,7 +606,7 @@ class CoreMonitor {
   /// 把一次直连失败转成自动纠正的证据。
   ///
   /// 需要 DNS 交叉校验时先补一次校验——它要发 UDP 查询，因此异步做，
-  /// 不阻塞日志回调；校验结果会写进证据里，让「疑似投毒」的域名
+  /// 不阻塞日志回调；校验结果会写进证据里，让「答案不一致」的域名
   /// 一次失败即可纠正（见 [AutoRouteTable.recordDirectFailure]）。
   Future<void> _learnFromFailure(ConnectionFailure failure) async {
     final table = _autoRoute;
@@ -645,8 +645,8 @@ class CoreMonitor {
   /// （自动纠正的学习路径），或用户手动「查证域名」。于是绝大多数会话里结论永远是
   /// 「未校验」，用户看到的是一个永远不会兑现的承诺。
   ///
-  /// 用一个**必定走隧道**的域名来校验：它能同时回答两件事——国内解析器是否可用、
-  /// 隧道内解析是否给出不同答案（污染或双部署）。失败或超时都不影响连接。
+  /// 用一个**必定走隧道**的域名来校验：它能同时回答两件事——直连解析器是否可用、
+  /// 隧道内解析是否给出不同答案（两套部署或答案不一致）。失败或超时都不影响连接。
   Future<void> runInitialDnsCheck() async {
     if (_disposed) return;
     try {
@@ -658,8 +658,8 @@ class CoreMonitor {
 
   /// 自动校验使用的域名。
   ///
-  /// 必须是稳定的境外站点：国内解析器对它的答案与隧道内不同，才能暴露污染；
-  /// 同时它在国内是可解析的（否则国内那一侧永远失败，结论会退化成「国内异常」）。
+  /// 必须是一个稳定的公开站点：直连解析器对它的答案与隧道内不同，才能形成对照；
+  /// 同时它在直连解析器上是可解析的（否则直连那一侧永远失败，结论会退化成「直连异常」）。
   static const String initialDnsCheckDomain = 'www.google.com';
 
   /// 跑一轮 DNS 监测并上报。
@@ -838,9 +838,9 @@ class CoreMonitor {
     }
   }
 
-  /// 直连路径的连通性探测：经系统网络直接访问一个国内一线站点。
+  /// 直连路径的连通性探测：经系统网络直接访问一个稳定的公开站点。
   ///
-  /// 这是「启动自检」里判断「国内直连这条腿是否正常」的依据。
+  /// 这是「启动自检」里判断「直连这条腿是否正常」的依据。
   Future<int?> probeDirectLatency() async {
     final watch = Stopwatch()..start();
     Socket? socket;
@@ -865,7 +865,7 @@ class CoreMonitor {
   /// 经内核 DNS 模块解析域名。
   ///
   /// sing-box 的 Clash API 暴露了 `/dns/query`，它走的是内核自己的 DNS 路由，
-  /// 因此返回的正是「隧道内解析器给出的答案」，正好用来与国内解析器交叉校验。
+  /// 因此返回的正是「隧道内解析器给出的答案」，正好用来与直连解析器交叉校验。
   Future<List<String>> resolveViaCoreDns(String domain) async {
     final body = await _get('/dns/query?name=$domain&type=A');
     if (body == null) return const <String>[];
@@ -894,7 +894,7 @@ class CoreMonitor {
   /// 用 80 会让正常的节点看起来像挂了。
   static const String tunnelProbeUrl = 'https://www.gstatic.com/generate_204';
 
-  /// 直连探测的目标。选国内一线站点：它必须秒连，
+  /// 直连探测的目标。选一个稳定的公开站点：它必须秒连，
   /// 连不上说明本地网络或 DNS 有问题，而不是节点问题。
   static const String directProbeHost = 'www.baidu.com';
 

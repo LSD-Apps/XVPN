@@ -142,6 +142,10 @@ class _XvpnAppState extends State<XvpnApp> {
     // 因此没有备份的机器上不会去碰 gsettings。
     unawaited(SystemProxy.forPlatform().recoverIfNeeded());
     _listenSharedConfig();
+    // 托盘「退出 XVPN」与 SIGTERM/SIGINT 都走这条推送：原生不自己退出，先让
+    // Dart 收尾（还原系统代理、结束 sing-box），再由原生退出。见
+    // [WindowControls.onQuitRequested]。
+    WindowControls.onQuitRequested = _shutdownForExit;
 
     // 启动参数里的配置优先导入（「双击配置文件打开」的场景）。
     final path = widget.launchConfPath;
@@ -224,10 +228,20 @@ class _XvpnAppState extends State<XvpnApp> {
 
   @override
   void dispose() {
+    WindowControls.onQuitRequested = null;
     _state.dispose();
     _theme.dispose();
     super.dispose();
   }
+
+  /// 托盘退出 / SIGTERM 时先跑完 Dart 侧收尾。
+  ///
+  /// [AppState.disconnect] 会 **await** 两件必须完成的事：还原系统代理
+  /// （Linux 上要执行 gsettings / kwriteconfig 这类外部命令）与结束 sing-box
+  /// 子进程（最多再等它 3 秒）。先把进程退掉就会把这两步一起打断，用户会留下
+  /// 一个指向死端口的系统代理和一个还在占端口的孤儿内核——正是本项目最不能
+  /// 接受的那类故障。收尾完成后由 [WindowControls] 请原生退出。
+  Future<void> _shutdownForExit() => _state.disconnect();
 
   @override
   Widget build(BuildContext context) {
