@@ -7,9 +7,8 @@ import 'package:xvpn/app_state.dart';
 import 'package:xvpn/core/core_log.dart';
 import 'package:xvpn/main.dart';
 import 'package:xvpn/models.dart';
-import 'package:xvpn/screens/settings_screen.dart';
-import 'package:xvpn/screens/shell.dart';
-import 'package:xvpn/theme.dart';
+import 'package:xvpn/screens/rules_screen.dart';
+import 'package:xvpn/screens/shell.dart';import 'package:xvpn/theme.dart';
 import 'package:xvpn/theme_controller.dart';
 import 'package:xvpn/widgets/common.dart';
 import 'package:xvpn/widgets/title_bar.dart';
@@ -754,7 +753,7 @@ void main() {
     }
   });
 
-  testWidgets('桌面端设置页在较矮窗口下不溢出，且自动纠正卡片可渲染', (WidgetTester tester) async {
+  testWidgets('桌面端设置页在较矮窗口下不溢出，且域名分流规则卡片可渲染', (WidgetTester tester) async {
     // 桌面设置页是「卡片纵向堆叠 + 整体滚动」，内容比窗口高是常态。
     // 这里特意用小窗口（1280×720 是常见的笔记本可用高度）压一遍：
     // 只要有一处忘了放进滚动容器，就会抛 RenderFlex overflow。
@@ -771,7 +770,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(tester.takeException(), isNull, reason: '桌面设置页在 720 高度下不应溢出');
 
-    // 自动纠正卡片在页面底部，需要滚动到它才会被构建。
+    // 域名分流规则卡片在独立的「分流规则」页，需要滚动到它才会被构建。
     //
     // 这里手写拖拽循环而不用 dragUntilVisible：那需要精确挑出正确的可滚动
     // 节点，而页面上同时存在页面级滚动与卡片内部滚动，按类型找很容易选错，
@@ -779,14 +778,16 @@ void main() {
     //
     // 本用例用演示内核（不接真实 sing-box），因此这张卡片走的是「不支持」
     // 分支——接上真实内核的表单渲染由 diagnostics_ui_test 覆盖。
-    final settingsScroll = find.byKey(SettingsScreen.desktopScrollKey);
+    await tester.tap(find.text('分流规则'));
+    await tester.pumpAndSettle();
+    final rulesScroll = find.byKey(RulesScreen.desktopScrollKey);
     var scrolled = 0;
-    while (find.text('自动纠正').evaluate().isEmpty && scrolled < 20) {
-      await tester.drag(settingsScroll, const Offset(0, -200));
+    while (find.text('域名分流规则').evaluate().isEmpty && scrolled < 20) {
+      await tester.drag(rulesScroll, const Offset(0, -200));
       await tester.pumpAndSettle();
       scrolled++;
     }
-    expect(find.text('自动纠正'), findsOneWidget, reason: '自动纠正卡片应当存在于设置页');
+    expect(find.text('域名分流规则'), findsOneWidget, reason: '域名分流规则卡片应当存在于分流规则页');
     expect(tester.takeException(), isNull, reason: '滚到底部也不应溢出');
 
     await _stopCore(tester, state);

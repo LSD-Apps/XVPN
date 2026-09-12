@@ -194,6 +194,29 @@ abstract class VpnCore {
   /// 自动纠正表。为 null 表示本实现不做学习。
   AutoRouteTable? get autoRoute => monitor.autoRoute;
 
+  /// 当前的规则集列表（内置 + 自定义）。
+  ///
+  /// 由界面层在恢复设置后与每次变更时经 [setRuleSets] 同步。放在基类而不是
+  /// 各实现自己存：配置生成在两个平台上都要引用它，重复一份必然慢慢分叉。
+  List<RuleSetEntry> get ruleSets => List<RuleSetEntry>.unmodifiable(_ruleSets);
+
+  List<RuleSetEntry> _ruleSets = RuleSetStore.defaultEntries();
+
+  /// 同步规则集状态。界面层是唯一的事实来源——内核不认识配置文件里存了什么，
+  /// 只负责把当前这份列表翻译成 `rule_set` 条目。
+  void setRuleSets(List<RuleSetEntry> entries) {
+    _ruleSets = List<RuleSetEntry>.of(entries);
+  }
+
+  /// 生成配置时应当引用的规则集：只取启用中的。
+  ///
+  /// 停用是「保留配置但本程序不再使用它」，因此这里直接把停用的过滤掉，
+  /// 生成出的配置里既没有它的 `rule_set` 定义，也没有引用它的路由规则。
+  List<RuleSetSpec> get enabledRuleSetSpecs => <RuleSetSpec>[
+    for (final entry in _ruleSets)
+      if (entry.enabled) RuleSetSpec(tag: entry.tag, fileName: entry.fileName),
+  ];
+
   /// 内核日志缓冲。两端共用同一份实现。
   ///
   /// 放在基类而不是各写一份：日志是排查问题的唯一原始材料，一端有、一端没有

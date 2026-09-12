@@ -8,6 +8,7 @@ import 'package:xvpn/core/startup_self_check.dart';
 import 'package:xvpn/core/vpn_core.dart';
 import 'package:xvpn/models.dart';
 import 'package:xvpn/screens/shell.dart';
+import 'package:xvpn/screens/rules_screen.dart';
 import 'package:xvpn/theme.dart';
 import 'package:xvpn/theme_controller.dart';
 import 'package:xvpn/widgets/auto_route_card.dart';
@@ -148,12 +149,16 @@ MIIB
   }
 
   group('两端都有的能力', () {
-    testWidgets('两端设置页都含 外观 / 启动 / 流量接管方式 / 分流 四块', (
+    testWidgets('两端设置页都含 外观 / 启动 / 流量接管方式 / 记录 四块', (
       WidgetTester tester,
     ) async {
       // 「配置」块在桌面端是独立页面、在移动端并入设置页，因此不在这条断言里，
       // 由下面的「配置入口」用例按各自的位置分别检查。
-      for (final target in <String>['外观', '启动', '流量接管方式', '分流']) {
+      //
+      // 「分流」块已搬去独立的「分流规则」页——设置页不再做分流配置。
+      // 记录分流日志留在设置里（它是记录偏好，不是路由规则），因此设置页现在
+      // 应含「记录」这一块。
+      for (final target in <String>['外观', '启动', '流量接管方式', '记录']) {
         // 桌面侧的两个平台（Windows / Linux）信息结构必须一致：
         // 只测 Windows 会让 Linux 的整块卡片缺失悄悄溜过去。
         for (final desktopPlatform in <TargetPlatform>[
@@ -190,6 +195,41 @@ MIIB
           reason: '移动设置页应包含「$target」——两端信息结构必须一致',
         );
         await stop(tester, mobile);
+        resetPlatform();
+      }
+    });
+
+    testWidgets('两端都有「分流规则」入口，且都能进到规则页', (WidgetTester tester) async {
+      // 新增的模块：桌面在侧栏（在「设置」之上），移动是第四个底部标签。
+      // 入口在两端都必须在，而且点进去确实能到规则页——只断言入口文字存在
+      // 会漏掉「入口点了没反应」这类断链。
+      for (final platform in <TargetPlatform>[
+        TargetPlatform.windows,
+        TargetPlatform.linux,
+        TargetPlatform.android,
+      ]) {
+        final desktop = isDesktopPlatform(platform);
+        final state = stateWithRealCore();
+        await pumpOn(
+          tester,
+          state,
+          platform,
+          size: desktop ? const Size(1400, 1400) : const Size(390, 900),
+        );
+        await openAndReveal(tester, desktop ? '分流规则' : '规则', '分流模式');
+        expect(
+          find.byType(RulesScreen),
+          findsOneWidget,
+          reason: '$platform 应能从导航进到「分流规则」页',
+        );
+        for (final text in <String>['规则集', '域名分流规则']) {
+          expect(
+            find.text(text),
+            findsWidgets,
+            reason: '$platform 的分流规则页应包含「$text」',
+          );
+        }
+        await stop(tester, state);
         resetPlatform();
       }
     });
@@ -555,7 +595,11 @@ MIIB
               ? const Size(1400, 1400)
               : const Size(390, 900),
         );
-        await openAndReveal(tester, '设置', '手工指定');
+        await openAndReveal(
+          tester,
+          isDesktopPlatform(platform) ? '分流规则' : '规则',
+          '手工指定',
+        );
         expect(find.text('手工指定'), findsOneWidget, reason: '$platform 应有手工指定入口');
         expect(find.byType(AutoRouteCard), findsOneWidget);
         await stop(tester, state);

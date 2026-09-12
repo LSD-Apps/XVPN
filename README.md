@@ -46,16 +46,22 @@ reasoning is in [`docs/RELEASE.md`](docs/RELEASE.md).
 | Reconfigure on every switch | Remembers multiple profiles; switching reconnects |
 
 Rule sets ship with the app, are unpacked to the app's private directory on first
-connect, and can be refreshed incrementally via "Check for updates".
+connect, and can be refreshed incrementally via "Check for updates". The
+**分流规则** (split rules) page is where you maintain them: enable, disable, add a
+custom set, delete one, or restore the built-ins — and where you review the
+default, learned and manually specified domain rules.
 
 ## Supported protocols
 
-Detected by **content**, not by file extension. Adding a protocol means
-implementing one adapter — the UI and core layer stay untouched.
+Detected by **content**, not by file extension. Each protocol has a canonical
+suffix for clarity — WireGuard `.conf`, OpenVPN `.ovpn`, Hysteria2 `.yaml`/`.yml` —
+but a file named differently still imports as long as its contents parse.
+Adding a protocol means implementing one adapter — the UI and core layer stay
+untouched.
 
 - WireGuard (`.conf`)
 - OpenVPN (`.ovpn`)
-- Hysteria2 (`hysteria2://` share link, the official `config.yaml`, or a sing-box outbound `.json`)
+- Hysteria2 (`.yaml` / `.yml`; a `hysteria2://` share link or a sing-box outbound JSON also parse)
 
 See [`docs/PROTOCOLS.md`](docs/PROTOCOLS.md) (Chinese).
 
@@ -155,8 +161,8 @@ Learned rules persist, decay, and can be revoked:
   failure streak; two successes revoke a learned rule — counter-evidence beats
   guessing.
 - User-specified rules always take precedence and are never rewritten.
-- The "Automatic correction" card in settings lists each rule's **evidence**
-  (failure count, reason, bytes tunnelled) and lets you revoke any of them.
+- The **分流规则** page lists each rule's **evidence** (failure count, reason, bytes
+  tunnelled) and lets you revoke any of them, alongside the rule-set maintenance.
 
 ### DNS monitoring and cross-validation
 
@@ -285,7 +291,8 @@ assets/bin/sing-box.exe check -c build\ovpn.json
 
 ### Updating rule sets and the `geoip-cn` prefix index
 
-"Check for updates" in settings genuinely fetches new `.srs` files from upstream.
+"Check for updates" on the **分流规则** page genuinely fetches new `.srs` files from
+upstream.
 After a rule set update, the `geoip-cn` prefix index used for DNS cross-validation
 must be regenerated (it is derived from `geoip-cn.srs`):
 
@@ -303,7 +310,8 @@ app/lib/
                  core log attribution, rule sets, system proxy
   protocols/     Protocol factory: detects protocol by content, parses into a
                  unified ParsedProfile, normalises parameters into what the core accepts
-  screens/       Four pages (connect / split records / profiles / settings) + import flow
+  screens/       Five pages (connect / split records / profiles / split rules /
+                 settings) + import flow
   widgets/       Shared components, custom title bar, connect ring, auto-route card
   theme.dart     Dual-theme palette (dark / light); the UI only reads colours via XV.*
 app/tool/        Dev tools: generate core config, validate config, build `geoip-cn` prefix index

@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:collection';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 
@@ -32,8 +33,12 @@ import 'protocols/protocol_adapter.dart';
 /// 因此它的存储与筛选都做了专门处理——见 [_recordsRing] 与 [filteredRecords]。
 /// 这里的原则是：**每帧的构建里不做与数据量成正比的分配**。
 class AppState extends ChangeNotifier implements VpnCoreListener {
-  AppState({this.coreFactory, this.store, SecretProtector? protector})
-    : protector = protector ?? SecretProtector.forPlatform() {
+  AppState({
+    this.coreFactory,
+    this.store,
+    SecretProtector? protector,
+    this.ruleSetFetcher,
+  }) : protector = protector ?? SecretProtector.forPlatform() {
     // 恢复必须在构造里同步做完：界面第一次 build 时就应该拿到已保存的配置，
     // 否则会先闪一下「导入配置」的空状态。
     _restore();
@@ -44,6 +49,12 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
 
   /// 本地持久化。为 null 时不落盘（测试与演示内核用）。
   final AppStore? store;
+
+  /// 自定义规则集的下载器。可注入，测试里用它避开真实网络。
+  ///
+  /// 缺省走 [RuleSetStore.fetch]：真实实现只此一条，注入点存在的意义是让
+  /// 「新增一个自定义规则集」这条路径能被自动化验证，而不必真的联网。
+  final Future<List<int>?> Function(String url)? ruleSetFetcher;
 
   /// 账号密码的落盘保护。见 [SecretProtector]。
   ///
@@ -146,6 +157,12 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
   String? _lastError;
   DateTime? _connectedSince;
   DateTime _ruleSetUpdatedAt = DateTime(2026, 2, 14);
+
+  /// 规则集（内置 + 自定义）。默认是两份出厂规则集，均启用。
+  ///
+  /// 恢复时若存档里有 `ruleSets` 键就整份采用——「删掉一个内置规则集」因此
+  /// 是持久的，直到用户主动「恢复内置规则」。键缺失（旧存档）才回落到出厂值。
+  List<RuleSetEntry> _ruleSets = RuleSetStore.defaultEntries();
   double _downBps = 0;
   double _upBps = 0;
   int _totalBytes = 0;
@@ -221,6 +238,9 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
   List<double> get totalHistory => List<double>.unmodifiable(_totalHistory);
   String? get lastError => _lastError;
   DateTime get ruleSetUpdatedAt => _ruleSetUpdatedAt;
+
+  /// 规则集视图。界面只读它，改动一律走这里的方法。
+  List<RuleSetEntry> get ruleSets => List<RuleSetEntry>.unmodifiable(_ruleSets);
   double get downBps => _downBps;
   double get upBps => _upBps;
   int get totalBytes => _totalBytes;
@@ -866,9 +886,30 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
 
     _wantConnected = data['wantConnected'] as bool? ?? false;
 
+    // 规则集：键存在就整份采用（删掉的内置规则集因此保持删除），键缺失才用
+    // 出厂默认值。这两者必须区分——用「列表为空」当「没有配置」会让用户
+    // 删光规则集后又在重启时看到它们全部复活。
+    if (data.containsKey('ruleSets')) {
+      _ruleSets = _readRuleSets(data['ruleSets']);
+    }
+
     // 自动纠正表交给内核侧恢复：它是内核的行为，不是界面的状态。
     // 放在最后，因为此时内核实例一定已经建好了。
     _core.initAutoRoute(data['autoRoute']);
+    // 规则集同步给内核：生成配置时引用哪些 .srs 由它决定。
+    _core.setRuleSets(_ruleSets);
+  }
+
+  /// 解析存档里的规则集列表。单条损坏只跳过这一条。
+  static List<RuleSetEntry> _readRuleSets(Object? raw) {
+    if (raw is! List) return RuleSetStore.defaultEntries();
+    final entries = <RuleSetEntry>[];
+    for (final item in raw) {
+      final entry = RuleSetEntry.fromJson(item);
+      if (entry == null) continue;
+      entries.add(entry);
+    }
+    return entries;
   }
 
   /// 按下标取枚举，越界或类型不对时回退到默认值。
@@ -974,6 +1015,11 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
           'logSplits': _settings.logSplits,
           'ruleSetUpdatedAt': _settings.ruleSetUpdatedAt?.toIso8601String(),
         },
+        // 规则集清单随设置一起落盘。删掉的内置规则集、停用标记、自定义规则集
+        // 的链接都必须重启后仍在，否则用户每次启动都要重新配置一遍。
+        'ruleSets': <Object?>[
+          for (final RuleSetEntry entry in _ruleSets) entry.toJson(),
+        ],
         // 自动纠正表随设置一起落盘。它的价值是「学一次，以后都记得」，
         // 每次重启就忘掉会让用户觉得分流时好时坏。
         'autoRoute': _core.exportAutoRoute(),
@@ -1009,7 +1055,190 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
     notifyListeners();
   }
 
-  /// 从上游更新规则库。
+  // ---------------------------------------------------------------- 规则集管理
+
+  /// 启用 / 停用一个规则集。返回是否命中。
+  bool setRuleSetEnabled(String name, bool enabled) {
+    final index = _ruleSets.indexWhere((RuleSetEntry e) => e.name == name);
+    if (index < 0) return false;
+    if (_ruleSets[index].enabled == enabled) return true;
+    _ruleSets[index].enabled = enabled;
+    _commitRuleSets();
+    return true;
+  }
+
+  /// 从列表里删除一个规则集。
+  ///
+  /// 内置规则集也能删：它只是「本程序不再使用这一份」，安装包与出厂副本都不会
+  /// 被改动，随时可以用 [restoreBuiltinRuleSets] 找回来。删除会连磁盘上的副本
+  /// 一并清掉；内置的下次确保目录时可能由出厂副本重新落盘，但它已不在列表里，
+  /// 因此不会被内核引用。
+  bool deleteRuleSet(String name) {
+    final index = _ruleSets.indexWhere((RuleSetEntry e) => e.name == name);
+    if (index < 0) return false;
+    final entry = _ruleSets.removeAt(index);
+    unawaited(_deleteRuleSetFile(entry));
+    _commitRuleSets();
+    return true;
+  }
+
+  Future<void> _deleteRuleSetFile(RuleSetEntry entry) async {
+    try {
+      final dir = await _core.ruleSetUpdateDir();
+      if (dir != null) RuleSetStore.deleteSrs(dir, entry.fileName);
+    } on Object {
+      // 删除文件失败只影响磁盘占用，不影响分流：列表已经不再引用它。
+    }
+  }
+
+  /// 新增一个自定义规则集：下载 → 校验魔数 → 落盘。
+  ///
+  /// 返回 null 表示成功，否则是给用户看的中文原因。**下载失败就不写入列表**，
+  /// 而不是先登记再补下载：一个指向不存在文件的规则集会直接让内核启动失败。
+  Future<String?> addCustomRuleSet({
+    required String name,
+    required String url,
+  }) async {
+    final cleanName = name.trim();
+    final cleanUrl = url.trim();
+    final invalid = _validateCustom(
+      name: cleanName,
+      url: cleanUrl,
+      excluding: null,
+    );
+    if (invalid != null) return invalid;
+    final dir = await _core.ruleSetUpdateDir();
+    if (dir == null) return '当前内核不支持自定义规则集';
+    final bytes = await (ruleSetFetcher ?? RuleSetStore.fetch)(cleanUrl);
+    if (bytes == null) return '无法下载规则集，请检查链接与网络';
+    if (!RuleSetStore.isValidBytes(bytes)) {
+      return '「$cleanName」的内容不是有效的 .srs 规则集';
+    }
+    RuleSetStore.writeSrs(dir, '$cleanName.srs', bytes);
+    _ruleSets.add(
+      RuleSetEntry(
+        name: cleanName,
+        kind: RuleSetKind.custom,
+        url: cleanUrl,
+        updatedAt: DateTime.now(),
+        sizeBytes: bytes.length,
+      ),
+    );
+    _commitRuleSets();
+    return null;
+  }
+
+  /// 修改一个自定义规则集的名称与链接。
+  ///
+  /// 内置规则集不可改名或改链接：它们是二进制文件，来源也固定。
+  Future<String?> updateCustomRuleSet({
+    required String oldName,
+    required String name,
+    required String url,
+  }) async {
+    final index = _ruleSets.indexWhere((RuleSetEntry e) => e.name == oldName);
+    if (index < 0) return '找不到规则集「$oldName」';
+    final entry = _ruleSets[index];
+    if (entry.kind != RuleSetKind.custom) {
+      return '内置规则集不能改名或修改链接';
+    }
+    final cleanName = name.trim();
+    final cleanUrl = url.trim();
+    final invalid = _validateCustom(
+      name: cleanName,
+      url: cleanUrl,
+      excluding: oldName,
+    );
+    if (invalid != null) return invalid;
+
+    final dir = await _core.ruleSetUpdateDir();
+    if (dir == null) return '当前内核不支持自定义规则集';
+
+    final changedUrl = cleanUrl != entry.url;
+    final changedName = cleanName != oldName;
+
+    List<int>? bytes;
+    if (changedUrl) {
+      bytes = await (ruleSetFetcher ?? RuleSetStore.fetch)(cleanUrl);
+      if (bytes == null) return '无法下载规则集，请检查链接与网络';
+      if (!RuleSetStore.isValidBytes(bytes)) {
+        return '「$cleanName」的内容不是有效的 .srs 规则集';
+      }
+    }
+
+    if (bytes != null) {
+      // 链接变了：删掉旧文件再写新内容，避免新旧两份同时存在。
+      RuleSetStore.deleteSrs(dir, entry.fileName);
+      RuleSetStore.writeSrs(dir, '$cleanName.srs', bytes);
+    } else if (changedName) {
+      RuleSetStore.renameSrs(dir, entry.fileName, '$cleanName.srs');
+    }
+
+    _ruleSets[index] = entry.copyWith(
+      name: cleanName,
+      url: cleanUrl,
+      updatedAt: bytes != null ? DateTime.now() : null,
+      sizeBytes: bytes?.length,
+    );
+    _commitRuleSets();
+    return null;
+  }
+
+  /// 恢复出厂规则集，并清除**程序学到**的分流规则。
+  ///
+  /// 范围刻意定死：只重发布两个内置规则集（geosite-cn / geoip-cn），只丢弃
+  /// 程序自动学到的规则；用户手工指定的域名规则与自定义规则集一律保留——
+  /// 那些是用户明确做过的决定，顺手清掉比不清理更糟。
+  void restoreBuiltinRuleSets() {
+    final custom = _ruleSets
+        .where((RuleSetEntry e) => e.kind == RuleSetKind.custom)
+        .toList(growable: false);
+    _ruleSets = <RuleSetEntry>[
+      ...RuleSetStore.defaultEntries(),
+      ...custom,
+    ];
+    _core.autoRoute?.removeLearned();
+    // 展示用的「最近学到」也一并清掉；用户手工指定的条目保留。
+    _learnedDecisions.removeWhere(
+      (AutoRouteDecision d) => d.entry?.source != RouteRuleSource.user,
+    );
+    _commitRuleSets();
+  }
+
+  /// 校验自定义规则集的名称与链接。
+  String? _validateCustom({
+    required String name,
+    required String url,
+    required String? excluding,
+  }) {
+    if (!RuleSetEntry.isValidName(name)) {
+      return '名称只能用小写字母、数字、连字符或下划线，且以字母或数字开头';
+    }
+    // 与内置重名要挡住，即便那个内置已被删除：内置文件与解包逻辑都按固定
+    // 文件名工作，重名会让「这份文件到底是出厂副本还是自定义内容」无法分辨。
+    if (RuleSetStore.sources.containsKey('$name.srs')) {
+      return '「$name」与内置规则集重名，请换一个名称';
+    }
+    if (name != excluding &&
+        _ruleSets.any((RuleSetEntry e) => e.name == name)) {
+      return '已存在同名规则集：$name';
+    }
+    if (url.isEmpty) return '请填写规则集的下载链接';
+    final uri = Uri.tryParse(url);
+    if (uri == null || !(uri.isScheme('http') || uri.isScheme('https'))) {
+      return '链接需要是 http 或 https 地址';
+    }
+    return null;
+  }
+
+  /// 规则集变化后的统一收尾：同步给内核、通知界面、落盘。
+  void _commitRuleSets() {
+    _core.setRuleSets(_ruleSets);
+    notifyListeners();
+    _persist();
+  }
+
+  /// 从上游更新**所有启用中**的规则集。
   ///
   /// 之前这里只是把显示的日期改成「今天」，并没有真的下载——属于误导性实现。
   /// 现在真的去拉取 `.srs` 并覆盖本地副本，失败时明确报错而不是假装成功。
@@ -1025,10 +1254,29 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
         notifyListeners();
         return;
       }
-      final outcome = await RuleSetStore.update(targetDir: target);
+      final targets = <({String fileName, String url})>[
+        for (final entry in _ruleSets)
+          if (entry.enabled) (fileName: entry.fileName, url: entry.url),
+      ];
+      if (targets.isEmpty) {
+        _lastError = '没有启用中的规则集可更新';
+        notifyListeners();
+        return;
+      }
+      final outcome = await RuleSetStore.updateMany(targets, targetDir: target);
       if (outcome.succeeded) {
-        _ruleSetUpdatedAt = outcome.updatedAt ?? DateTime.now();
+        final now = outcome.updatedAt ?? DateTime.now();
+        for (final entry in _ruleSets) {
+          if (!entry.enabled) continue;
+          entry.updatedAt = now;
+          final file = File(
+            '${target.path}${Platform.pathSeparator}${entry.fileName}',
+          );
+          if (file.existsSync()) entry.sizeBytes = file.lengthSync();
+        }
+        _ruleSetUpdatedAt = now;
         _lastError = null;
+        _core.setRuleSets(_ruleSets);
       } else {
         _lastError = outcome.message;
       }
@@ -1039,6 +1287,7 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
       _lastError = '更新规则库失败：$e';
     }
     notifyListeners();
+    _persist();
   }
 
   // -------------------------------------------------------- VpnCoreListener

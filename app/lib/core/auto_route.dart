@@ -479,6 +479,22 @@ class AutoRouteTable {
     }
   }
 
+  /// 移除**全部程序学到**的规则，保留用户手工指定的。返回被移除的域名。
+  ///
+  /// 用于「恢复内置规则」：用户要的是回到出厂时的判断，而程序在运行中观察到的
+  /// 结论应当被丢弃。手工指定的规则是用户明确的决定，不在清理范围内——
+  /// 把两者一起清掉会让用户手动配置的例外被悄悄抹掉，那比不清理更糟。
+  List<String> removeLearned() {
+    final removed = _exact.values
+        .where((AutoRouteEntry e) => e.source == RouteRuleSource.learned)
+        .map((AutoRouteEntry e) => e.domain)
+        .toList(growable: false);
+    for (final domain in removed) {
+      _uninstall(domain);
+    }
+    return removed;
+  }
+
   void clear() {
     _exact.clear();
     _suffixBuckets.clear();

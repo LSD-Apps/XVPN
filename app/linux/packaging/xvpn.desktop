@@ -18,6 +18,7 @@ StartupNotify=true
 StartupWMClass=com.lsdapps.xvpn
 # 只登记本项目特有的配置类型。**刻意不写 text/plain、application/json**：
 # 那会把机器上所有 .json / .txt 的默认打开方式改成 XVPN，而 XVPN 只认
-# 内容里含 VPN 配置的文件。完整文件关联需要 shared-mime-info 定义，
-# 属于打包（deb/AppImage）范围，本轮不做。
-MimeType=application/x-wireguard-profile;application/x-openvpn-profile;
+# 内容里含 VPN 配置的文件。Hysteria2 用 YAML，同理不写 application/yaml。
+# 完整文件关联需要 shared-mime-info 定义，属于打包（deb/AppImage）范围，
+# 本轮不做。
+MimeType=application/x-wireguard-profile;application/x-openvpn-profile;application/x-hysteria2-profile;

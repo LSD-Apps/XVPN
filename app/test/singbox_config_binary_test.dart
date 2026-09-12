@@ -150,5 +150,55 @@ void main() {
         );
       });
     }
+
+    test('自定义规则集 · 智能分流 · mixed 能通过 sing-box check', () async {
+      // 用户新增的规则集会作为额外的 local rule_set 写进配置，并参与路由。
+      // 内核的 JSON 解码是严格的，新增一个 rule_set 条目属于新形状，因此要
+      // 在真实内核上过一遍——「配置长什么样」不等于「内核认不认」。
+      final dir = Directory.systemTemp.createTempSync('xvpn-rs-custom');
+      addTearDown(() {
+        if (dir.existsSync()) dir.deleteSync(recursive: true);
+      });
+      for (final name in <String>['geosite-cn.srs', 'geoip-cn.srs']) {
+        File(
+          '${rulesets.absolute.path}${Platform.pathSeparator}$name',
+        ).copySync('${dir.path}${Platform.pathSeparator}$name');
+      }
+      // 用一份真实规则集的内容冒充自定义规则集：内核只按魔数解析。
+      File(
+        '${rulesets.absolute.path}${Platform.pathSeparator}geosite-cn.srs',
+      ).copySync('${dir.path}${Platform.pathSeparator}custom-cn.srs');
+
+      final parsed = VpnProtocolFactory.parse(_wireGuard, 'test.conf');
+      final config = SingBoxConfigBuilder.build(
+        profile: parsed,
+        splitMode: SplitMode.smart,
+        ruleSetDir: dir.path,
+        inboundMode: InboundMode.mixed,
+        ruleSets: <RuleSetSpec>[
+          ...SingBoxConfigBuilder.defaultRuleSets,
+          const RuleSetSpec(tag: 'custom-cn', fileName: 'custom-cn.srs'),
+        ],
+      );
+      final file = File(
+        '${Directory.systemTemp.path}${Platform.pathSeparator}'
+        'xvpn-check-custom.json',
+      );
+      addTearDown(() {
+        if (file.existsSync()) file.deleteSync();
+      });
+      file.writeAsStringSync(SingBoxConfigBuilder.encode(config));
+
+      final result = await Process.run(exe.absolute.path, <String>[
+        'check',
+        '-c',
+        file.path,
+      ]);
+      expect(
+        result.exitCode,
+        0,
+        reason: '内核拒绝了带自定义规则集的配置：\n${result.stdout}${result.stderr}',
+      );
+    });
   }, skip: skipReason);
 }

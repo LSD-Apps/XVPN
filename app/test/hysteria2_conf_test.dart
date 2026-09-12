@@ -95,12 +95,15 @@ hysteria2://pw@a.example.net:443
       expect(Hysteria2Conf.parse(withHeader).server, 'a.example.net');
     });
 
-    test('工厂按内容分发到 Hysteria2，且扩展名已注册', () {
+    test('工厂按内容分发到 Hysteria2；导入只看内容，约定的扩展名另算', () {
+      // 分享链接即使存成 .txt 也照样导入——协议判定按内容，不看扩展名。
       final profile = VpnProtocolFactory.parse(_link, 'node.txt');
       expect(profile.protocol, VpnProtocol.hysteria2);
       expect(profile, isA<Hysteria2Profile>());
-      expect(VpnProtocolFactory.looksSupported('node.txt'), isTrue);
+      // 但约定的扩展名只有 YAML：文件选择器的过滤按这套命名。
       expect(VpnProtocolFactory.looksSupported('config.yaml'), isTrue);
+      expect(VpnProtocolFactory.looksSupported('config.yml'), isTrue);
+      expect(VpnProtocolFactory.looksSupported('node.txt'), isFalse);
       // 未实现的协议仍然不给入口
       expect(VpnProtocol.hysteria2.isImportable, isTrue);
       expect(VpnProtocol.shadowsocks.isImportable, isFalse);

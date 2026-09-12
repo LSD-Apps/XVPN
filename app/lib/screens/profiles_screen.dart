@@ -277,7 +277,7 @@ class _ImportCard extends StatelessWidget {
         final fileTile = ImportActionTile(
           icon: Icons.folder_open_outlined,
           title: '选择配置文件',
-          description: '从本机挑一个 .conf、.ovpn 或 Hysteria2 节点文件',
+          description: '从本机挑一个 .conf、.ovpn 或 .yaml 文件',
           primary: true,
           onTap: () => pickAndImportConf(context, state),
         );

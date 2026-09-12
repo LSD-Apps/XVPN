@@ -1531,7 +1531,9 @@ class _EmptyStateState extends State<_EmptyState> {
                         ),
                         const SizedBox(height: 10),
                         Text(
-                          '选择 WireGuard 的 .conf、\nOpenVPN 的 .ovpn 或 Hysteria2 链接\n其余设置已经内置好了',
+                          '支持 WireGuard 的 .conf、OpenVPN 的 .ovpn\n'
+                          '或 Hysteria2 的 .yaml / .yml\n'
+                          '格式按内容自动识别，其余设置已经内置好了',
                           textAlign: TextAlign.center,
                           style: TextStyle(
                             fontSize: 12.5,
@@ -1619,8 +1621,8 @@ class _EmptyStateState extends State<_EmptyState> {
                   ConstrainedBox(
                     constraints: const BoxConstraints(maxWidth: 430),
                     child: Text(
-                      '把 .conf、.ovpn 或 Hysteria2 节点文件拖进来就行。分流规则已经内置，'
-                      '不需要填写任何 IP 段、规则或路由表。',
+                      '把 .conf、.ovpn 或 Hysteria2 的 .yaml / .yml 拖进来就行。'
+                      '格式按内容自动识别，分流规则已经内置，不需要填写任何 IP 段、规则或路由表。',
                       textAlign: TextAlign.center,
                       style: TextStyle(
                         fontSize: 13,
@@ -1686,7 +1688,7 @@ class _EmptyStateState extends State<_EmptyState> {
                                   borderRadius: BorderRadius.circular(5),
                                 ),
                                 child: Text(
-                                  '.conf / .ovpn / .yaml',
+                                  '.conf / .ovpn / .yaml / .yml',
                                   style: TextStyle(
                                     fontSize: 11,
                                     color: XV.green,
@@ -1726,8 +1728,8 @@ class _EmptyStateState extends State<_EmptyState> {
                   ),
                   const SizedBox(height: 22),
                   Text(
-                    '支持标准 WireGuard 客户端导出的 .conf（含 wg-quick 生成）、\n'
-                    'OpenVPN 客户端导出的 .ovpn，以及 Hysteria2 分享链接 / config.yaml\n'
+                    '支持 WireGuard 的 .conf（含 wg-quick 导出）、OpenVPN 的 .ovpn，\n'
+                    '以及 Hysteria2 的 .yaml / .yml。协议按内容自动识别，改名也能导入\n'
                     '配置只保存在本机，不会上传；导入后自动连接并完成分流',
                     textAlign: TextAlign.center,
                     style: TextStyle(

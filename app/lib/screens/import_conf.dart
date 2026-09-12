@@ -183,7 +183,8 @@ Future<void> pickAndImportConf(BuildContext context, AppState state) async {
         : <XTypeGroup>[
             XTypeGroup(
               label: 'VPN 配置',
-              // 扩展名取自协议注册表：新增协议后这里自动跟上。
+              // 桌面端只列约定的扩展名（每个扩展名只属于一个协议），
+              // 取自协议注册表：新增协议后这里自动跟上。
               extensions: allSupportedExtensions,
             ),
           ];

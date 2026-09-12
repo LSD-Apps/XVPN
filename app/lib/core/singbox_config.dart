@@ -14,6 +14,18 @@ enum InboundMode {
   tun,
 }
 
+/// 一个规则集在生成配置时的引用方式：内核里的标签 + 磁盘上的文件名。
+///
+/// 拆出这个类型，是为了让「有哪些规则集」的**决定**留在界面/状态层，而
+/// 配置生成只负责把决定翻译成 sing-box 语法。默认值是两份出厂规则集，
+/// 因此不传它时生成的配置与从前逐字节相同。
+class RuleSetSpec {
+  const RuleSetSpec({required this.tag, required this.fileName});
+
+  final String tag;
+  final String fileName;
+}
+
 /// 把用户的 WireGuard .conf 翻译成 sing-box 配置。
 ///
 /// 这是「傻瓜式」的核心：用户只给一份 .conf，其余全部由这里推导出来。
@@ -35,6 +47,21 @@ class SingBoxConfigBuilder {
 
   /// 出站/端点的标签。路由规则与 route.final 都引用它。
   static const String vpnTag = 'vpn';
+
+  /// 出厂规则集。这是不传 [build] 的 `ruleSets` 时的默认值。
+  ///
+  /// 顺序即内核 `rule_set` 列表的顺序，与历史上写死的两份保持一致，
+  /// 这样「用户没有改动任何规则」时生成的配置不会发生变化。
+  static const List<RuleSetSpec> defaultRuleSets = <RuleSetSpec>[
+    RuleSetSpec(tag: 'geosite-cn', fileName: 'geosite-cn.srs'),
+    RuleSetSpec(tag: 'geoip-cn', fileName: 'geoip-cn.srs'),
+  ];
+
+  /// 域名类规则集的标签：只有它参与 DNS 直连分流。
+  ///
+  /// geoip-cn 是 IP 类规则集，不参与域名 DNS 判定；自定义规则集是域名的还是
+  /// IP 的，程序从文件名无从得知，因此不猜——保持既有的 DNS 策略不变。
+  static const String domainRuleSetTag = 'geosite-cn';
 
   /// 入站方式。两端能力不同，因此由调用方按平台选择。
   ///
@@ -102,6 +129,7 @@ class SingBoxConfigBuilder {
     int clashApiPort = defaultClashApiPort,
     bool logSplits = true,
     AutoRouteTable? autoRoute,
+    List<RuleSetSpec> ruleSets = defaultRuleSets,
   }) {
     final remoteDns = _pickRemoteDns(profile);
     final adapter = VpnProtocolFactory.adapterForProtocol(profile.protocol);
@@ -133,6 +161,7 @@ class SingBoxConfigBuilder {
         remoteDns: remoteDns,
         ruleSetDir: ruleSetDir,
         splitMode: splitMode,
+        ruleSets: ruleSets,
       ),
       if (isEndpoint) 'endpoints': <Object?>[endpoint],
       'inbounds': <Object?>[
@@ -157,6 +186,7 @@ class SingBoxConfigBuilder {
         splitMode: splitMode,
         resolveDnsTag: remoteDns.$3,
         autoRoute: autoRoute,
+        ruleSets: ruleSets,
       ),
       'experimental': <String, Object?>{
         // 界面上的连接列表与实时流量都从这里取，避免自己解析日志。
@@ -283,9 +313,14 @@ class SingBoxConfigBuilder {
     required (String, bool, String) remoteDns,
     required String ruleSetDir,
     required SplitMode splitMode,
+    required List<RuleSetSpec> ruleSets,
   }) {
     final (remoteAddress, _, remoteTag) = remoteDns;
     final remoteServers = remoteDnsServers(profile);
+    // geosite-cn 被用户删掉/停用后，DNS 规则不能再引用它：内核会因
+    // 「引用了未定义的 rule_set」直接拒绝启动。没有它时退回纯 final 策略，
+    // 与全局直连时的行为一致。
+    final hasDomainRuleSet = ruleSets.any((RuleSetSpec s) => s.tag == domainRuleSetTag);
 
     return <String, Object?>{
       'servers': <Object?>[
@@ -320,9 +355,9 @@ class SingBoxConfigBuilder {
           },
       ],
       'rules': <Object?>[
-        if (splitMode == SplitMode.smart)
+        if (splitMode == SplitMode.smart && hasDomainRuleSet)
           <String, Object?>{
-            'rule_set': <String>['geosite-cn'],
+            'rule_set': <String>[domainRuleSetTag],
             'action': 'route',
             'server': 'dns-cn',
           },
@@ -353,6 +388,7 @@ class SingBoxConfigBuilder {
     required SplitMode splitMode,
     required String resolveDnsTag,
     AutoRouteTable? autoRoute,
+    required List<RuleSetSpec> ruleSets,
   }) {
     // 自动纠正规则只在智能分流下注入。
     //
@@ -362,6 +398,12 @@ class SingBoxConfigBuilder {
     final learnedRules = splitMode == SplitMode.smart && autoRoute != null
         ? autoRoute.buildRouteRules()
         : const <Map<String, Object?>>[];
+
+    // 规则集标签按传入顺序排列。用户删掉某个规则集后，这里也不会再引用它，
+    // 因此内核不会因为「rule_set 未定义」而拒绝启动。
+    final ruleSetTags = <String>[
+      for (final spec in ruleSets) spec.tag,
+    ];
 
     return <String, Object?>{
       'rules': <Object?>[
@@ -382,25 +424,20 @@ class SingBoxConfigBuilder {
         // 放在自动纠正之后：用户如果显式把某个内网域名指向代理（例如为了
         // 排查问题），应当尊重他的选择；但默认情况下内网地址绝不进隧道。
         <String, Object?>{'ip_is_private': true, 'outbound': 'direct'},
-        if (splitMode == SplitMode.smart)
+        if (splitMode == SplitMode.smart && ruleSetTags.isNotEmpty)
           <String, Object?>{
-            'rule_set': <String>['geosite-cn', 'geoip-cn'],
+            'rule_set': ruleSetTags,
             'outbound': 'direct',
           },
       ],
       'rule_set': <Object?>[
-        <String, Object?>{
-          'type': 'local',
-          'tag': 'geosite-cn',
-          'format': 'binary',
-          'path': _ruleSetPath(ruleSetDir, 'geosite-cn.srs'),
-        },
-        <String, Object?>{
-          'type': 'local',
-          'tag': 'geoip-cn',
-          'format': 'binary',
-          'path': _ruleSetPath(ruleSetDir, 'geoip-cn.srs'),
-        },
+        for (final spec in ruleSets)
+          <String, Object?>{
+            'type': 'local',
+            'tag': spec.tag,
+            'format': 'binary',
+            'path': _ruleSetPath(ruleSetDir, spec.fileName),
+          },
       ],
       // 白名单式直连：命中规则才直连，其余一律走隧道。
       'final': switch (splitMode) {

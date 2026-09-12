@@ -14,6 +14,7 @@ import '../widgets/title_bar.dart';
 import '../widgets/window_frame.dart';
 import 'connect_screen.dart';
 import 'profiles_screen.dart';
+import 'rules_screen.dart';
 import 'settings_screen.dart';
 import 'split_screen.dart';
 
@@ -30,10 +31,10 @@ class XvShell extends StatefulWidget {
 }
 
 class _XvShellState extends State<XvShell> {
-  /// 桌面端：0 连接 / 1 分流记录 / 2 配置文件 / 3 设置
+  /// 桌面端：0 连接 / 1 分流记录 / 2 配置文件 / 3 分流规则 / 4 设置
   int _desktopTab = 0;
 
-  /// 移动端：0 连接 / 1 分流 / 2 设置（配置文件并入设置页，与原型一致）
+  /// 移动端：0 连接 / 1 分流 / 2 规则 / 3 设置（配置文件并入设置页，与原型一致）
   int _mobileTab = 0;
 
   String? _shownError;
@@ -65,18 +66,17 @@ class _XvShellState extends State<XvShell> {
 
   /// 把页面的跳转意图翻译成本布局下的标签索引。
   ///
-  /// 同时给两个索引赋值是有意的：只有当前生效的那个布局会去读它自己那一个
-  /// （[_buildDesktop] 读 `_desktopTab`、[_buildMobile] 读 `_mobileTab`），
-  /// 而「配置」在两端的落点恰好都是各自的索引 2——桌面是侧栏的「配置文件」
-  /// 页，移动端是设置标签（配置列表内嵌其中）。在两端分别判断当前布局只会
-  /// 多出一份可能与实际分支脱节的推理。
+  /// 两个索引**分别**赋值：加入「分流规则」后两端的落点不再相同——桌面是侧栏
+  /// 索引 2 的「配置文件」页，移动端则是索引 3 的设置标签（配置列表内嵌其中）。
+  /// 此前两者恰好都是 2，改动标签结构时必须逐端核对，否则「切换配置」会跳到
+  /// 一个新加的标签页上，而用户以为程序坏了。
   void _onNavigationRequested() {
     if (ScreenNavigation.instance.value != AppSection.profiles) return;
     // 先清空再跳转：否则下一次重建会重复触发同一个请求。
     ScreenNavigation.instance.consume();
     setState(() {
       _desktopTab = 2;
-      _mobileTab = 2;
+      _mobileTab = 3;
     });
   }
 
@@ -147,9 +147,9 @@ class _XvShellState extends State<XvShell> {
         XvTitleBar(
           theme: widget.theme,
           state: widget.state,
-          // 标题栏不拥有导航：有更新时点它，由外壳切到设置页（3）的
+          // 标题栏不拥有导航：有更新时点它，由外壳切到设置页（4）的
           // 「版本更新」卡片，那里才是下载与安装的入口。
-          onOpenUpdate: () => setState(() => _desktopTab = 3),
+          onOpenUpdate: () => setState(() => _desktopTab = 4),
         ),
         Expanded(
           child: Row(
@@ -184,6 +184,7 @@ class _XvShellState extends State<XvShell> {
       (icon: Icons.power_settings_new, label: '连接'),
       (icon: Icons.segment, label: '分流记录'),
       (icon: Icons.description_outlined, label: '配置文件'),
+      (icon: Icons.rule, label: '分流规则'),
       (icon: Icons.settings_outlined, label: '设置'),
     ];
     final status = widget.state.status;
@@ -264,7 +265,8 @@ class _XvShellState extends State<XvShell> {
   static const _mobileTabs = <({IconData icon, String label, int desktopTab})>[
     (icon: Icons.power_settings_new, label: '连接', desktopTab: 0),
     (icon: Icons.segment, label: '分流', desktopTab: 1),
-    (icon: Icons.settings_outlined, label: '设置', desktopTab: 3),
+    (icon: Icons.rule, label: '规则', desktopTab: 3),
+    (icon: Icons.settings_outlined, label: '设置', desktopTab: 4),
   ];
 
   Widget _buildMobile() {
@@ -326,6 +328,7 @@ class _XvShellState extends State<XvShell> {
       0 => ConnectScreen(state: widget.state, compact: compact),
       1 => SplitScreen(state: widget.state, compact: compact),
       2 => ProfilesScreen(state: widget.state, embedded: compact),
+      3 => RulesScreen(state: widget.state, compact: compact),
       _ => SettingsScreen(
         state: widget.state,
         compact: compact,

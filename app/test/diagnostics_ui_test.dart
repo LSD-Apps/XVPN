@@ -12,7 +12,7 @@ import 'package:xvpn/core/startup_self_check.dart';
 import 'package:xvpn/models.dart';
 import 'package:xvpn/core/singbox_runner.dart';
 import 'package:xvpn/core/vpn_core.dart';
-import 'package:xvpn/screens/settings_screen.dart';
+import 'package:xvpn/screens/rules_screen.dart';
 import 'package:xvpn/widgets/auto_route_card.dart';
 import 'package:xvpn/widgets/common.dart';
 import 'package:xvpn/screens/shell.dart';
@@ -420,16 +420,16 @@ void main() {
     });
   });
 
-  group('自动纠正管理卡片', () {
+  group('域名分流规则卡片', () {
     testWidgets('演示内核下说明不支持，而不是显示一个空列表', (WidgetTester tester) async {
       final state = AppState();
       addTearDown(state.dispose);
       await _pump(tester, state);
 
-      await tester.tap(find.text('设置'));
+      await tester.tap(find.text('分流规则'));
       await tester.pumpAndSettle();
 
-      expect(find.text('自动纠正'), findsOneWidget);
+      expect(find.text('域名分流规则'), findsOneWidget);
       expect(find.textContaining('演示模式'), findsOneWidget);
 
       await _stop(tester, state);
@@ -442,10 +442,10 @@ void main() {
       addTearDown(state.dispose);
       await _pump(tester, state, size: const Size(1500, 1400));
 
-      await tester.tap(find.text('设置'));
+      await tester.tap(find.text('分流规则'));
       await tester.pumpAndSettle();
 
-      final scroll = find.byKey(SettingsScreen.desktopScrollKey);
+      final scroll = find.byKey(RulesScreen.desktopScrollKey);
       var guard = 0;
       while (find.text('手工指定').evaluate().isEmpty && guard < 20) {
         await tester.drag(scroll, const Offset(0, -200));
@@ -501,15 +501,15 @@ void main() {
       matching: find.byType(XvSearchField),
     );
 
-    /// 用真实内核渲染桌面设置页，并把手工指定滚进视口。
+    /// 用真实内核渲染桌面「分流规则」页，并把手工指定滚进视口。
     Future<void> renderDesktopWithCore(
       WidgetTester tester,
       AppState state,
     ) async {
       await _pump(tester, state, size: const Size(1500, 1400));
-      await tester.tap(find.text('设置'));
+      await tester.tap(find.text('分流规则'));
       await tester.pumpAndSettle();
-      final scroll = find.byKey(SettingsScreen.desktopScrollKey);
+      final scroll = find.byKey(RulesScreen.desktopScrollKey);
       var guard = 0;
       while (find.text('手工指定').evaluate().isEmpty && guard < 20) {
         await tester.drag(scroll, const Offset(0, -200));
@@ -527,10 +527,10 @@ void main() {
       addTearDown(state.dispose);
       // 390 是常见手机的逻辑宽度。
       await _pump(tester, state, size: const Size(390, 900));
-      await tester.tap(find.text('设置'));
+      await tester.tap(find.text('规则'));
       await tester.pumpAndSettle();
 
-      // 手机设置页整体滚动，把手工指定滚进视口。
+      // 手机「分流规则」页整体滚动，把手工指定滚进视口。
       final scrollable = find.byType(Scrollable).first;
       var guard = 0;
       while (inputBox().evaluate().isEmpty && guard < 30) {
@@ -578,7 +578,7 @@ void main() {
       final state = stateWithRealCore();
       addTearDown(state.dispose);
       await _pump(tester, state, size: const Size(390, 900));
-      await tester.tap(find.text('设置'));
+      await tester.tap(find.text('规则'));
       await tester.pumpAndSettle();
 
       final scrollable = find.byType(Scrollable).first;

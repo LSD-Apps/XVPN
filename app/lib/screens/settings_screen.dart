@@ -2,12 +2,9 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../app_state.dart';
-import '../format.dart';
-import '../models.dart';
 import '../theme.dart';
 import '../theme_controller.dart';
 import '../version.dart';
-import '../widgets/auto_route_card.dart';
 import '../widgets/common.dart';
 import '../widgets/update_card.dart';
 import 'profiles_screen.dart';
@@ -28,7 +25,6 @@ class SettingsScreen extends StatelessWidget {
   /// 主题控制器。桌面端标题栏右侧也有一个切换按钮，两处共用同一份状态。
   final ThemeController theme;
 
-  static const _splitLabels = <String>['智能分流', '全局代理', '全局直连'];
   static const _themeLabels = <String>['跟随系统', '亮色', '深色'];
 
   /// 桌面端页面级滚动容器的 Key。
@@ -64,9 +60,7 @@ class SettingsScreen extends StatelessWidget {
           const SizedBox(height: 13),
           _buildTakeoverCard(compact: false),
           const SizedBox(height: 13),
-          _buildSplitCard(compact: false),
-          const SizedBox(height: 13),
-          AutoRouteCard(state: state, compact: false),
+          _buildLoggingCard(compact: false),
           const SizedBox(height: 13),
           const UpdateCard(),
           const SizedBox(height: 13),
@@ -222,76 +216,26 @@ class SettingsScreen extends StatelessWidget {
     );
   }
 
-  Widget _buildSplitCard({required bool compact}) {
-    final modeIndex = SplitMode.values.indexOf(state.settings.splitMode);
+  /// 记录分流日志。
+  ///
+  /// 这一项原本长在「分流」卡片里，而分流模式与规则库搬去了独立的「分流规则」
+  /// 页。它留在这里是因为它管的不是**怎么分流**，而是**要不要把观察到的东西
+  /// 记下来**——一个纯记录偏好，与外观、启动同属设置页的范畴。分流记录页的
+  /// 脚注也据此写着「可在设置中关闭」，两处因此仍然对得上。
+  Widget _buildLoggingCard({required bool compact}) {
     return XvCard(
       color: compact ? XV.panel2 : XV.panel,
       radius: compact ? 12 : XV.rCard,
       padding: compact
-          ? const EdgeInsets.fromLTRB(14, 13, 14, 6)
+          ? const EdgeInsets.fromLTRB(14, 13, 14, 13)
           : const EdgeInsets.all(16),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: <Widget>[
-          if (compact)
-            Row(
-              children: <Widget>[
-                Expanded(
-                  child: Text(
-                    '分流',
-                    style: TextStyle(fontSize: 11, color: XV.muted2),
-                  ),
-                ),
-                // 标签跟着当前模式走，写死「规则直连」在另外两种模式下是错的。
-                switch (state.settings.splitMode) {
-                  SplitMode.smart => RouteTag.direct('规则直连'),
-                  SplitMode.globalProxy => RouteTag.kind(RouteKind.proxy),
-                  SplitMode.globalDirect => RouteTag.direct('全部直连'),
-                },
-              ],
-            )
-          else
-            const XvCardTitle('分流'),
-          if (compact) ...<Widget>[
-            const SizedBox(height: 11),
-            Text('分流模式', style: XvText.rowTitle),
-            const SizedBox(height: 4),
-            Text(state.settings.splitMode.description, style: XvText.rowDesc),
-            const SizedBox(height: 10),
-            XvSegmented(
-              labels: _splitLabels,
-              index: modeIndex,
-              expand: true,
-              onChanged: (int i) => state.updateSettings(
-                state.settings.copyWith(splitMode: SplitMode.values[i]),
-              ),
-            ),
-            Divider(height: 25, thickness: 1, color: XV.line2),
-          ] else
-            SettingRow(
-              title: '分流模式',
-              description: state.settings.splitMode.description,
-              controlWidth: 252,
-              control: XvSegmented(
-                labels: _splitLabels,
-                index: modeIndex,
-                onChanged: (int i) => state.updateSettings(
-                  state.settings.copyWith(splitMode: SplitMode.values[i]),
-                ),
-              ),
-            ),
-          SettingRow(
-            title: '规则库',
-            description: compact
-                ? 'geosite-cn · geoip-cn · ${fmtDate(state.ruleSetUpdatedAt)}'
-                : 'geosite-cn · geoip-cn · 更新于 ${fmtDate(state.ruleSetUpdatedAt)}',
-            control: XvButton(label: '检查更新', onPressed: state.refreshRuleSet),
-          ),
+          const XvCardTitle('记录'),
           SettingRow(
             title: '记录分流日志',
-            description: '关闭后不再记录任何域名',
-            // 卡片最后一行不画分隔线。此前写的是 isLast: compact，桌面端因此
-            // 在末行下面多出一条悬空的线，与其它卡片的处理也不一致。
+            description: '关闭后不再记录任何域名，已有记录会一并清空',
             isLast: true,
             control: XvSwitch(
               value: state.settings.logSplits,
@@ -374,7 +318,7 @@ class SettingsScreen extends StatelessWidget {
                       const XvCardTitle('启动'),
                       SettingRow(
                         title: '导入后自动连接',
-                        description: '导入 .conf / .ovpn / Hysteria2 节点后直接建立隧道',
+                        description: '导入 .conf / .ovpn / Hysteria2 的 .yaml / .yml 后直接建立隧道',
                         isLast: true,
                         control: XvSwitch(
                           value: state.settings.autoConnectOnImport,
@@ -391,9 +335,7 @@ class SettingsScreen extends StatelessWidget {
                 // 只是内容按平台不同（桌面系统代理 / 安卓 TUN）。
                 _buildTakeoverCard(compact: true),
                 const SizedBox(height: 12),
-                _buildSplitCard(compact: true),
-                const SizedBox(height: 12),
-                AutoRouteCard(state: state, compact: true),
+                _buildLoggingCard(compact: true),
                 const SizedBox(height: 12),
                 ProfilesScreen(state: state, embedded: true),
                 const SizedBox(height: 12),

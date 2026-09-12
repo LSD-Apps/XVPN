@@ -9,6 +9,7 @@ import 'auto_route.dart';
 import 'core_monitor.dart';
 import 'cn_ip_index.dart';
 import 'dns_client.dart';
+import 'rulesets.dart';
 import 'singbox_config.dart';
 import 'singbox_runner.dart';
 import 'tunnel_health.dart';
@@ -223,6 +224,20 @@ class AndroidVpnCore extends VpnCore {
       // 2) 资源解包。内核要的是真实文件路径，而 APK 里的资源读不到路径。
       final ruleSetDir = await _stageAssets();
       if (aborted()) return;
+      // 自定义规则集由「分流规则」页下载到这个目录，不在 APK 资源里，
+      // 因此 _stageAssets 不会带上它们。缺文件时明确报错，而不是让内核
+      // 带着一个不存在的 path 启动。
+      for (final entry in ruleSets) {
+        if (!entry.enabled || entry.kind != RuleSetKind.custom) continue;
+        final file = File(
+          '$ruleSetDir${Platform.pathSeparator}${entry.fileName}',
+        );
+        if (!file.existsSync()) {
+          listener.onError(missingRuleSetMessage(file.path));
+          await _teardown(notifyStatus: true);
+          return;
+        }
+      }
       _cnIpIndex = await _loadCnIpIndex(ruleSetDir);
       if (aborted()) return;
 
@@ -240,6 +255,7 @@ class AndroidVpnCore extends VpnCore {
         inboundMode: InboundMode.tun,
         logSplits: settings.logSplits,
         autoRoute: _autoRoute,
+        ruleSets: enabledRuleSetSpecs,
       );
 
       // 4) 接收内核日志，供失败归因与自动纠正使用。

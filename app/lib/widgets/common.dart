@@ -1518,6 +1518,100 @@ class _ImportActionTileState extends State<ImportActionTile> {
   }
 }
 
+/// 统一的确认弹窗。
+///
+/// 删除配置、删除规则集、删除域名规则、恢复内置规则都是不可逆或影响较大的动作，
+/// 每处各写一遍 `showDialog` + `Dialog` 会让圆角、间距、按钮顺序慢慢分叉。
+/// 这里把它们收成一份：调用方只给标题、正文与确认按钮文案。
+class XvConfirmDialog extends StatelessWidget {
+  const XvConfirmDialog({
+    super.key,
+    required this.title,
+    required this.message,
+    required this.confirmLabel,
+    this.danger = false,
+  });
+
+  final String title;
+  final String message;
+  final String confirmLabel;
+
+  /// 危险动作用红色确认按钮（删除类）。
+  final bool danger;
+
+  /// 弹窗并等待用户选择。返回 true 表示确认。
+  static Future<bool> show(
+    BuildContext context, {
+    required String title,
+    required String message,
+    required String confirmLabel,
+    bool danger = false,
+  }) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      barrierColor: Colors.black.withValues(alpha: 0.6),
+      builder: (BuildContext dialogContext) => XvConfirmDialog(
+        title: title,
+        message: message,
+        confirmLabel: confirmLabel,
+        danger: danger,
+      ),
+    );
+    return confirmed ?? false;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      backgroundColor: XV.panel,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(XV.rCard),
+        side: BorderSide(color: XV.line),
+      ),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 400),
+        child: Padding(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: <Widget>[
+              Text(
+                title,
+                style: TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w700,
+                  color: XV.text,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text(message, style: XvText.caption),
+              const SizedBox(height: 18),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: <Widget>[
+                  XvButton(
+                    label: '取消',
+                    onPressed: () => Navigator.of(context).pop(false),
+                  ),
+                  const SizedBox(width: 10),
+                  XvButton(
+                    label: confirmLabel,
+                    kind: danger
+                        ? XvButtonKind.danger
+                        : XvButtonKind.primary,
+                    onPressed: () => Navigator.of(context).pop(true),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 /// 设置行：原型中的 .set-row。
 /// 行间用 1px 分隔线，最后一行不画（对应 :last-child 的样式覆盖）。
 class SettingRow extends StatelessWidget {

@@ -41,7 +41,7 @@ XVPN · 分流隧道客户端
 
 ```
 XVPN 是一个配置客户端：把你自己的 WireGuard（.conf）、OpenVPN（.ovpn）或
-Hysteria2（分享链接 / config.yaml）配置导入进来，剩下的交给它。
+Hysteria2（.yaml / .yml）配置导入进来，剩下的交给它。
 
 它不提供节点、不提供订阅、不需要注册账号。你需要自备配置。
 
@@ -112,8 +112,8 @@ Play Console 在检测到 `BIND_VPN_SERVICE` 后会要求填写声明。以下�
 ```
 XVPN 的核心功能就是在设备上建立一条用户自定义的加密 VPN 隧道。
 
-用户导入一份 WireGuard（.conf）、OpenVPN（.ovpn）或 Hysteria2（分享链接 /
-config.yaml）配置，应用把它翻译成内核（sing-box）配置，通过 VpnService 建立
+用户导入一份 WireGuard（.conf）、OpenVPN（.ovpn）或 Hysteria2（.yaml / .yml）
+配置，应用把它翻译成内核（sing-box）配置，通过 VpnService 建立
 TUN 接口，使这台设备的流量经由用户自己的服务器转发。
 
 VpnService 是本应用存在的唯一理由——没有它，应用没有任何功能。

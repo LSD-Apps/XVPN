@@ -56,7 +56,7 @@ lib/protocols/
 | --- | --- | --- | --- |
 | WireGuard | `wg-quick` 的 `.conf` | `endpoints[].type = wireguard` | ✅ 已用真实服务器验证 |
 | OpenVPN | 客户端 `.ovpn`（含内联证书） | `endpoints[].type = openvpn-client` | ✅ 已通过官方 `sing-box check` |
-| Hysteria2 | 分享链接 / 官方 `config.yaml` / sing-box 出站 JSON | `outbounds[].type = hysteria2` | ✅ 已通过官方 `sing-box check`（两种入站） |
+| Hysteria2 | `.yaml` / `.yml`（分享链接与 sing-box 出站 JSON 也能解析） | `outbounds[].type = hysteria2` | ✅ 已通过官方 `sing-box check`（两种入站） |
 
 ### OpenVPN 实现中踩到的坑（供后续参考）
 

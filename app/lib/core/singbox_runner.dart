@@ -320,6 +320,20 @@ class SingBoxRunner extends VpnCore {
           return;
         }
       }
+      // 自定义规则集不来自 APK/安装包，因此只能按内核真正读取的可写目录检查。
+      // 缺文件时明确报错并中止：让内核带着一个不存在的 path 启动，只会得到
+      // 一句用户看不懂的启动失败，而不是「哪个规则集不见了」。
+      for (final entry in ruleSets) {
+        if (!entry.enabled || entry.kind != RuleSetKind.custom) continue;
+        final file = File(
+          '${runtime.ruleSetDir.path}${Platform.pathSeparator}${entry.fileName}',
+        );
+        if (!file.existsSync()) {
+          listener.onError(missingRuleSetMessage(file.path));
+          listener.onStatusChanged(VpnStatus.disconnected);
+          return;
+        }
+      }
 
       // 中国 IP 索引只在第一次连接时读一次，之后常驻。
       // 它是 DNS 交叉校验的地理判定依据，缺了只会让判定变保守，不影响连通性。
@@ -373,6 +387,7 @@ class SingBoxRunner extends VpnCore {
         clashApiPort: _clashApiPort,
         logSplits: settings.logSplits,
         autoRoute: _autoRoute,
+        ruleSets: enabledRuleSetSpecs,
       );
       final configFile = File(
         '${runtime.workDir.path}${Platform.pathSeparator}config.json',

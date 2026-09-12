@@ -32,17 +32,26 @@ extension VpnProtocolInfo on VpnProtocol {
     VpnProtocol.hysteria2 => 'Hysteria 2',
   };
 
-  /// 可接受的文件扩展名（小写，不含点）。
+  /// 约定的文件扩展名（小写，不含点）。
+  ///
+  /// **一个扩展名只归一个协议**。文件选择器的过滤列表与操作系统的文件关联都
+  /// 取自这里，重复的扩展名会让「打开方式」指向另一套协议——用户双击一份配置，
+  /// 得到的却是按别的协议解析出来的、看不懂的错误。因此 OpenVPN 让出 `.conf`，
+  /// 只保留 `.ovpn`（OpenVPN 2.x 默认导出的正是 `.conf`，这是刻意的收紧）。
+  ///
+  /// 这是**声明的约定**，不是解析器的能力边界：协议判定始终按**内容**进行
+  /// （见 [VpnProtocolAdapter.canParse]），扩展名不匹配的文件照样能导入。
   List<String> get fileExtensions => switch (this) {
     VpnProtocol.wireGuard => <String>['conf'],
-    VpnProtocol.openVpn => <String>['ovpn', 'conf'],
+    VpnProtocol.openVpn => <String>['ovpn'],
     VpnProtocol.shadowsocks => <String>['json', 'txt'],
     VpnProtocol.vmess => <String>['json'],
     VpnProtocol.vless => <String>['json'],
     VpnProtocol.trojan => <String>['json', 'yaml', 'yml'],
-    // Hysteria2 的三种来源都要能进得来：面板给的分享链接（.txt）、
-    // 官方客户端配置（config.yaml）、以及 sing-box 格式的出站（.json）。
-    VpnProtocol.hysteria2 => <String>['txt', 'yaml', 'yml', 'json'],
+    // Hysteria2 约定用官方客户端配置的文件名（config.yaml）。分享链接与
+    // sing-box JSON 出站解析器仍然接受（见 hysteria2_conf.dart），它们只是
+    // 不作为**约定的文件名**对外宣传。
+    VpnProtocol.hysteria2 => <String>['yaml', 'yml'],
   };
 
   /// 是否已实现导入。未实现的协议在界面上不提供入口，避免给出无法兑现的承诺。
@@ -59,6 +68,9 @@ List<VpnProtocol> get importableProtocols =>
     VpnProtocol.values.where((p) => p.isImportable).toList(growable: false);
 
 /// 所有可被识别的扩展名，用于文件选择器过滤。
+///
+/// 由各协议的 [VpnProtocolInfo.fileExtensions] 合并去重而来；上面已保证每个
+/// 扩展名只属于一个协议，这里的去重只是兜底。
 List<String> get allSupportedExtensions {
   final set = <String>{};
   for (final p in importableProtocols) {
