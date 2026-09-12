@@ -1,6 +1,10 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
+
+import 'platform_paths.dart';
+
 /// 本地持久化。
 ///
 /// 在这之前应用**完全没有持久化**：导入的配置只活在内存里，进程一重启就没了，
@@ -13,8 +17,8 @@ import 'dart:io';
 ///   * 当前选中的是哪一份；
 ///   * 用户改过的设置项。
 ///
-/// 刻意不引入 `shared_preferences`：目录由调用方给出（桌面端用
-/// `%LOCALAPPDATA%\XVPN`，安卓用原生侧的 `filesDir`），
+/// 刻意不引入 `shared_preferences`：目录由调用方给出（桌面端见
+/// [defaultDesktopDir]，安卓用原生侧的 `filesDir`），
 /// 这样没有新依赖，两个平台也能共用同一份实现。
 class AppStore {
   AppStore(this.directory);
@@ -74,12 +78,12 @@ class AppStore {
     }
   }
 
-  /// 桌面端的默认目录：`%LOCALAPPDATA%\XVPN`，与规则库同一处。
-  static Directory defaultDesktopDir() {
-    final base =
-        Platform.environment['LOCALAPPDATA'] ??
-        Platform.environment['APPDATA'] ??
-        Directory.systemTemp.path;
-    return Directory('$base${Platform.pathSeparator}XVPN');
-  }
+  /// 桌面端的默认目录：Windows 为 `%LOCALAPPDATA%\XVPN`，Linux 为
+  /// `$XDG_DATA_HOME/XVPN`（缺省 `~/.local/share/XVPN`），与规则库同一处。
+  ///
+  /// 目录解析集中在 [resolveDesktopPaths]，两处各拼一遍会分叉。
+  static Directory defaultDesktopDir() => resolveDesktopPaths(
+    platform: defaultTargetPlatform,
+    environment: Platform.environment,
+  ).dataDir;
 }

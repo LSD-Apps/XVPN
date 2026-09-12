@@ -6,8 +6,10 @@ import '../format.dart';
 import '../models.dart';
 import '../theme.dart';
 import '../theme_controller.dart';
+import '../version.dart';
 import '../widgets/auto_route_card.dart';
 import '../widgets/common.dart';
+import '../widgets/update_card.dart';
 import 'profiles_screen.dart';
 
 /// 设置页。每一项都有合理默认值，不改也能正常用。
@@ -65,6 +67,10 @@ class SettingsScreen extends StatelessWidget {
           _buildSplitCard(compact: false),
           const SizedBox(height: 13),
           AutoRouteCard(state: state, compact: false),
+          const SizedBox(height: 13),
+          const UpdateCard(),
+          const SizedBox(height: 13),
+          _buildAboutCard(context, compact: false),
         ],
       ),
     );
@@ -174,6 +180,7 @@ class SettingsScreen extends StatelessWidget {
   /// 与其它卡片保持一致。
   Widget _buildTakeoverCard({required bool compact}) {
     final isAndroid = defaultTargetPlatform == TargetPlatform.android;
+    final isLinux = defaultTargetPlatform == TargetPlatform.linux;
 
     return XvCard(
       color: compact ? XV.panel2 : XV.panel,
@@ -199,6 +206,11 @@ class SettingsScreen extends StatelessWidget {
               isAndroid
                   ? '安卓只能走 TUN：VpnService 的文件描述符必须在应用进程内创建，'
                         '系统代理那条路在这里不成立。因此没有可选项，接入即接管全部程序。'
+                  : isLinux
+                  ? '暂不支持 TUN 虚拟网卡：它需要提权的辅助进程接管路由与 DNS，'
+                        '当前版本未内置。现在只有认系统代理的程序会走隧道'
+                        '（浏览器与绝大多数桌面软件）；游戏、命令行工具还不覆盖，'
+                        '请等待后续版本。'
                   : '暂不支持 TUN 虚拟网卡：它需要 wintun 驱动与管理员权限，'
                         '当前版本未内置。需要接管游戏、命令行工具等不认系统代理的程序时，'
                         '请等待后续版本。',
@@ -292,6 +304,51 @@ class SettingsScreen extends StatelessWidget {
     );
   }
 
+  /// 关于：应用内读到许可全文的唯一入口。
+  ///
+  /// 此前分发物里一直带着 LICENSE / NOTICE.md，但应用内没有任何入口，用户
+  /// 实际上读不到——「随包分发」不等于「可见」。这里用 Material 的
+  /// [showLicensePage]：它会聚合 Flutter 自动生成的依赖许可，以及
+  /// `registerBundledLicenses()` 注册的本项目许可、第三方声明与内核静态依赖。
+  ///
+  /// 版本号取自 `version.dart`，与「设置页侧栏底部」显示的是同一个值，
+  /// 因此许可页不会出现与安装包对不上的版本。
+  Widget _buildAboutCard(BuildContext context, {required bool compact}) {
+    return XvCard(
+      color: compact ? XV.panel2 : XV.panel,
+      radius: compact ? 12 : XV.rCard,
+      padding: compact
+          ? const EdgeInsets.fromLTRB(14, 13, 14, 6)
+          : const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: <Widget>[
+          const XvCardTitle('关于'),
+          SettingRow(
+            title: '开源许可',
+            description: '查看本项目（GPL-3.0-or-later）与第三方组件的许可证全文',
+            isLast: true,
+            control: XvButton(
+              label: '查看',
+              onPressed: () => _openLicenses(context),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _openLicenses(BuildContext context) {
+    showLicensePage(
+      context: context,
+      applicationName: 'XVPN',
+      applicationVersion: appVersion,
+      applicationLegalese:
+          'Copyright (C) 2026 LUSIDA（Start）\n'
+          'SPDX-License-Identifier: GPL-3.0-or-later',
+    );
+  }
+
   // ---------------------------------------------------------------- 移动端
 
   Widget _buildMobile(BuildContext context) {
@@ -339,6 +396,10 @@ class SettingsScreen extends StatelessWidget {
                 AutoRouteCard(state: state, compact: true),
                 const SizedBox(height: 12),
                 ProfilesScreen(state: state, embedded: true),
+                const SizedBox(height: 12),
+                const UpdateCard(compact: true),
+                const SizedBox(height: 12),
+                _buildAboutCard(context, compact: true),
                 const SizedBox(height: 24),
               ],
             ),

@@ -6,6 +6,7 @@ import 'package:xvpn/core/system_proxy.dart';
 import 'package:xvpn/models.dart';
 import 'package:xvpn/protocols/protocol_adapter.dart';
 
+import 'support/host_platform.dart';
 import 'support/recording_listener.dart';
 
 /// 系统代理的接管 / 还原契约。
@@ -64,7 +65,7 @@ class _FakeProxy implements SystemProxyController {
 }
 
 void main() {
-  final exe = File('assets/bin/sing-box.exe').absolute;
+  final exe = hostCoreBinary;
   final assets = Directory('assets/rulesets').absolute;
   final skipReason = !exe.existsSync()
       ? '未找到 ${exe.path}，跳过系统代理契约验证'

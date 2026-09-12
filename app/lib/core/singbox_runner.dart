@@ -2,11 +2,14 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
+
 import '../models.dart';
 import 'auto_route.dart';
 import 'cn_ip_index.dart';
 import 'core_monitor.dart';
 import 'dns_client.dart';
+import 'platform_paths.dart';
 import 'port_allocator.dart';
 import 'reconnect.dart';
 import 'rulesets.dart';
@@ -29,7 +32,7 @@ import 'vpn_core.dart';
 /// 内核运行时用到的一组位置。
 ///
 /// 单列一个类型而不是就地返回一条记录：它需要能被注入——测试要用**真实的**
-/// 随包内核跑一遍完整的连接与断开，而测试进程旁边没有 `sing-box.exe`
+/// 随包内核跑一遍完整的连接与断开，而测试进程旁边没有随包内核
 /// （生产路径是从 `Platform.resolvedExecutable` 旁边推导的）。有了这个注入点，
 /// 「完整连接路径」才第一次有了自动化验证，而不只是靠读代码确认。
 class CoreRuntime {
@@ -74,13 +77,16 @@ class SingBoxRunner extends VpnCore {
     this.dnsResolver,
     this.runtimeOverride,
     this.readyGateTimeout = tunnelReadyTimeout,
-    this.proxy = const SystemProxy(),
-  }) : _recovery = CrashRecovery(policy: reconnectPolicy);
+    SystemProxyController? proxy,
+  }) : proxy = proxy ?? SystemProxy.forPlatform(),
+       _recovery = CrashRecovery(policy: reconnectPolicy);
 
-  /// 系统代理的接管与还原。生产用真实实现；测试可注入替身。
+  /// 系统代理的接管与还原。生产按平台选择（Windows 走原生通道、Linux 走
+  /// gsettings/KDE 命令，见 [SystemProxy.forPlatform]）；测试可注入替身。
   ///
   /// 为什么值得一个注入点：接管与还原必须成对，漏掉任何一半的后果都是「用户
-  /// 关掉应用之后上不了网」。而这条路径依赖平台通道，此前只能靠读代码确认。
+  /// 关掉应用之后上不了网」。而这条路径依赖进程外的系统状态，此前只能靠读
+  /// 代码确认。
   final SystemProxyController proxy;
 
   /// 运行时位置的覆盖项。生产环境为 null，由安装位置推导。
@@ -133,6 +139,16 @@ class SingBoxRunner extends VpnCore {
   @override
   String get takeOverEndpoint => '127.0.0.1:$_mixedPort';
 
+  /// 「检查更新」写入的目录。
+  ///
+  /// 生产环境（[runtimeOverride] 为 null）就是 `RuleSetStore.writableDir()`，
+  /// 也正是 [_resolveRuntimePaths] 里 `RuleSetStore.ensure` 的落点——内核从
+  /// 那里读规则，更新写回那里，两端一致。注入 [runtimeOverride] 时（测试用）
+  /// 以它声明的目录为准，因为那才是本次真正交给 `build` 的目录。
+  @override
+  Future<Directory?> ruleSetUpdateDir() async =>
+      runtimeOverride?.ruleSetDir ?? RuleSetStore.writableDir();
+
   /// 最近一行内核日志，用于拼错误信息。
   ///
   /// 曾经这里自己维护一个 40 行的滚动尾巴，而界面上完全看不到日志。现在日志
@@ -152,6 +168,15 @@ class SingBoxRunner extends VpnCore {
   ///
   /// 与 [_recovery] 是两回事：那个管「内核没了」，这个管「内核还在但隧道不通」。
   final HealthRecoveryGuard _healthGuard = HealthRecoveryGuard();
+
+  /// 仅用于测试：观测「本次连接真正交给内核的规则库目录」。
+  ///
+  /// 存在的理由很具体：安卓端曾经把「检查更新」写到一个内核根本不读的临时
+  /// 目录，界面报告成功、内核却一直用旧规则。要防住这个回归，就得能断言
+  /// 「更新目录 == 交给 `SingBoxConfigBuilder.build` 的目录」，而 build 是静态
+  /// 调用、没有天然的观测点。测试注入一个回调即可把那一刻记下来。
+  @visibleForTesting
+  void Function(String ruleSetDir)? debugRuleSetDirObserver;
 
   /// 最近一次连接使用的配置。自动重连要靠它重新生成配置并拉起内核。
   VpnProfile? _lastProfile;
@@ -303,6 +328,8 @@ class SingBoxRunner extends VpnCore {
 
       // 1) 生成配置。规则集直接引用随包分发的文件，避免二次拷贝。
       //    每次都重新生成：这样自动纠正表里新学到的规则能在下次连接时生效。
+      //    这里把目录记给测试观测点：更新界面写的是不是同一个目录，靠它断言。
+      debugRuleSetDirObserver?.call(runtime.ruleSetDir.path);
       final config = SingBoxConfigBuilder.build(
         profile: profile.parsed,
         splitMode: settings.splitMode,
@@ -413,11 +440,12 @@ class SingBoxRunner extends VpnCore {
 
       // 4) 接管系统代理。
       //
-      // 桌面端只有这一条可用路径。sing-box 的 tun 入站需要 wintun.dll 与管理员
-      // 权限，两者都不具备，因此这里不再提供「TUN」选项（设置页已说明）；
-      // 若历史设置里残留了 TUN，也在恢复时被忽略，不会出现「选了却不生效」
-      // 的假象——那意味着界面上写着「接管全部程序」，实际只有认系统代理的
-      // 程序走隧道，而用户完全看不出区别。
+      // 桌面端只有这一条可用路径。sing-box 的 tun 入站需要内核级的路由接管
+      // 与管理员权限（Windows 上是 wintun.dll，Linux 上要 polkit 提权的
+      // 辅助进程），两者当前都不具备，因此这里不提供「TUN」选项（设置页已
+      // 说明）；若历史设置里残留了 TUN，也在恢复时被忽略，不会出现「选了却
+      // 不生效」的假象——那意味着界面上写着「接管全部程序」，实际只有认系统
+      // 代理的程序走隧道，而用户完全看不出区别。
       _proxyTakenOver = await proxy.set(host: '127.0.0.1', port: _mixedPort);
       // 设代理是异步的，用户也可能正好在这一刻点了断开。不查这一步的后果
       // 比「晚一点断开」严重得多：系统代理会被**重新装上**，界面显示已连接，
@@ -427,7 +455,12 @@ class SingBoxRunner extends VpnCore {
         return;
       }
       if (!_proxyTakenOver) {
-        listener.onError('无法设置系统代理，请检查系统设置是否被策略锁定');
+        listener.onError(
+          defaultTargetPlatform == TargetPlatform.linux
+              ? '无法设置系统代理：未检测到受支持的桌面环境（GNOME / KDE），'
+                    '或缺少 gsettings / kwriteconfig 命令'
+              : '无法设置系统代理，请检查系统设置是否被策略锁定',
+        );
       }
 
       // 5) 就绪门控：等隧道真的能载一个来回，再宣布「已连接」。
@@ -500,8 +533,12 @@ class SingBoxRunner extends VpnCore {
       _proxyTakenOver = false;
       if (!restored) {
         listener.onError(
-          '没能还原系统代理，浏览器可能无法上网。'
-          '请在「设置 → 网络和 Internet → 代理」中关闭手动代理设置',
+          defaultTargetPlatform == TargetPlatform.linux
+              ? '没能还原系统代理，浏览器可能无法上网。'
+                    '请在系统设置的「网络代理」中关掉手动代理'
+                    '（GNOME 可执行 gsettings set org.gnome.system.proxy mode none）'
+              : '没能还原系统代理，浏览器可能无法上网。'
+                    '请在「设置 → 网络和 Internet → 代理」中关闭手动代理设置',
         );
       }
     }
@@ -617,10 +654,11 @@ class SingBoxRunner extends VpnCore {
     _process = null;
     // 兜底还原系统代理。
     //
-    // 正常退出由原生侧在 WM_DESTROY / WM_QUERYENDSESSION 里完成，这里再补一次，
-    // 覆盖「原生还没收到退出消息、Dart 先被释放」的路径（开发时的热重启、引擎
-    // 重建）。clear 是幂等的，且只在**确实由我们接管过**时才调用——不会去动
-    // 用户自己的代理设置。
+    // Windows 上正常退出由原生侧在 WM_DESTROY / WM_QUERYENDSESSION 里完成；
+    // Linux 上没有原生退出钩子，GTK 关闭窗口会拆掉 Flutter 引擎，这条
+    // dispose 就是主要路径。这里统一再补一次，覆盖「原生还没收到退出消息、
+    // Dart 先被释放」的情况（开发时的热重启、引擎重建）。clear 是幂等的，
+    // 且只在**确实由我们接管过**时才调用——不会去动用户自己的代理设置。
     if (_proxyTakenOver) {
       _proxyTakenOver = false;
       unawaited(proxy.clear());
@@ -632,13 +670,19 @@ class SingBoxRunner extends VpnCore {
 
   /// 随包分发的内核与规则库所在位置。
   ///
-  /// 内核是可执行文件，由 Windows 构建脚本直接放在 xvpn.exe 旁边（见
-  /// windows/CMakeLists.txt），不走 Flutter 资源体系；规则集体积很小，
-  /// 作为资源分发，两端共用。
+  /// 内核是可执行文件，由构建脚本直接放在应用可执行文件旁边（Windows 见
+  /// `windows/CMakeLists.txt`，Linux 见 `linux/CMakeLists.txt`），不走 Flutter
+  /// 资源体系；规则集体积很小，作为资源分发，两端共用。文件名在 Linux 上
+  /// 没有 `.exe` 后缀，因此不能写死。
   CoreRuntime _resolveRuntimePaths() {
     final override = runtimeOverride;
     if (override != null) return override;
 
+    final TargetPlatform platform = defaultTargetPlatform;
+    final paths = resolveDesktopPaths(
+      platform: platform,
+      environment: Platform.environment,
+    );
     final exeDir = File(Platform.resolvedExecutable).parent;
     final assetDir = Directory(
       '${exeDir.path}${Platform.pathSeparator}data${Platform.pathSeparator}flutter_assets'
@@ -646,19 +690,18 @@ class SingBoxRunner extends VpnCore {
     );
     final ruleDir = assetDir;
 
-    final localAppData =
-        Platform.environment['LOCALAPPDATA'] ?? Directory.systemTemp.path;
-    final workDir = Directory(
-      '$localAppData${Platform.pathSeparator}XVPN${Platform.pathSeparator}runtime',
-    );
-
     return CoreRuntime(
-      singBoxExe: File('${exeDir.path}${Platform.pathSeparator}sing-box.exe'),
+      // Linux 与 Windows 的安装布局一致：内核就在 bundle 里可执行文件旁边，
+      // 只是文件名少了 `.exe`。
+      singBoxExe: File(
+        '${exeDir.path}${Platform.pathSeparator}${singBoxBinaryName(platform)}',
+      ),
       // 规则库用可写目录里的副本：出厂副本首次运行时复制过去，之后可由
       // 「检查更新」覆盖，既保证离线可用，又不依赖安装目录的写权限。
       ruleSetDir: RuleSetStore.ensure(ruleDir),
       assetDir: assetDir,
-      workDir: workDir,
+      // Windows 是 %LOCALAPPDATA%\XVPN\runtime，Linux 优先 $XDG_RUNTIME_DIR/XVPN。
+      workDir: paths.runtimeDir,
     );
   }
 
@@ -674,7 +717,9 @@ class SingBoxRunner extends VpnCore {
 
   /// 清理上次被强杀后残留的内核进程。
   ///
-  /// 必须校验进程名：PID 会被系统复用，只按数字杀进程可能误伤别的程序。
+  /// 必须校验进程身份：PID 会被系统复用，只按数字杀进程可能误伤别的程序。
+  /// Windows 上用 `tasklist` 查进程名，Linux 上读 `/proc/<pid>`——同一条
+  /// 原则（确认是内核），两种实现。
   void _killStaleCore(File pidFile) {
     try {
       if (!pidFile.existsSync()) return;
@@ -682,21 +727,51 @@ class SingBoxRunner extends VpnCore {
       pidFile.deleteSync();
       if (pid == null || pid <= 0) return;
 
-      final probe = Process.runSync('tasklist', <String>[
-        '/FI',
-        'PID eq $pid',
-        '/NH',
-        '/FO',
-        'CSV',
-      ]);
-      if (!probe.stdout.toString().toLowerCase().contains('sing-box.exe')) {
-        return;
+      if (defaultTargetPlatform == TargetPlatform.windows) {
+        final probe = Process.runSync('tasklist', <String>[
+          '/FI',
+          'PID eq $pid',
+          '/NH',
+          '/FO',
+          'CSV',
+        ]);
+        if (!probe.stdout.toString().toLowerCase().contains('sing-box.exe')) {
+          return;
+        }
+        Process.runSync('taskkill', <String>['/F', '/PID', '$pid']);
+      } else {
+        // Linux：先确认 `/proc/<pid>` 指向的是随包内核，再杀。
+        // 不能用进程名匹配之外的信息——PID 复用会误伤用户机器上的其它程序。
+        if (!_isSingBoxProcess(pid)) return;
+        if (!Process.killPid(pid, ProcessSignal.sigkill)) return;
       }
-      Process.runSync('taskkill', <String>['/F', '/PID', '$pid']);
       listener.onError('已清理上次残留的内核进程（PID $pid）');
     } on Object {
       // 清理失败不阻断连接：端口若真被占用，内核启动时会自己报错。
     }
+  }
+
+  /// 读 `/proc/<pid>` 判断这是不是随包内核。
+  ///
+  /// 同时看 `comm`（内核维护的短名，稳定但会被截到 15 字符）与 `exe`
+  /// （指向真正的可执行文件）。任一能确认即可；都读不到时按「不是」处理，
+  /// 宁可不清理残留，也不杀错进程。
+  bool _isSingBoxProcess(int pid) {
+    String? comm;
+    String? exe;
+    try {
+      final commFile = File('/proc/$pid/comm');
+      if (commFile.existsSync()) comm = commFile.readAsStringSync();
+    } on Object {
+      comm = null;
+    }
+    try {
+      final exeLink = Link('/proc/$pid/exe');
+      exe = exeLink.targetSync();
+    } on Object {
+      exe = null;
+    }
+    return isSingBoxProcessIdentity(comm: comm, exePath: exe);
   }
 
   // ---------------------------------------------------------------- 日志
@@ -716,12 +791,30 @@ class SingBoxRunner extends VpnCore {
 /// 找不到内核文件时给用户的提示。
 ///
 /// 只报路径是不够的——用户看到一条自己机器上的路径，既不知道它为什么会不见，
-/// 也不知道能做什么。而这件事在真实环境里**最常见的原因是被杀毒软件隔离**：
-/// `sing-box.exe` 是代理内核，误报率很高。因此提示要把这个可能性与动作一起给出。
-String missingKernelMessage(String path) =>
-    '缺少内核文件 sing-box.exe——它可能被杀毒软件隔离或删除了。'
-    '请在杀毒软件的隔离区里恢复它并加入白名单，或重新安装 XVPN。'
-    '（应有位置：$path）';
+/// 也不知道能做什么。两个平台最常见的真实原因不同：Windows 上是杀毒软件把
+/// `sing-box.exe` 当成代理内核误报隔离；Linux 上更常见的是安装包不完整
+/// （内核没有被装到可执行文件旁边）。提示必须把这两种可能分开说。
+String missingKernelMessage(String path) {
+  if (defaultTargetPlatform == TargetPlatform.linux) {
+    return '缺少内核文件 sing-box——安装可能不完整，或它被安全软件删除了。'
+        '请重新安装 XVPN 以恢复该文件。'
+        '（应有位置：$path）';
+  }
+  return '缺少内核文件 sing-box.exe——它可能被杀毒软件隔离或删除了。'
+      '请在杀毒软件的隔离区里恢复它并加入白名单，或重新安装 XVPN。'
+      '（应有位置：$path）';
+}
+
+/// 判断进程身份是否为随包内核。
+///
+/// 抽成纯函数是为了能在 Windows 上测：真实分支要读 `/proc`，本机没有。
+/// [comm] 来自 `/proc/<pid>/comm`，[exePath] 来自 `/proc/<pid>/exe`。
+bool isSingBoxProcessIdentity({String? comm, String? exePath}) {
+  if ((comm ?? '').trim() == 'sing-box') return true;
+  final exe = (exePath ?? '').trim();
+  if (exe.isEmpty) return false;
+  return exe.split(RegExp(r'[\\/]')).last == 'sing-box';
+}
 
 /// 找不到规则库文件时给用户的提示。
 ///

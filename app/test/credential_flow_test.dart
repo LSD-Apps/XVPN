@@ -152,11 +152,12 @@ void main() {
     state.dispose();
   });
 
-  testWidgets('粘贴弹窗关闭时不会用到已释放的输入控制器', (WidgetTester tester) async {
+  testWidgets('手填表单关闭时不会用到已释放的输入控制器', (WidgetTester tester) async {
     // 这是一条回归测试，针对的是一类很容易复发的错误：`showDialog` 的 Future
     // 在**退场动画播完之前**就已经返回，如果那一刻就 dispose 掉 TextEditingController，
     // 动画里的 TextField 会用到已释放的对象并抛
     // 「A TextEditingController was used after being disposed」。
+    // 表单里的输入框比普通弹窗多得多，一旦漏 dispose 一个就必然触发。
     // 必须 pumpAndSettle 把退场动画走完才暴露得出来。
     final state = newState();
     await tester.pumpWidget(
@@ -166,8 +167,8 @@ void main() {
           builder: (BuildContext context) => Scaffold(
             body: Center(
               child: TextButton(
-                onPressed: () => startConfPasteDialog(context, state),
-                child: const Text('粘贴'),
+                onPressed: () => startManualConfigForm(context, state),
+                child: const Text('手动填写'),
               ),
             ),
           ),
@@ -175,13 +176,13 @@ void main() {
       ),
     );
 
-    await tester.tap(find.text('粘贴'));
+    await tester.tap(find.text('手动填写'));
     await tester.pumpAndSettle();
-    expect(find.text('粘贴 VPN 配置'), findsOneWidget);
+    expect(find.text('手动添加配置'), findsOneWidget);
 
     await tester.tap(find.text('取消'));
     await tester.pumpAndSettle();
-    expect(find.text('粘贴 VPN 配置'), findsNothing);
+    expect(find.text('手动添加配置'), findsNothing);
 
     await tester.pumpWidget(const SizedBox.shrink());
     state.dispose();

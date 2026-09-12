@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 
 import 'app_state.dart';
 import 'core/android_vpn_core.dart';
+import 'core/licenses.dart';
 import 'core/singbox_runner.dart';
 import 'core/store.dart';
 import 'core/system_proxy.dart';
@@ -25,6 +26,10 @@ import 'theme_controller.dart';
 /// 而配置必须在第一帧之前恢复好，否则界面会先闪一下空状态。
 Future<void> main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
+  // 把 LICENSE / NOTICE.md / THIRD-PARTY-NOTICES.md 注册进 LicenseRegistry，
+  // 设置页的「开源许可」界面才能读到它们。注册是惰性的，真正读文件发生在
+  // 用户打开该页面时。
+  registerBundledLicenses();
   // 接住原生推来的窗口最大化状态：标题栏的「最大化 / 还原」图标据此切换，
   // 而双击标题栏、Win+↑、贴边这些由系统直接处理的最大化，Dart 侧只有靠它才知道。
   await WindowControls.listen();
@@ -93,6 +98,12 @@ class _XvpnAppState extends State<XvpnApp> {
       TargetPlatform.windows => (VpnCoreListener listener) => SingBoxRunner(
         listener,
       ),
+      // Linux 与 Windows 走同一条路径：内核以子进程运行、只做系统代理接管。
+      // TUN 阶段尚未实现，因此不引入任何需要特权的东西（见
+      // core/singbox_config.dart 里的 InboundMode 说明）。
+      TargetPlatform.linux => (VpnCoreListener listener) => SingBoxRunner(
+        listener,
+      ),
       TargetPlatform.android => (VpnCoreListener listener) => AndroidVpnCore(
         listener,
       ),
@@ -112,8 +123,13 @@ class _XvpnAppState extends State<XvpnApp> {
   @override
   void initState() {
     super.initState();
+    // 幂等：main() 已调用过一次；这里再兜一次，保证以 XvpnApp 为入口的
+    // 测试/嵌入场景也能在许可页看到本项目许可，而不依赖具体启动路径。
+    registerBundledLicenses();
     // 上次若被强杀，系统代理可能还指着已经退出的内核，先恢复回去。
-    unawaited(const SystemProxy().recoverIfNeeded());
+    // Linux 侧严格只在**存在备份文件**时才动作（recoverIfNeeded 里判断），
+    // 因此没有备份的机器上不会去碰 gsettings。
+    unawaited(SystemProxy.forPlatform().recoverIfNeeded());
     _listenSharedConfig();
 
     // 启动参数里的配置优先导入（「双击配置文件打开」的场景）。
@@ -157,9 +173,13 @@ class _XvpnAppState extends State<XvpnApp> {
       final name = shared['name'] as String? ?? 'shared.conf';
       final text = shared['text'] as String?;
       if (text == null || text.isEmpty) return;
-      if (!mounted) return;
-      // 走与界面导入相同的收口点：需要账号密码时同样会弹表单。
-      await importConfWithPrompt(context, _state, text: text, fileName: name);
+      if (!mounted) {
+        // 没有可用页面时退化为直接导入：至少配置不会因为弹不出表单而丢掉。
+        importConfDirect(_state, text: text, fileName: name);
+        return;
+      }
+      // 与界面导入一致：先弹出确认表单，不静默导入。
+      await reviewAndImportConf(context, _state, text: text, fileName: name);
     } on Object catch (e) {
       _state.reportError('导入分享的配置失败：$e');
     }
@@ -177,8 +197,13 @@ class _XvpnAppState extends State<XvpnApp> {
       _state.reportError('无法读取 $path：$e');
       return;
     }
-    if (!mounted) return;
-    await importConfWithPrompt(
+    if (!mounted) {
+      // 启动瞬间还没有 Navigator：退化为直接导入，配置不会丢。
+      importConfDirect(_state, text: text, fileName: _basename(path));
+      return;
+    }
+    // 与界面导入一致：先弹出确认表单，不静默导入。
+    await reviewAndImportConf(
       context,
       _state,
       text: text,

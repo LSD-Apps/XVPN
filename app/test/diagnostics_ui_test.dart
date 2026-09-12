@@ -643,7 +643,7 @@ void main() {
     /// 原先它们散落在三处、权重也各不相同（一个大按钮 + 一行弱化文字链），
     /// 因此这里既断言「都在」，也断言「排布关系」。
     const fileTitle = '选择配置文件';
-    const pasteTitle = '粘贴配置文本';
+    const manualTitle = '手动填写';
 
     testWidgets('桌面端：有配置时两条路径同在一张卡里，并排', (WidgetTester tester) async {
       final state = AppState();
@@ -655,12 +655,12 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.text(fileTitle), findsOneWidget);
-      expect(find.text(pasteTitle), findsOneWidget);
+      expect(find.text(manualTitle), findsOneWidget);
       // 并排：两者的垂直中心基本一致。
       final fileY = tester.getCenter(find.text(fileTitle)).dy;
-      final pasteY = tester.getCenter(find.text(pasteTitle)).dy;
+      final manualY = tester.getCenter(find.text(manualTitle)).dy;
       expect(
-        (fileY - pasteY).abs(),
+        (fileY - manualY).abs(),
         lessThan(4),
         reason: '宽屏下两条路径应并排在一行，而不是上下割裂',
       );
@@ -684,7 +684,7 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.text(fileTitle), findsOneWidget);
-      expect(find.text(pasteTitle), findsOneWidget);
+      expect(find.text(manualTitle), findsOneWidget);
       expect(find.byType(ImportActionTile), findsNWidgets(2));
 
       await _stop(tester, state);
@@ -707,10 +707,10 @@ void main() {
       }
 
       expect(find.text(fileTitle), findsOneWidget);
-      expect(find.text(pasteTitle), findsOneWidget);
-      // 窄屏竖排：粘贴入口在选文件入口下方。
+      expect(find.text(manualTitle), findsOneWidget);
+      // 窄屏竖排：手填入口在选文件入口下方。
       expect(
-        tester.getTopLeft(find.text(pasteTitle)).dy,
+        tester.getTopLeft(find.text(manualTitle)).dy,
         greaterThan(tester.getTopLeft(find.text(fileTitle)).dy),
         reason: '窄屏下应竖排，避免说明被压成多行',
       );
@@ -719,18 +719,18 @@ void main() {
       await _stop(tester, state);
     });
 
-    testWidgets('粘贴入口确实打开粘贴对话框', (WidgetTester tester) async {
-      // 光有入口不够，要确认它接的是粘贴流程而不是被画成了装饰。
+    testWidgets('手动填写入口确实打开手填表单', (WidgetTester tester) async {
+      // 光有入口不够，要确认它接的是手填流程而不是被画成了装饰。
       final state = AppState();
       addTearDown(state.dispose);
       await _pump(tester, state, size: const Size(1400, 900));
 
       await tester.tap(find.text('配置文件'));
       await tester.pumpAndSettle();
-      await tester.tap(find.text(pasteTitle));
+      await tester.tap(find.text(manualTitle));
       await tester.pumpAndSettle();
 
-      expect(find.text('粘贴 VPN 配置'), findsOneWidget);
+      expect(find.text('手动添加配置'), findsOneWidget);
 
       await tester.tap(find.widgetWithText(XvButton, '取消'));
       await tester.pumpAndSettle();
@@ -750,7 +750,7 @@ void main() {
 
       expect(find.text('还没有导入任何配置'), findsOneWidget);
       expect(find.text(fileTitle), findsOneWidget, reason: '空状态下入口不应消失');
-      expect(find.text(pasteTitle), findsOneWidget);
+      expect(find.text(manualTitle), findsOneWidget);
 
       await _stop(tester, state);
     });

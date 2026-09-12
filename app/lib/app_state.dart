@@ -933,13 +933,30 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
   ///
   /// 之前这里只是把显示的日期改成「今天」，并没有真的下载——属于误导性实现。
   /// 现在真的去拉取 `.srs` 并覆盖本地副本，失败时明确报错而不是假装成功。
+  ///
+  /// 目标目录**由内核决定**（[VpnCore.ruleSetUpdateDir]）：必须是内核真正读取
+  /// 规则库的那一个。安卓端此前写死在桌面端的路径规则上，结果更新落进一个
+  /// 临时目录，界面说成功、内核照旧用旧规则——用户被明确告知了一件没发生的事。
   Future<void> refreshRuleSet() async {
-    final outcome = await RuleSetStore.update();
-    if (outcome.succeeded) {
-      _ruleSetUpdatedAt = outcome.updatedAt ?? DateTime.now();
-      _lastError = null;
-    } else {
-      _lastError = outcome.message;
+    try {
+      final target = await _core.ruleSetUpdateDir();
+      if (target == null) {
+        _lastError = '当前内核不维护可更新的规则库';
+        notifyListeners();
+        return;
+      }
+      final outcome = await RuleSetStore.update(targetDir: target);
+      if (outcome.succeeded) {
+        _ruleSetUpdatedAt = outcome.updatedAt ?? DateTime.now();
+        _lastError = null;
+      } else {
+        _lastError = outcome.message;
+      }
+    } on Object catch (e) {
+      // 解析目标目录本身就可能失败（安卓端解包需要原生通道与 APK 资源）。
+      // 那是「更新没能完成」的又一种形态，必须变成用户看得见的结论，而不是
+      // 一个没人处理的异步异常——按钮点了没反应，用户只会以为程序卡住了。
+      _lastError = '更新规则库失败：$e';
     }
     notifyListeners();
   }

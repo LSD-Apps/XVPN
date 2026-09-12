@@ -1,6 +1,9 @@
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
+
+import 'platform_paths.dart';
 
 /// 规则库的落盘与更新。
 ///
@@ -29,22 +32,34 @@ class RuleSetStore {
   /// `.srs` 二进制格式的魔数。校验它就能挡住把 HTML 错误页当成规则库写盘。
   static const List<int> srsMagic = <int>[0x53, 0x52, 0x53]; // "SRS"
 
-  /// 可写规则库目录：`%LOCALAPPDATA%\XVPN\rulesets`。
+  /// 可写规则库目录：Windows 为 `%LOCALAPPDATA%\XVPN\rulesets`，
+  /// Linux 为 `$XDG_DATA_HOME/XVPN/rulesets`。
+  ///
+  /// 与 [AppStore.defaultDesktopDir] 共用同一份解析，避免两处各拼一遍后分叉。
   static Directory writableDir() {
-    final base =
-        Platform.environment['LOCALAPPDATA'] ??
-        Platform.environment['APPDATA'] ??
-        Directory.systemTemp.path;
-    return Directory(
-      '$base${Platform.pathSeparator}XVPN${Platform.pathSeparator}rulesets',
-    );
+    final dataDir = resolveDesktopPaths(
+      platform: defaultTargetPlatform,
+      environment: Platform.environment,
+    ).dataDir;
+    return Directory('${dataDir.path}${Platform.pathSeparator}rulesets');
   }
+
+  /// 规则库的最终落盘目录：显式传入时以它为准，否则用桌面端的可写目录。
+  ///
+  /// 单独抽成一个函数，是因为这个决定现在有**两个**调用方：内核启动时的
+  /// [ensure] 与「检查更新」的 [update]。两者必须落在同一个目录——曾经安卓端
+  /// 的更新写到一个内核根本不读的临时目录，界面报告成功、内核却一直用旧规则，
+  /// 用户被明确告知「已经更新」而事实并非如此。把解析收在一处，就没有第二次
+  /// 分叉的机会。
+  static Directory resolveTargetDir({Directory? targetDir}) =>
+      targetDir ?? writableDir();
 
   /// 确保可写目录里有可用的规则库，缺失时从出厂副本复制。
   ///
-  /// 返回可直接交给内核的目录。
-  static Directory ensure(Directory bundledDir) {
-    final target = writableDir();
+  /// 返回可直接交给内核的目录。[targetDir] 为 null 时用 [writableDir]；
+  /// 安卓端把解包目录显式传进来，避免它再去猜桌面端的路径规则。
+  static Directory ensure(Directory bundledDir, {Directory? targetDir}) {
+    final target = resolveTargetDir(targetDir: targetDir);
     target.createSync(recursive: true);
     for (final name in sources.keys) {
       final dest = File('${target.path}${Platform.pathSeparator}$name');
@@ -61,8 +76,11 @@ class RuleSetStore {
   ///
   /// 先下载到临时文件并校验魔数，全部成功后才覆盖正式文件——
   /// 避免下载中断留下半个文件，导致内核直接起不来。
-  static Future<RuleSetUpdateOutcome> update() async {
-    final target = writableDir();
+  ///
+  /// [targetDir] 必须是**内核真正读取**的那个目录；为 null 时退回桌面端的
+  /// [writableDir]。安卓端由内核的 `ruleSetUpdateDir` 传入解包目录。
+  static Future<RuleSetUpdateOutcome> update({Directory? targetDir}) async {
+    final target = resolveTargetDir(targetDir: targetDir);
     target.createSync(recursive: true);
 
     final downloaded = <String, List<int>>{};

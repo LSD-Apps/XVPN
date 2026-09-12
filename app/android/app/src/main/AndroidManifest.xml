@@ -6,6 +6,10 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <uses-permission android:name="android.permission.INTERNET"/>
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
+    <!-- 自动更新：把下载好的 APK 交给系统安装器。Android 8.0 起该能力
+         按「安装未知应用」由用户在系统设置里逐个应用授予，声明了也仍要
+         检查并引导，见 MainActivity.installApk。 -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>
 
     <application
         android:label="XVPN"
@@ -70,6 +74,21 @@
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="vpn_tunnel"/>
         </service>
+        <!-- 自动更新：把下载好的 APK 交给系统安装器。
+             Android 7 起跨进程共享 file:// URI 会抛 FileUriExposedException，
+             必须经 FileProvider 换成 content:// 并显式授权一次读取。
+             authority 用 ${applicationId}.fileprovider：debug 构建的
+             applicationId 带 .dev 后缀，用字面量会与 Kotlin 侧的
+             "$packageName.fileprovider" 对不上。 -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
     </application>
     <!-- Required to query activities that can process text, see:
          https://developer.android.com/training/package-visibility and

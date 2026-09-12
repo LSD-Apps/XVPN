@@ -58,8 +58,13 @@ class ProfilesScreen extends StatelessWidget {
                   itemBuilder: (BuildContext context, int i) => _ProfileCard(
                     profile: state.profiles[i],
                     isActive: state.profiles[i].id == state.activeProfile?.id,
+                    hasCredentials: state.profileHasCredentials(
+                      state.profiles[i].id,
+                    ),
                     onActivate: () =>
                         state.setActiveProfile(state.profiles[i].id),
+                    onEditCredentials: () =>
+                        _promptCredentials(context, state.profiles[i]),
                     onRemove: () => state.removeProfile(state.profiles[i].id),
                   ),
                 )
@@ -138,7 +143,10 @@ class ProfilesScreen extends StatelessWidget {
                     RouteTag.green('当前')
                   else
                     TapAction(
-                      label: '切换',
+                      // 与桌面端卡片统一叫法：都叫「设为当前」。此前移动端写
+                      // 「切换」、桌面端写「设为当前」，同一个动作两种说法，
+                      // 本项目把这种分叉当作缺陷处理。
+                      label: '设为当前',
                       onTap: () => state.setActiveProfile(p.id),
                     ),
                   // 删除入口：桌面端在配置卡片上有「删除」按钮，移动端此前完全没有，
@@ -240,16 +248,15 @@ class ProfilesScreen extends StatelessWidget {
   }
 }
 
-/// 导入卡片：把「选文件」与「粘贴文本」两条路径固定放在一起。
+/// 导入卡片：把「选文件」与「手动填写」两条路径固定放在一起。
 ///
 /// 设计意图（针对原来「布局割裂」的问题）：
 ///
 ///   * **同一个位置、同一个分量**。两条路径从「页面右上角按钮 + 空状态按钮 +
 ///     卡片底部两行文字链」收敛成一张卡里的两个同规格入口，位置不再随
 ///     「有没有配置」变化，用户不用重新找。
-///   * **权重有主次但规格一致**。选文件是主路径（品牌绿描边），粘贴是备选
+///   * **权重有主次但规格一致**。选文件是主路径（品牌绿描边），手动填写是备选
 ///     （中性描边），二者结构相同：图标 + 标题 + 一句说明，整块可点。
-///     原来粘贴只是一行弱化文字，与那个大按钮的观感完全不在一个层次上。
 ///   * **说明写在入口里**。每条路径各自讲清楚「什么时候该用它」，
 ///     而不是在卡片底部堆一段通用提示。
 ///
@@ -274,11 +281,11 @@ class _ImportCard extends StatelessWidget {
           primary: true,
           onTap: () => pickAndImportConf(context, state),
         );
-        final pasteTile = ImportActionTile(
-          icon: Icons.content_paste_outlined,
-          title: '粘贴配置文本',
-          description: '把配置文件的内容整段贴进来',
-          onTap: () => startConfPasteDialog(context, state),
+        final manualTile = ImportActionTile(
+          icon: Icons.edit_outlined,
+          title: '手动填写',
+          description: '从零填写 WireGuard、OpenVPN 或 Hysteria2 参数',
+          onTap: () => startManualConfigForm(context, state),
         );
 
         // 窄屏并排会把「说明」压成两行以上，反而更乱，因此竖排。
@@ -288,7 +295,7 @@ class _ImportCard extends StatelessWidget {
             constraints.maxWidth < minTileWidth * 2 + 10) {
           return Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: <Widget>[fileTile, const SizedBox(height: 10), pasteTile],
+            children: <Widget>[fileTile, const SizedBox(height: 10), manualTile],
           );
         }
         // 横向并排时**不能**用 CrossAxisAlignment.stretch：卡片在移动端设置页里
@@ -300,7 +307,7 @@ class _ImportCard extends StatelessWidget {
           children: <Widget>[
             Expanded(child: fileTile),
             const SizedBox(width: 10),
-            Expanded(child: pasteTile),
+            Expanded(child: manualTile),
           ],
         );
       },
@@ -330,13 +337,27 @@ class _ProfileCard extends StatelessWidget {
   const _ProfileCard({
     required this.profile,
     required this.isActive,
+    required this.hasCredentials,
     required this.onActivate,
+    required this.onEditCredentials,
     required this.onRemove,
   });
 
   final VpnProfile profile;
   final bool isActive;
+
+  /// 这份配置是否已经保存了账号密码。
+  ///
+  /// 与 `AppState.profileHasCredentials` 同义。桌面卡片此前完全没有凭据入口，
+  /// 用户在导入对话框里选了「稍后填写」之后就卡住了——OpenVPN 根本无法使用，
+  /// 唯一的绕法是重新导入一遍。移动端一直有这两个入口，桌面端缺失属于功能缺口。
+  final bool hasCredentials;
+
   final VoidCallback onActivate;
+
+  /// 补填或修改账号密码。两个状态共用这一个动作。
+  final VoidCallback onEditCredentials;
+
   final VoidCallback onRemove;
 
   @override
@@ -389,6 +410,19 @@ class _ProfileCard extends StatelessWidget {
           const SizedBox(width: 16),
           Row(
             children: <Widget>[
+              // 需要账号密码的配置（OpenVPN 的 auth-user-pass）与移动端一样有
+              // 两种状态：还没填（红色标签 + 「填写」）和已经填好（只留「改密码」）。
+              // 导入对话框里那句「不填也可以先添加，之后在「配置」页补填」承诺的
+              // 就是这个入口——承诺了却没有入口，用户就只能重新导入。
+              if (profile.parsed.requiresCredentials && !hasCredentials) ...<Widget>[
+                RouteTag.warn('缺账号密码'),
+                const SizedBox(width: 8),
+                XvButton(label: '填写', onPressed: onEditCredentials),
+                const SizedBox(width: 8),
+              ] else if (profile.parsed.requiresCredentials) ...<Widget>[
+                XvButton(label: '改密码', onPressed: onEditCredentials),
+                const SizedBox(width: 8),
+              ],
               if (!isActive) ...<Widget>[
                 XvButton(label: '设为当前', onPressed: onActivate),
                 const SizedBox(width: 8),

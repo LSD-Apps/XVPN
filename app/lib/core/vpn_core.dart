@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:math';
 
 import '../models.dart';
@@ -10,6 +11,7 @@ import 'core_monitor.dart';
 import 'dns_monitor.dart';
 import 'kernel_log.dart';
 import 'mtu_probe.dart';
+import 'rulesets.dart';
 import 'singbox_config.dart';
 import 'startup_self_check.dart';
 import 'tunnel_health.dart';
@@ -103,7 +105,8 @@ abstract class VpnCoreListener {
 /// 隧道内核抽象。
 ///
 /// 两个真实实现：
-///   * Windows：[SingBoxRunner] 以子进程方式启动随附的 sing-box.exe，并接管系统代理；
+///   * Windows / Linux：[SingBoxRunner] 以子进程方式启动随附的内核
+///     （`sing-box.exe` / `sing-box`），并接管系统代理；
 ///   * Android：[AndroidVpnCore] 通过 MethodChannel 调用 libbox，配合 VpnService 建立 TUN。
 ///
 /// 两者的观测逻辑共用 [CoreMonitor]，因此统计口径完全一致。
@@ -190,6 +193,16 @@ abstract class VpnCore {
   /// 换一个，界面若照旧显示 2080 就是在告诉用户一个错地址——而那一行恰恰是
   /// 「代理配到哪」的唯一说明。
   String? get takeOverEndpoint => null;
+
+  /// 「检查更新」应当写入的目录——必须是内核**真正读取**规则库的那一个。
+  ///
+  /// 接口放在内核上而不是让界面直接调 `RuleSetStore.writableDir`：后者只知道
+  /// 桌面端的路径规则（`%LOCALAPPDATA%` / `$XDG_DATA_HOME`）。安卓端的内核读的
+  /// 是 APK 资源解包后的应用私有目录，更新若按桌面端那套路径写下去，界面会报告
+  /// 成功、内核却永远用旧规则——这正是本轮要修掉的那条误导。
+  ///
+  /// 返回 null 表示本实现不维护可更新的规则库（例如演示内核）。
+  Future<Directory?> ruleSetUpdateDir() async => RuleSetStore.writableDir();
 
   CoreMonitor _createMonitor() => CoreMonitor(monitorHooks());
 
@@ -285,6 +298,14 @@ class DemoVpnCore extends VpnCore {
   @override
   String get takeOverEndpoint =>
       '127.0.0.1:${SingBoxConfigBuilder.defaultMixedPort}';
+
+  /// 演示内核不维护规则库：它没有任何真实分流，「检查更新」在这里无从谈起。
+  ///
+  /// 显式返回 null 而不是继承基类默认的桌面端目录：否则界面上的「检查更新」
+  /// 会在演示内核下真的往 `%LOCALAPPDATA%\XVPN` 写东西，而那个目录与演示内核
+  /// 毫无关系——正是本轮要消掉的那种「做了但没意义」的假动作。
+  @override
+  Future<Directory?> ruleSetUpdateDir() async => null;
 
   /// 演示内核不参与自动纠正：它没有真实的连接失败，也就没有可学的证据。
   ///

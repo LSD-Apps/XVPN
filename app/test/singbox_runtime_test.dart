@@ -9,6 +9,7 @@ import 'package:xvpn/core/singbox_config.dart';
 import 'package:xvpn/models.dart';
 import 'package:xvpn/protocols/protocol_adapter.dart';
 
+import 'support/host_platform.dart';
 import 'support/recording_listener.dart';
 
 /// 用**真实内核**跑一遍生成的配置，并让流量真的穿过去。
@@ -76,7 +77,7 @@ class _Runtime {
 }
 
 void main() {
-  final exe = File('assets/bin/sing-box.exe');
+  final exe = hostCoreBinary;
   final rulesets = Directory('assets/rulesets');
   final skipReason = !exe.existsSync()
       ? '未找到 ${exe.path}，跳过运行时校验'

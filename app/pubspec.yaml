@@ -40,6 +40,7 @@ dependencies:
   # 用于 Windows DPAPI：把配置里的账号密码用当前 Windows 账户的密钥加密后再落盘。
   # 它本来就是 flutter_test 的传递依赖，这里显式声明是因为源码里直接 import 它。
   ffi: ^2.2.0
+  url_launcher: ^6.3.2
 
 dev_dependencies:
   flutter_test:
@@ -71,6 +72,12 @@ flutter:
   assets:
     # 品牌标识：界面里只出现在桌面端标题栏
     - assets/vpn.png
+    # 许可与第三方声明：随包分发，供应用内「开源许可」界面读取。
+    # 这里的三个文件是仓库根 LICENSE / NOTICE.md / THIRD-PARTY-NOTICES.md 的
+    # 副本——Flutter 无法声明包目录之外的 asset，因此必须复制进来。为防止副本
+    # 静默过期，test/legal_assets_test.dart 会断言它们与根文件逐字节相等；
+    # CI 的 prepare 任务也会重新复制并断言 git 无差异。
+    - assets/legal/
     # 分流规则集：随包分发，用户无需任何配置。
     # 目录里除 .srs 之外还有 cn-ip.bin：中国 IP 前缀索引，
     # 供 DNS 交叉校验判断「解析出的地址是不是国内的」，由

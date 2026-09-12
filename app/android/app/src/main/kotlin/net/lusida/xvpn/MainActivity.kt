@@ -1,9 +1,13 @@
-package com.xvpn.xvpn
+package net.lusida.xvpn
 
 import android.app.Activity
 import android.content.Intent
+import android.net.Uri
 import android.net.VpnService
+import android.os.Build
+import android.provider.Settings
 import android.util.Log
+import androidx.core.content.FileProvider
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -79,6 +83,9 @@ class MainActivity : FlutterActivity() {
                         "error" to XvpnVpnService.lastError,
                     ),
                 )
+                // 自动更新：Dart 侧已下载并校验过 SHA-256，这里只负责把它
+                // 交给系统安装器。真正的安装动作由系统界面完成，应用无法静默安装。
+                "installApk" -> installApk(call.argument<String>("path").orEmpty(), result)
                 else -> result.notImplemented()
             }
         }
@@ -172,6 +179,68 @@ class MainActivity : FlutterActivity() {
             startActivityForResult(intent, REQUEST_VPN_PERMISSION)
         } catch (e: Throwable) {
             pendingPermissionResult = null
+            result.error("launch_failed", e.message, null)
+        }
+    }
+
+    /**
+     * 把已下载并校验过的 APK 交给系统安装器。
+     *
+     * Dart 侧不直接把文件路径丢进 Intent：从 Android 7 (N) 起，跨进程传递
+     * `file://` URI 会抛 FileUriExposedException，必须经 FileProvider 换成
+     * `content://` 并显式授予一次读取权限（见 AndroidManifest 里的 provider
+     * 与 res/xml/file_paths.xml）。
+     *
+     * 返回的 status：
+     *   * `launched`            —— 已拉起系统安装界面（用户仍需在那里确认）；
+     *   * `permission_required` —— 本应用还没有「安装未知应用」的权限，已把
+     *                              用户送到系统设置页，授权后返回重试即可。
+     */
+    private fun installApk(path: String, result: MethodChannel.Result) {
+        if (path.isBlank()) {
+            result.error("bad_argument", "缺少 APK 路径", null)
+            return
+        }
+        // Android 8.0 起「安装未知应用」是按应用授予的，checkSelfPermission
+        // 那套对特殊权限不适用，必须用 canRequestPackageInstalls() 判断。
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+            !packageManager.canRequestPackageInstalls()
+        ) {
+            try {
+                startActivity(
+                    Intent(
+                        Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                        Uri.parse("package:$packageName"),
+                    ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                )
+                result.success(mapOf("status" to "permission_required"))
+            } catch (e: Throwable) {
+                // 有些精简系统没有这个设置页：如实报错，让 Dart 侧提示手动安装，
+                // 而不是让用户对着一个点了没反应的按钮。
+                Log.e(TAG, "打开「安装未知应用」设置页失败", e)
+                result.error("settings_unavailable", e.message, null)
+            }
+            return
+        }
+
+        val file = File(path)
+        if (!file.isFile) {
+            result.error("missing_apk", "APK 不存在：$path", null)
+            return
+        }
+        try {
+            // authority 必须与 AndroidManifest 里的 ${applicationId}.fileprovider
+            // 一致；packageName 在 debug 构建里带 .dev 后缀，两边同样成立。
+            val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
+            val intent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, "application/vnd.android.package-archive")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            startActivity(intent)
+            result.success(mapOf("status" to "launched"))
+        } catch (e: Throwable) {
+            Log.e(TAG, "启动系统安装器失败：$path", e)
             result.error("launch_failed", e.message, null)
         }
     }

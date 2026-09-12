@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 自动更新的 APK 暂存位置。
+     更新器把 APK 写到 cache/updates/<附件名>，路径来自
+     core/updater.dart 的 defaultUpdateStagingDir（安卓分支在
+     Directory.systemTemp 之下拼 "updates"）。两处必须保持一致：
+     路径对不上时 FileProvider.getUriForFile 会抛 IllegalArgumentException，
+     系统安装器界面根本打不开。 -->
+<paths>
+    <cache-path name="updates" path="updates/" />
+</paths>

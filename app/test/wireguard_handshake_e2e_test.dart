@@ -9,6 +9,8 @@ import 'package:xvpn/core/wireguard_handshake.dart';
 import 'package:xvpn/models.dart';
 import 'package:xvpn/protocols/protocol_adapter.dart';
 
+import 'support/host_platform.dart';
+
 /// 用**随包分发的真实内核**跑通「握手日志 → 解析出结论」的完整链路。
 ///
 /// 这条用例补的是一个此前只有单测覆盖、真实链路却断掉的缺口：
@@ -34,7 +36,7 @@ PersistentKeepalive = 1
 ''';
 
 void main() {
-  final exe = File('assets/bin/sing-box.exe');
+  final exe = hostCoreBinary;
   final rulesets = Directory('assets/rulesets');
   final skipReason = !exe.existsSync()
       ? '未找到 ${exe.path}，跳过真实内核用例'

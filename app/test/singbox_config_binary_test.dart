@@ -5,6 +5,8 @@ import 'package:xvpn/core/singbox_config.dart';
 import 'package:xvpn/models.dart';
 import 'package:xvpn/protocols/protocol_adapter.dart';
 
+import 'support/host_platform.dart';
+
 /// 用**随包分发的真实内核**校验生成的配置。
 ///
 /// 这是一条与其它测试都不同的防线：其余测试断言的是「配置长什么样」，
@@ -51,7 +53,7 @@ const _hysteria2Link =
     '&hop-interval=30&up=100&down=300#%E6%B5%8B%E8%AF%95%E8%8A%82%E7%82%B9';
 
 void main() {
-  final exe = File('assets/bin/sing-box.exe');
+  final exe = hostCoreBinary;
   final rulesets = Directory('assets/rulesets');
 
   /// 内核或规则集缺失时跳过，而不是失败。

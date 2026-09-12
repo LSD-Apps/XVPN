@@ -6,6 +6,7 @@ import 'package:xvpn/core/singbox_runner.dart';
 import 'package:xvpn/models.dart';
 import 'package:xvpn/protocols/protocol_adapter.dart';
 
+import 'support/host_platform.dart';
 import 'support/recording_listener.dart';
 
 /// 用**真实的随包内核**跑一遍完整的 connect / disconnect。
@@ -36,7 +37,7 @@ AllowedIPs = 0.0.0.0/0, ::/0
 ''';
 
 void main() {
-  final exe = File('assets/bin/sing-box.exe').absolute;
+  final exe = hostCoreBinary;
   final assets = Directory('assets/rulesets').absolute;
   final skipReason = !exe.existsSync()
       ? '未找到 ${exe.path}，跳过完整连接路径验证'
@@ -98,14 +99,7 @@ void main() {
       final pidFile = File('${workDir.path}${Platform.pathSeparator}core.pid');
       expect(pidFile.existsSync(), isTrue, reason: '内核没有留下 PID 文件，说明它没被拉起来');
       final pid = int.parse(pidFile.readAsStringSync().trim());
-      final alive = Process.runSync('tasklist', <String>[
-        '/FI',
-        'PID eq $pid',
-        '/NH',
-        '/FO',
-        'CSV',
-      ]).stdout.toString().toLowerCase();
-      expect(alive, contains('sing-box.exe'), reason: 'PID $pid 不是活着的内核');
+      expect(isCoreProcessAlive(pid), isTrue, reason: 'PID $pid 不是活着的内核');
 
       // 3) 配置写在了工作目录里，而且内核**真的在按它提供服务**。
       final configFile = File(
@@ -139,15 +133,8 @@ void main() {
       expect(recorder.statuses.last, VpnStatus.disconnected);
       expect(pidFile.existsSync(), isFalse, reason: '断开后 PID 文件应当被删掉');
 
-      final stillAlive = Process.runSync('tasklist', <String>[
-        '/FI',
-        'PID eq $pid',
-        '/NH',
-        '/FO',
-        'CSV',
-      ]).stdout.toString().toLowerCase();
       expect(
-        stillAlive.contains('sing-box.exe'),
+        isCoreProcessAlive(pid),
         isFalse,
         reason: '断开之后内核进程还在——它会一直占着端口，下一次连接只能被迫换端口',
       );
@@ -182,10 +169,13 @@ void main() {
       const AppSettings(autoConnectOnImport: false),
     );
 
-    // 提示必须包含「怎么解决」，而不只是把路径抛给用户：
-    // sing-box.exe 被杀毒软件隔离是这件事最常见的真实原因。
+    // 提示必须包含「怎么解决」，而不只是把路径抛给用户。两个平台最常见的
+    // 真实原因不同：Windows 是杀毒软件把内核隔离，Linux 是安装包不完整。
     expect(recorder.errors.single, contains('缺少内核文件'));
-    expect(recorder.errors.single, contains('杀毒软件'));
+    expect(
+      recorder.errors.single,
+      contains(Platform.isWindows ? '杀毒软件' : '重新安装'),
+    );
     expect(recorder.statuses.last, VpnStatus.disconnected);
   });
 

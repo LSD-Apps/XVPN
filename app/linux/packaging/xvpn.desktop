@@ -1,0 +1,23 @@
+[Desktop Entry]
+Type=Application
+Name=XVPN
+GenericName=VPN Client
+Comment=零配置智能分流 VPN 客户端
+Comment[en]=Zero-config split-tunnel VPN client
+Exec=xvpn %U
+Icon=xvpn
+Terminal=false
+Categories=Network;
+StartupNotify=true
+# Wayland 靠它把窗口与这个 .desktop 关联起来，任务栏才能显示正确图标。
+# 取值必须与 linux/runner/CMakeLists.txt 里的 APPLICATION_ID 一致。
+#
+# 打包注意：GNOME/Wayland 是按**文件名**（去掉 .desktop）匹配应用 id 的，
+# 因此安装时应把本文件落成 `com.lsdapps.xvpn.desktop`；`xvpn.desktop` 只是
+# 仓库里的可读名。StartupWMClass 覆盖 X11 那套按 WM_CLASS 的匹配。
+StartupWMClass=com.lsdapps.xvpn
+# 只登记本项目特有的配置类型。**刻意不写 text/plain、application/json**：
+# 那会把机器上所有 .json / .txt 的默认打开方式改成 XVPN，而 XVPN 只认
+# 内容里含 VPN 配置的文件。完整文件关联需要 shared-mime-info 定义，
+# 属于打包（deb/AppImage）范围，本轮不做。
+MimeType=application/x-wireguard-profile;application/x-openvpn-profile;

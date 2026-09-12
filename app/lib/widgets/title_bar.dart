@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../app_state.dart';
+import '../core/links.dart';
 import '../core/window_controls.dart';
 import '../format.dart';
 import '../theme.dart';
@@ -16,10 +17,21 @@ import 'common.dart';
 /// 拖动与窗口按钮都通过 [WindowControls] 交回原生实现：客户区覆盖整个窗口后，
 /// 系统不会再自动处理标题栏拖动。
 class XvTitleBar extends StatelessWidget {
-  const XvTitleBar({super.key, required this.theme, required this.state});
+  const XvTitleBar({
+    super.key,
+    required this.theme,
+    required this.state,
+    this.openExternalUrl = launchInBrowser,
+  });
 
   final ThemeController theme;
   final AppState state;
+
+  /// 打开外部链接的实现。
+  ///
+  /// 默认是真实的系统浏览器；测试注入替身来断言「点了哪个地址」——
+  /// 测试环境里没有浏览器，真调用只会失败，无法验证行为。
+  final ExternalUrlLauncher openExternalUrl;
 
   @override
   Widget build(BuildContext context) {
@@ -32,8 +44,11 @@ class XvTitleBar extends StatelessWidget {
       child: Row(
         children: <Widget>[
           // 左侧整片空白都是拖动区，双击可最大化 / 还原。
+          // Wayland 下原生保留装饰且不保证可编程拖动，这里会自动只渲染品牌、
+          // 不装拖动监听器（见 _DragRegion.enabled）。
           Expanded(
             child: _DragRegion(
+              enabled: WindowControls.supported,
               child: Padding(
                 padding: const EdgeInsets.only(left: 16),
                 child: _Brand(),
@@ -43,6 +58,10 @@ class XvTitleBar extends StatelessWidget {
           _ConnectionTimer(state: state),
           const SizedBox(width: 10),
           _ThemeButton(theme: theme),
+          const SizedBox(width: 4),
+          // GitHub 入口排在主题按钮之后、分割线之前：分割线右侧是窗口按钮，
+          // 左侧是应用自身的功能。放在这里既贴近主题按钮，又不会被当成窗口控制。
+          _GitHubButton(open: openExternalUrl),
           const SizedBox(width: 4),
           Container(width: 1, height: 20, color: XV.line),
           const SizedBox(width: 4),
@@ -88,21 +107,28 @@ class _ConnectionTimer extends StatelessWidget {
   }
 }
 
-/// 拖动区：按下即把拖动交回系统（ReleaseCapture + WM_NCLBUTTONDOWN）。
+/// 拖动区：按下即把拖动交回系统（Windows：ReleaseCapture + WM_NCLBUTTONDOWN；
+/// Linux X11：gtk_window_begin_move_drag）。
 class _DragRegion extends StatelessWidget {
-  const _DragRegion({required this.child});
+  const _DragRegion({required this.child, this.enabled = true});
 
   final Widget child;
 
+  /// 是否把按下事件交回原生去拖动窗口。
+  ///
+  /// Wayland 下原生保留装饰、且不保证可编程拖动，[WindowControls.supported]
+  /// 为 false，此时只渲染内容、不装监听器——否则用户会按到一片没有任何反应
+  /// 的区域，看起来像界面卡死。
+  final bool enabled;
+
   @override
   Widget build(BuildContext context) {
+    final content = Align(alignment: Alignment.centerLeft, child: child);
+    if (!enabled) return content;
     return Listener(
       behavior: HitTestBehavior.opaque,
       onPointerDown: (_) => WindowControls.startDragging(),
-      child: MouseRegion(
-        cursor: SystemMouseCursors.basic,
-        child: Align(alignment: Alignment.centerLeft, child: child),
-      ),
+      child: MouseRegion(cursor: SystemMouseCursors.basic, child: content),
     );
   }
 }
@@ -158,6 +184,85 @@ class _ThemeButtonState extends State<_ThemeButton> {
                 ),
               ],
             ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 开源仓库入口：在系统默认浏览器里打开 GitHub 仓库。
+///
+/// Material Icons 没有官方 GitHub 标识，这里用通用的 [Icons.code] 表达
+/// 「开放源码」；具体地址由 tooltip 说明。样式与 [_ThemeButton] 保持一致：
+/// 纯图标、悬停底色、同一个圆角，看起来像标题栏原生的一部分。
+class _GitHubButton extends StatefulWidget {
+  const _GitHubButton({required this.open});
+
+  /// 打开链接的实现，由 [XvTitleBar] 注入。
+  final ExternalUrlLauncher open;
+
+  @override
+  State<_GitHubButton> createState() => _GitHubButtonState();
+}
+
+class _GitHubButtonState extends State<_GitHubButton> {
+  bool _hover = false;
+
+  /// 打开仓库页面。
+  ///
+  /// 这个按钮只是便利入口，失败绝不能把异常甩到界面上：捕获后提示一句，
+  /// 用户仍能自己复制 tooltip 里的地址访问。异步返回前先取 messenger，
+  /// 避免跨 await 使用 context。
+  Future<void> _open() async {
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    bool opened;
+    try {
+      opened = await widget.open(Uri.parse(kRepoUrl));
+    } on Object catch (error) {
+      // 平台通道缺失、系统没有默认浏览器……都归为「没打开」。
+      debugPrint('打开仓库链接失败：$error');
+      opened = false;
+    }
+    if (opened || !mounted) return;
+    messenger?.showSnackBar(
+      SnackBar(
+        content: Text(
+          '无法打开浏览器，请手动访问 $kRepoUrl',
+          style: TextStyle(fontSize: 12.5, color: XV.text),
+        ),
+        backgroundColor: XV.panel3,
+        behavior: SnackBarBehavior.floating,
+        margin: const EdgeInsets.all(16),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(XV.rCtl),
+          side: BorderSide(color: XV.red.withValues(alpha: 0.35)),
+        ),
+        duration: const Duration(seconds: 4),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: '在 GitHub 上查看源码',
+      child: MouseRegion(
+        cursor: SystemMouseCursors.click,
+        onEnter: (_) => setState(() => _hover = true),
+        onExit: (_) => setState(() => _hover = false),
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: _open,
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 140),
+            height: 30,
+            padding: const EdgeInsets.symmetric(horizontal: 11),
+            decoration: BoxDecoration(
+              color: _hover ? XV.panel3 : Colors.transparent,
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Icon(Icons.code, size: 15, color: XV.muted),
           ),
         ),
       ),

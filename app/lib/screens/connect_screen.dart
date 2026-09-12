@@ -1412,10 +1412,10 @@ class _RecordRow extends StatelessWidget {
   }
 }
 
-/// 空状态：只做一件事 —— 让用户把文件弄进来。
+/// 空状态：只做一件事 —— 让用户把配置弄进来。
 ///
 /// 桌面端整块区域都是拖拽落点（对应原型里「把 .conf 拖到这里」的承诺）；
-/// 移动端没有拖拽，只保留文件选择器。两者都额外提供粘贴入口作为兜底。
+/// 移动端没有拖拽，只保留文件选择器。两者都额外提供手填入口作为兜底。
 class _EmptyState extends StatefulWidget {
   const _EmptyState({required this.state, required this.compact});
 
@@ -1497,9 +1497,13 @@ class _EmptyStateState extends State<_EmptyState> {
                           height: 46,
                           onPressed: () => pickAndImportConf(context, state),
                         ),
-                        const SizedBox(height: 14),
-                        _PasteLink(
-                          onTap: () => startConfPasteDialog(context, state),
+                        const SizedBox(height: 10),
+                        XvButton(
+                          label: '手动填写',
+                          icon: Icons.edit_outlined,
+                          expand: true,
+                          height: 46,
+                          onPressed: () => startManualConfigForm(context, state),
                         ),
                         const SizedBox(height: 20),
                         Padding(
@@ -1653,8 +1657,9 @@ class _EmptyStateState extends State<_EmptyState> {
                       ),
                       const SizedBox(width: 10),
                       XvButton(
-                        label: '粘贴配置内容',
-                        onPressed: () => startConfPasteDialog(context, state),
+                        label: '手动填写',
+                        icon: Icons.edit_outlined,
+                        onPressed: () => startManualConfigForm(context, state),
                       ),
                     ],
                   ),
@@ -1676,31 +1681,6 @@ class _EmptyStateState extends State<_EmptyState> {
           ),
         ),
       ],
-    );
-  }
-}
-
-/// 次级入口：粘贴配置文本。样式刻意弱化，不抢主按钮。
-class _PasteLink extends StatelessWidget {
-  const _PasteLink({required this.onTap});
-
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return MouseRegion(
-      cursor: SystemMouseCursors.click,
-      child: GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onTap: onTap,
-        child: Padding(
-          padding: EdgeInsets.symmetric(vertical: 6, horizontal: 10),
-          child: Text(
-            '或粘贴配置内容',
-            style: TextStyle(fontSize: 12, color: XV.muted2),
-          ),
-        ),
-      ),
     );
   }
 }

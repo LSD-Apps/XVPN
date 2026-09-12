@@ -1,4 +1,4 @@
-package com.xvpn.xvpn
+package net.lusida.xvpn
 
 import android.app.Notification
 import android.app.NotificationChannel
@@ -150,6 +150,20 @@ class XvpnVpnService : VpnService(), PlatformInterface {
                 }
             }
             ACTION_DISCONNECT -> Thread { stopBox() }.start()
+            else -> {
+                // 系统在进程被回收后按 START_STICKY 重新拉起服务时会传 null intent
+                // （或一个我们不认识的动作）。此时进程是全新的：libbox 的全局状态、
+                // TUN 的 fd、commandServer 都已随旧进程消失，服务手里**没有任何**
+                // 可恢复的东西。原实现对此什么都不做，于是服务空转、`isRunning`
+                // 却为 false——系统和界面各说各话。
+                //
+                // 这里选择「干净地拆掉」而不是「从持久化状态重建」：配置原文与
+                // 用户的连接意图由 Dart 侧持久化（见 AppState.restoreConnection），
+                // 界面起来后会自己重新拨号；在原生侧再存一份配置只会制造第二个
+                // 真相来源，迟早与 Dart 侧不一致。
+                diag("onStartCommand 收到空/未知 intent，拆掉空服务")
+                Thread { stopBox() }.start()
+            }
         }
         return START_STICKY
     }
