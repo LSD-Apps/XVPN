@@ -79,7 +79,7 @@ void main() {
         failures: consecutiveFailures,
         consecutiveFailures: consecutiveFailures,
         lastMillis: consecutiveFailures == 0 ? 12 : null,
-        lastSummary: consecutiveFailures == 0 ? '183.2.172.177' : '解析超时',
+        lastSummary: consecutiveFailures == 0 ? '192.0.2.177' : '解析超时',
         lastCheckedAt: DateTime(2026, 9, 12),
       ),
     ],

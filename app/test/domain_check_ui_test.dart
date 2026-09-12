@@ -27,7 +27,7 @@ class _StubResolver implements DnsResolver {
     return DnsOutcome(
       server: server,
       name: domain,
-      answers: <String>['93.184.216.34'],
+      answers: <String>['198.51.100.34'],
       elapsed: const Duration(milliseconds: 8),
     );
   }

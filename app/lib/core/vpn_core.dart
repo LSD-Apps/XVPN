@@ -312,7 +312,7 @@ class DemoVpnCore extends VpnCore {
     ),
     ('api.openai.com', RouteKind.proxy, 'final'),
     (
-      '220.181.38.148',
+      '192.0.2.148',
       RouteKind.direct,
       'rule_set=[geosite-cn geoip-cn] => route',
     ),

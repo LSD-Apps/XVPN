@@ -49,7 +49,16 @@ DnsOutcome _ok(
   elapsed: Duration(milliseconds: millis),
 );
 
-/// 构造一份最小的中国 IP 索引：只含 114.230.0.0/16 与 220.181.0.0/16。
+/// 构造一份最小的「国内」IP 索引：只含 192.0.2.0/25 与 192.0.2.128/25。
+///
+/// 刻意用 RFC 5737 的文档保留段，而不是真实的国内网段：
+///
+///   * 这里要验的是**归属判定的逻辑**，不是「哪一段地址在中国」。真实网段的
+///     归属会变，把某一段写成测试事实迟早会过期；
+///   * 仓库里因此不会留下任何从真实网络观察到的痕迹。真实域名与真实解析结果
+///     一律不进代码，理由见 CONTRIBUTING.md 的「不要把真实会话数据写进代码」。
+///
+/// 拆成两个 /25 而不是一个 /24，是为了顺带覆盖「索引里有多条前缀」这条路径。
 CnIpIndex _cnIndex() {
   final bytes = Uint8List(8 + 2 * 8);
   final view = ByteData.view(bytes.buffer);
@@ -65,8 +74,9 @@ CnIpIndex _cnIndex() {
     bytes[base + 4] = length;
   }
 
-  put(0, (114 << 24) | (230 << 16), 16);
-  put(1, (220 << 24) | (181 << 16), 16);
+  const int base = (192 << 24) | (0 << 16) | (2 << 8); // 192.0.2.0
+  put(0, base, 25);
+  put(1, base | 128, 25);
   return CnIpIndex.parse(bytes)!;
 }
 
@@ -115,12 +125,13 @@ void main() {
       final response = _makeResponse(
         id: 0x1234,
         answers: <List<int>>[
-          <int>[93, 184, 216, 34],
+          // 与期望的字符串保持一致：198.51.100.34
+          <int>[198, 51, 100, 34],
         ],
       );
       final parsed = parseResponse(response, expectedId: 0x1234)!;
       expect(parsed.rcode, 0);
-      expect(parsed.addresses, <String>['93.184.216.34']);
+      expect(parsed.addresses, <String>['198.51.100.34']);
     });
 
     test('事务 ID 不匹配时拒绝，避免串了别的查询的答案', () {
@@ -194,18 +205,24 @@ void main() {
   group('中国 IP 索引', () {
     test('命中与未命中', () {
       final index = _cnIndex();
-      expect(index.contains('114.230.198.173'), isTrue);
-      expect(index.contains('220.181.38.148'), isTrue);
+      expect(index.contains('192.0.2.173'), isTrue);
+      expect(index.contains('192.0.2.148'), isTrue);
       expect(index.contains('8.8.8.8'), isFalse);
-      expect(index.contains('104.18.0.1'), isFalse);
+      expect(index.contains('198.51.100.1'), isFalse);
     });
 
     test('边界地址按掩码正确判定', () {
       final index = _cnIndex();
-      expect(index.contains('114.230.0.0'), isTrue);
-      expect(index.contains('114.230.255.255'), isTrue);
-      expect(index.contains('114.231.0.0'), isFalse);
-      expect(index.contains('114.229.255.255'), isFalse);
+      // 索引是 192.0.2.0/25 与 192.0.2.128/25，合起来覆盖 192.0.2.0–255。
+      expect(index.contains('192.0.2.0'), isTrue);
+      expect(index.contains('192.0.2.127'), isTrue, reason: '前一个 /25 的末地址');
+      expect(index.contains('192.0.2.128'), isTrue, reason: '后一个 /25 的首地址');
+      expect(index.contains('192.0.2.255'), isTrue);
+      // 范围外一律不命中。这里刻意用另外两个**文档保留段**而不是紧邻的地址：
+      // 断言要验的是「掩码宽度没算错」，紧邻与否不影响这个结论，而紧邻地址会
+      // 落在真实的公网段里（192.0.1.0/24、192.0.3.0/24 并非保留段）。
+      expect(index.contains('198.51.100.255'), isFalse);
+      expect(index.contains('203.0.113.1'), isFalse);
     });
 
     test('非 IPv4 与非法输入返回 false', () {
@@ -217,9 +234,9 @@ void main() {
     });
 
     test('空索引不做任何判定，而不是把一切判成境外', () {
-      expect(CnIpIndex.empty.contains('114.230.1.1'), isFalse);
+      expect(CnIpIndex.empty.contains('192.0.2.1'), isFalse);
       expect(
-        classifyRegion(CnIpIndex.empty, <String>['114.230.1.1']),
+        classifyRegion(CnIpIndex.empty, <String>['192.0.2.1']),
         AddressRegion.unknown,
         reason: '拿不到索引时必须保持「无法判断」，否则会误判',
       );
@@ -228,7 +245,7 @@ void main() {
     test('一组地址里有一个国内就算国内', () {
       final index = _cnIndex();
       expect(
-        classifyRegion(index, <String>['8.8.8.8', '114.230.1.1']),
+        classifyRegion(index, <String>['8.8.8.8', '192.0.2.1']),
         AddressRegion.domestic,
       );
       expect(
@@ -413,19 +430,19 @@ void main() {
         '223.5.5.5|www.example.com': _ok(
           '223.5.5.5',
           'www.example.com',
-          <String>['114.230.1.1'],
+          <String>['192.0.2.1'],
         ),
       });
       final monitor = _monitor(resolver, tunnelDelay: 60);
       monitor.tunnelResolveProbe = (String domain) async => <String>[
-        '104.18.0.1',
+        '198.51.100.1',
       ];
 
       final check = await monitor.crossCheck('www.example.com');
 
       expect(check.verdict, DnsVerdict.dualStack);
       expect(check.disjoint, isTrue);
-      expect(check.domesticAnswers, <String>['114.230.1.1']);
+      expect(check.domesticAnswers, <String>['192.0.2.1']);
       expect(DnsVerdict.dualStack.advice, contains('按域名判定分流'));
     });
 
@@ -434,12 +451,12 @@ void main() {
         '223.5.5.5|www.blocked.com': _ok(
           '223.5.5.5',
           'www.blocked.com',
-          <String>['59.24.3.174'],
+          <String>['198.51.100.174'],
         ),
       });
       final monitor = _monitor(resolver, tunnelDelay: 200);
       monitor.tunnelResolveProbe = (String domain) async => <String>[
-        '142.250.72.14',
+        '198.51.100.14',
       ];
 
       final check = await monitor.crossCheck('www.blocked.com');
@@ -453,12 +470,12 @@ void main() {
         '223.5.5.5|www.example.com': _ok(
           '223.5.5.5',
           'www.example.com',
-          <String>['114.230.1.1'],
+          <String>['192.0.2.1'],
         ),
       });
       final monitor = _monitor(resolver, tunnelDelay: 60);
       monitor.tunnelResolveProbe = (String domain) async => <String>[
-        '114.230.1.1',
+        '192.0.2.1',
       ];
 
       final check = await monitor.crossCheck('www.example.com');
@@ -497,7 +514,7 @@ void main() {
         '223.5.5.5|www.example.com': _ok(
           '223.5.5.5',
           'www.example.com',
-          <String>['59.24.3.174'],
+          <String>['198.51.100.174'],
         ),
       });
       // 空索引 = 拿不到地理信息。
@@ -507,7 +524,7 @@ void main() {
         index: CnIpIndex.empty,
       );
       monitor.tunnelResolveProbe = (String domain) async => <String>[
-        '142.250.72.14',
+        '198.51.100.14',
       ];
 
       final check = await monitor.crossCheck('www.example.com');
@@ -524,17 +541,17 @@ void main() {
         '119.29.29.29|www.example.com': _ok(
           '119.29.29.29',
           'www.example.com',
-          <String>['114.230.1.1'],
+          <String>['192.0.2.1'],
           millis: 33,
         ),
       });
       final monitor = _monitor(resolver, tunnelDelay: 60);
       monitor.tunnelResolveProbe = (String domain) async => <String>[
-        '104.18.0.1',
+        '198.51.100.1',
       ];
 
       final check = await monitor.crossCheck('www.example.com');
-      expect(check.domesticAnswers, <String>['114.230.1.1']);
+      expect(check.domesticAnswers, <String>['192.0.2.1']);
       expect(check.domesticMillis, 33);
       expect(check.verdict, DnsVerdict.dualStack);
     });
@@ -544,12 +561,12 @@ void main() {
         '223.5.5.5|www.example.com': _ok(
           '223.5.5.5',
           'www.example.com',
-          <String>['114.230.1.1'],
+          <String>['192.0.2.1'],
         ),
       });
       final monitor = _monitor(resolver, tunnelDelay: 60);
       monitor.tunnelResolveProbe = (String domain) async => <String>[
-        '104.18.0.1',
+        '198.51.100.1',
       ];
 
       await monitor.crossCheck('www.example.com');
@@ -567,12 +584,12 @@ void main() {
         '223.5.5.5|www.example.com': _ok(
           '223.5.5.5',
           'www.example.com',
-          <String>['114.230.1.1'],
+          <String>['192.0.2.1'],
         ),
       });
       final monitor = _monitor(resolver, tunnelDelay: 60);
       monitor.tunnelResolveProbe = (String domain) async => <String>[
-        '104.18.0.1',
+        '198.51.100.1',
       ];
 
       expect(monitor.cachedCheck('www.example.com'), isNull);
@@ -589,7 +606,7 @@ void main() {
         '223.5.5.5|www.example.com': _ok(
           '223.5.5.5',
           'www.example.com',
-          <String>['114.230.1.1'],
+          <String>['192.0.2.1'],
         ),
       });
       final monitor = DnsMonitor(
@@ -606,7 +623,7 @@ void main() {
         cnIpIndex: _cnIndex(),
       );
       monitor.tunnelResolveProbe = (String domain) async => <String>[
-        '104.18.0.1',
+        '198.51.100.1',
       ];
 
       // 三个并发请求同一个域名。
@@ -621,7 +638,7 @@ void main() {
       gate.complete();
       final results = await Future.wait(futures);
       for (final result in results) {
-        expect(result.domesticAnswers, <String>['114.230.1.1']);
+        expect(result.domesticAnswers, <String>['192.0.2.1']);
         expect(result.verdict, DnsVerdict.dualStack);
       }
     });
@@ -632,7 +649,7 @@ void main() {
         '223.5.5.5|www.example.com': _ok(
           '223.5.5.5',
           'www.example.com',
-          <String>['114.230.1.1'],
+          <String>['192.0.2.1'],
         ),
       });
       var shouldThrow = true;
@@ -649,7 +666,7 @@ void main() {
         cnIpIndex: _cnIndex(),
       );
       monitor.tunnelResolveProbe = (String domain) async => <String>[
-        '104.18.0.1',
+        '198.51.100.1',
       ];
 
       await expectLater(

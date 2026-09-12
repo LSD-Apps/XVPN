@@ -10,8 +10,8 @@ const _directTimeout =
 
 const _directDialTimeout =
     '+0800 2026-09-10 21:13:33 \u001b[31mERROR\u001b[0m [2052270269 5.0s] '
-    'connection: open connection to 183.2.172.177:80 using outbound/direct[direct]: '
-    'dial tcp 183.2.172.177:80: i/o timeout';
+    'connection: open connection to 192.0.2.177:80 using outbound/direct[direct]: '
+    'dial tcp 192.0.2.177:80: i/o timeout';
 
 const _proxyTimeout =
     '+0800 2026-09-10 21:14:59 \u001b[31mERROR\u001b[0m [2784999641 10.1s] '

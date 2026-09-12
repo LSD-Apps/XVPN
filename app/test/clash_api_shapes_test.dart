@@ -12,7 +12,7 @@ import 'package:xvpn/core/record_buffer.dart';
 Map<String, Object?> _connection({
   required String id,
   String host = 'example.com',
-  String destinationIp = '93.184.216.34',
+  String destinationIp = '198.51.100.34',
   int port = 443,
   String rule = 'rule_set=[geosite-cn geoip-cn] => route',
   List<String> chains = const <String>['vpn'],

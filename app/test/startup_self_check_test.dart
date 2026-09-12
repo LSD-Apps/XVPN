@@ -5,8 +5,8 @@ import 'package:xvpn/core/startup_self_check.dart';
 StartupSelfCheck _check({
   required int? direct,
   required int? tunnel,
-  List<String> domesticAnswers = const <String>['220.181.38.148'],
-  List<String> coreAnswers = const <String>['142.250.72.14'],
+  List<String> domesticAnswers = const <String>['192.0.2.148'],
+  List<String> coreAnswers = const <String>['198.51.100.14'],
 }) {
   return StartupSelfCheck(
     directProbe: () async => direct,
@@ -87,22 +87,22 @@ void main() {
       final report = await _check(
         direct: 12,
         tunnel: 180,
-        domesticAnswers: <String>['220.181.38.148'],
-        coreAnswers: <String>['142.250.72.14'],
+        domesticAnswers: <String>['192.0.2.148'],
+        coreAnswers: <String>['198.51.100.14'],
       ).run();
 
       final dns = report.probeNamed(StartupSelfCheck.dnsName)!;
       expect(dns.passed, isTrue);
-      expect(dns.detail, contains('220.181.38.148'));
-      expect(dns.detail, contains('142.250.72.14'));
+      expect(dns.detail, contains('192.0.2.148'));
+      expect(dns.detail, contains('198.51.100.14'));
     });
 
     test('两组答案不同不算异常——域名本来就有国内外双部署', () async {
       final report = await _check(
         direct: 12,
         tunnel: 180,
-        domesticAnswers: <String>['114.230.1.1'],
-        coreAnswers: <String>['104.18.0.1'],
+        domesticAnswers: <String>['192.0.2.1'],
+        coreAnswers: <String>['198.51.100.1'],
       ).run();
 
       expect(report.probeNamed(StartupSelfCheck.dnsName)!.passed, isTrue);
@@ -140,7 +140,7 @@ void main() {
       final report = await _check(
         direct: 12,
         tunnel: 180,
-        domesticAnswers: <String>['220.181.38.148'],
+        domesticAnswers: <String>['192.0.2.148'],
         coreAnswers: const <String>[],
       ).run();
 

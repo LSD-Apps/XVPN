@@ -36,9 +36,9 @@ sing-box rule-set match -f binary assets/rulesets/geosite-cn.srs www.baidu.com
 拿 25 个二线/垂直类国内站点测试，**域名表只覆盖 21 个（84%）**：
 
 ```
-www.gaoding.com        未命中   解析 114.230.198.173   geoip-cn 命中 → 仍会直连 ✓
-www.jianyu360.com      未命中   解析 101.200.208.239   geoip-cn 命中 → 仍会直连 ✓
-www.gelonghui.com      未命中   解析 47.114.154.37     geoip-cn 命中 → 仍会直连 ✓
+www.gaoding.com        未命中   解析 192.0.2.173   geoip-cn 命中 → 仍会直连 ✓
+www.jianyu360.com      未命中   解析 192.0.2.239   geoip-cn 命中 → 仍会直连 ✓
+www.gelonghui.com      未命中   解析 192.0.2.37     geoip-cn 命中 → 仍会直连 ✓
 ```
 
 ### 关键结论：域名表是快路径，IP 表是安全网

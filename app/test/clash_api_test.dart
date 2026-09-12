@@ -27,7 +27,7 @@ const _snapshot = '''
       "id": "abc-1",
       "metadata": {
         "network": "tcp", "host": "www.google.com",
-        "destinationIP": "142.250.66.78", "destinationPort": "443"
+        "destinationIP": "198.51.100.78", "destinationPort": "443"
       },
       "upload": 9004, "download": 90000,
       "start": "2026-02-14T10:20:30Z",
@@ -39,7 +39,7 @@ const _snapshot = '''
       "id": "abc-2",
       "metadata": {
         "network": "tcp", "host": "www.baidu.com",
-        "destinationIP": "183.2.172.177", "destinationPort": "443"
+        "destinationIP": "192.0.2.177", "destinationPort": "443"
       },
       "upload": 100, "download": 5000,
       "start": "2026-02-14T10:20:31Z",
