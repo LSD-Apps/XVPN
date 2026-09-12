@@ -1,0 +1,559 @@
+# XVPN 构建与发布流水线
+#
+# 目标：一次 tag 推送，产出 Windows / Linux / Android 三端的发布包，
+# 打上 SHA256SUMS.txt 后挂到 GitHub Release。in-app 自动更新器直接消费
+# 这个 Release 的附件，因此**附件命名是契约**，改动必须三处同步：
+# 本文件、scripts/build-release.ps1、in-app 更新器。
+#
+# 触发方式：
+#   * push tag（形如 v1.0.0）—— 正式发布路径；
+#   * workflow_dispatch      —— 手动补发；version 留空时取 app/pubspec.yaml。
+#
+# 版本规则（唯一来源是 app/pubspec.yaml 的 version，去掉 +build）：
+#   pubspec 写 1.0.0+1 → tag v1.0.0 → <ver> = 1.0.0
+#   tag/输入与 pubspec 不一致时**直接失败**，避免界面版本与安装包版本对不上
+#   （这正是 app/lib/version.dart 顶部注释里记录过的坑）。
+#
+# 每个构建都必须带 --dart-define=XVPN_VERSION=<ver>：version.dart 在未注入时
+# 会回落到 fallbackVersion，发布包若漏传就会显示错误版本。
+#
+# 附件命名（exact）：
+#   XVPN-<ver>-windows-x64.zip
+#   XVPN-<ver>-linux-x64.zip
+#   XVPN-<ver>-android-arm64.apk
+#   XVPN-<ver>-android-arm64.zip
+#   SHA256SUMS.txt
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '发布版本号（不含前导 v；留空则取 app/pubspec.yaml）'
+        required: false
+        default: ''
+      rebuild_libbox:
+        description: '是否从源码重新编译 Android libbox.aar（默认用仓库内已提交的 AAR）'
+        required: false
+        type: boolean
+        default: false
+
+# 默认只读；只有最后的 release 任务需要写权限，在那里单独提权。
+permissions:
+  contents: read
+
+# 同一个 tag 上的发布不要并发跑：两个 run 同时 upload --clobber 会互相覆盖。
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # Flutter 版本钉死，保证任何时间重跑同一 tag 得到同样的产物。
+  # 本机开发环境同为 3.44.9 stable（Dart 3.12.2）。
+  FLUTTER_VERSION: '3.44.9'
+
+jobs:
+  # ---------------------------------------------------------------- 版本解析
+  prepare:
+    name: 解析版本
+    runs-on: ubuntu-latest
+    outputs:
+      ver: ${{ steps.version.outputs.ver }}
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      # app/assets/legal/ 是仓库根 LICENSE / NOTICE.md / THIRD-PARTY-NOTICES.md 的
+      # 副本（Flutter 的 asset 不能引用包目录之外的文件）。这里把根文件复制过去，
+      # 再断言 git 无差异：副本一旦过期，复制会改变工作区、git diff 非零，发布就
+      # 在这里失败，而不是发出「应用内许可与仓库根不一致」的安装包。
+      # 本地同样的约束由 app/test/legal_assets_test.dart 用逐字节断言守住。
+      - name: 校验许可资产与仓库根一致
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p app/assets/legal
+          for legal in LICENSE NOTICE.md THIRD-PARTY-NOTICES.md; do
+            test -f "$legal" || { echo "::error::仓库根缺少 $legal"; exit 1; }
+            cp "$legal" "app/assets/legal/$legal"
+          done
+          if ! git diff --exit-code -- app/assets/legal; then
+            echo "::error::app/assets/legal 与仓库根文件不一致（副本已过期）。请重新同步并提交后再发版。"
+            exit 1
+          fi
+          echo "许可资产与仓库根一致。"
+
+      - name: 解析并校验版本
+        id: version
+        shell: bash
+        env:
+          # 用 env 中转而不是直接插值，避免输入里的特殊字符被 shell 解释。
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          # pubspec 的 version 形如 "1.0.0+1"，tag 只取前半段。
+          pub_ver="$(sed -n 's/^version:[[:space:]]*//p' app/pubspec.yaml | head -n1 | tr -d ' \r')"
+          pub_ver="${pub_ver%%+*}"
+          if [ -z "$pub_ver" ]; then
+            echo '::error::无法从 app/pubspec.yaml 解析 version'; exit 1
+          fi
+
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            # 允许用户手误带上前导 v；留空则取 pubspec。
+            # 用 ${VAR:-} 而不是 $VAR：push 事件的输入变量可能完全不存在，
+            # 在 set -u 下会直接报 "unbound variable"。
+            ver="${INPUT_VERSION:-}"
+            ver="${ver#v}"
+            ver="${ver:-$pub_ver}"
+          else
+            ver="${REF_NAME#v}"
+          fi
+
+          if [ "$ver" != "$pub_ver" ]; then
+            echo "::error::版本不一致：得到 $ver，而 app/pubspec.yaml 是 $pub_ver。发布前请先把 pubspec 改好。"
+            exit 1
+          fi
+
+          echo "ver=$ver" >> "$GITHUB_OUTPUT"
+          echo "tag=v$ver" >> "$GITHUB_OUTPUT"
+          echo "版本 $ver（tag v$ver）"
+
+  # ---------------------------------------------------------------- Windows
+  windows:
+    name: Windows x64
+    needs: prepare
+    runs-on: windows-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      # 内核版本单一来源：scripts/sing-box-version.txt（与 build-libbox.sh 共用）。
+      - name: 读取 sing-box 版本
+        id: singbox
+        shell: pwsh
+        run: |
+          $v = (Get-Content scripts/sing-box-version.txt -Raw).Trim()
+          if ([string]::IsNullOrWhiteSpace($v)) { throw 'scripts/sing-box-version.txt 为空' }
+          "SING_BOX_VERSION=$v" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+          Write-Host "sing-box 版本：$v"
+
+      - name: 下载并校验 sing-box（windows-amd64）
+        shell: pwsh
+        run: |
+          $v = $env:SING_BOX_VERSION
+          $num = $v.TrimStart('v')
+          $url = "https://github.com/SagerNet/sing-box/releases/download/$v/sing-box-$num-windows-amd64.zip"
+          $zip = Join-Path $env:RUNNER_TEMP 'sing-box-win.zip'
+          Write-Host "下载 $url"
+          Invoke-WebRequest -Uri $url -OutFile $zip
+          $extract = Join-Path $env:RUNNER_TEMP 'sing-box-win'
+          Expand-Archive -Path $zip -DestinationPath $extract -Force
+
+          New-Item -ItemType Directory -Force -Path 'app\assets\bin' | Out-Null
+          $exe = Get-ChildItem -Recurse -Filter 'sing-box.exe' $extract | Select-Object -First 1
+          if (-not $exe) { throw '压缩包中未找到 sing-box.exe' }
+          Copy-Item -LiteralPath $exe.FullName -Destination 'app\assets\bin\sing-box.exe' -Force
+
+          # 必须校验版本与构建标签：官方二进制若缺少我们需要的标签，
+          # OpenVPN / Hysteria2 会在运行期才报错，而不是构建期。
+          $out = (& 'app\assets\bin\sing-box.exe' version 2>&1) -join "`n"
+          Write-Host $out
+          if ($out -notmatch [regex]::Escape($num)) { throw "内核版本与 $v 不符" }
+          foreach ($tagName in @('with_openvpn','with_quic','with_gvisor','with_clash_api','with_naive_outbound')) {
+            if ($out -notmatch $tagName) { throw "官方内核缺少构建标签 $tagName，桌面端部分协议将不可用" }
+          }
+
+      - name: 构建 Windows Release
+        shell: pwsh
+        run: |
+          cd app
+          flutter pub get
+          flutter build windows --release "--dart-define=XVPN_VERSION=${{ needs.prepare.outputs.ver }}"
+          if ($LASTEXITCODE -ne 0) { throw 'flutter build windows 失败' }
+
+      - name: 打包为 XVPN-<ver>-windows-x64.zip
+        shell: pwsh
+        run: |
+          $ver = '${{ needs.prepare.outputs.ver }}'
+          $bundle = 'app\build\windows\x64\runner\Release'
+          if (-not (Test-Path (Join-Path $bundle 'xvpn.exe'))) { throw "未找到 Windows 产物：$bundle" }
+          # CMake 会把 sing-box.exe 装到可执行文件旁；缺了说明内核没进 bundle，
+          # 这种包发出去用户只会看到「缺少内核文件」，因此在这里就失败。
+          if (-not (Test-Path (Join-Path $bundle 'sing-box.exe'))) { throw 'bundle 中缺少 sing-box.exe' }
+
+          # GPL-3.0 §4/§6（以及 BSD-3-Clause / Apache-2.0 的二进制再分发条款）要求
+          # 接收者随二进制拿到许可证与第三方声明，并能据此获取对应源码。
+          # 因此把仓库根的 LICENSE / NOTICE.md / THIRD-PARTY-NOTICES.md 放进压缩包
+          # 根——缺任何一个就拒绝打包。
+          # 只新增**文件内容**，不新增/改名附件，压缩包命名契约不受影响。
+          foreach ($legal in @('LICENSE', 'NOTICE.md', 'THIRD-PARTY-NOTICES.md')) {
+            $src = Join-Path $env:GITHUB_WORKSPACE $legal
+            if (-not (Test-Path $src)) { throw "缺少 $legal，拒绝打包：分发物必须附带许可与第三方声明" }
+            Copy-Item -LiteralPath $src -Destination (Join-Path $bundle $legal) -Force
+          }
+
+          New-Item -ItemType Directory -Force dist | Out-Null
+          $out = "dist\XVPN-$ver-windows-x64.zip"
+          if (Test-Path $out) { Remove-Item $out -Force }
+          # 把 bundle 目录的**内容**放在压缩包根，解压即可就地覆盖安装目录——
+          # 这是更新器的解压约定，不要改成「外面再套一层目录名」。
+          Compress-Archive -Path (Join-Path $bundle '*') -DestinationPath $out -CompressionLevel Optimal
+
+          # 校验：压缩包根必须真的含三份许可/声明文件，否则前面的复制等于没生效。
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $zip = [System.IO.Compression.ZipFile]::OpenRead((Resolve-Path $out).Path)
+          try {
+            $entryNames = @($zip.Entries | ForEach-Object { $_.FullName })
+            foreach ($legal in @('LICENSE', 'NOTICE.md', 'THIRD-PARTY-NOTICES.md')) {
+              if ($entryNames -notcontains $legal) { throw "$out 缺少 $legal" }
+            }
+            Write-Host "$out 含 LICENSE、NOTICE.md 与 THIRD-PARTY-NOTICES.md"
+          } finally { $zip.Dispose() }
+          Write-Host "已生成 $out"
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist/XVPN-*-windows-x64.zip
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------- Linux
+  linux:
+    name: Linux x64
+    needs: prepare
+    # 固定到 22.04：构建机的 glibc 越旧，产物能跑的发行版越多（向后兼容），
+    # 24.04 的 glibc 2.39 会让产物在更老的系统上无法启动。22.04 是当前仍受支持
+    # 的最旧 LTS runner；若 GitHub 未来下线它，再评估迁移到 24.04 或改用容器。
+    runs-on: ubuntu-22.04
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Linux 桌面构建依赖
+        run: |
+          sudo apt-get update
+          # Flutter Linux 桌面的官方依赖，外加 zip（打包用）。
+          # liblzma-dev 与 libblkid-dev 分别是内核/磁盘工具链的头文件依赖；
+          # libglu1-mesa 是部分 GTK/OpenGL 插件的运行期依赖。
+          sudo apt-get install -y --no-install-recommends \
+            clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev \
+            libstdc++-12-dev libglu1-mesa libblkid-dev zip
+
+      - name: 安装 Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: 检查 app/linux 工程是否存在
+        run: |
+          # Linux 平台工程由另一条工作流落地。缺失时给出可读的原因，
+          # 而不是让 flutter build 抛出看不懂的 CMake 错误。
+          if [ ! -d app/linux ]; then
+            echo "::error::app/linux 尚不存在——Linux 平台支持落地后本任务才会开始产出产物。"
+            exit 1
+          fi
+
+      - name: 下载并校验 sing-box（linux-amd64）
+        run: |
+          set -euo pipefail
+          v="$(tr -d ' \t\r\n' < scripts/sing-box-version.txt)"
+          num="${v#v}"
+          url="https://github.com/SagerNet/sing-box/releases/download/$v/sing-box-$num-linux-amd64.tar.gz"
+          echo "下载 $url"
+          curl -fsSL "$url" -o /tmp/sing-box-linux.tar.gz
+          mkdir -p /tmp/sing-box-linux
+          tar -xzf /tmp/sing-box-linux.tar.gz -C /tmp/sing-box-linux
+          bin="$(find /tmp/sing-box-linux -type f -name sing-box | head -n1)"
+          if [ -z "$bin" ]; then echo '::error::压缩包中未找到 sing-box 二进制'; exit 1; fi
+          mkdir -p app/assets/bin
+          cp "$bin" app/assets/bin/sing-box
+          chmod +x app/assets/bin/sing-box
+
+          out="$(app/assets/bin/sing-box version)"
+          echo "$out"
+          echo "$out" | grep -q "$num" || { echo "::error::内核版本与 $v 不符"; exit 1; }
+          for tagName in with_openvpn with_quic with_gvisor with_clash_api with_naive_outbound; do
+            echo "$out" | grep -q "$tagName" || { echo "::error::官方内核缺少构建标签 $tagName"; exit 1; }
+          done
+
+      - name: 构建 Linux Release
+        run: |
+          set -euo pipefail
+          cd app
+          flutter pub get
+          flutter build linux --release --dart-define=XVPN_VERSION=${{ needs.prepare.outputs.ver }}
+
+      - name: 打包为 XVPN-<ver>-linux-x64.zip
+        run: |
+          set -euo pipefail
+          ver='${{ needs.prepare.outputs.ver }}'
+          bundle='app/build/linux/x64/release/bundle'
+          test -f "$bundle/xvpn" || { echo "::error::未找到 Linux 产物 $bundle/xvpn"; exit 1; }
+
+          # 内核走「可执行文件旁边的独立进程」模型，与 Windows 一致。
+          # 若 app/linux 的 CMake 还没把内核装进 bundle，这里兜底复制一份：
+          # 幂等，且保证 bundle 里一定有内核。
+          cp app/assets/bin/sing-box "$bundle/sing-box"
+          chmod +x "$bundle/sing-box"
+
+          # GPL-3.0 §4/§6 的二进制再分发义务：许可与第三方声明随包分发。
+          # 与 Windows 一致，只往压缩包里**加文件**，不改附件命名契约。
+          for legal in LICENSE NOTICE.md THIRD-PARTY-NOTICES.md; do
+            test -f "$legal" || { echo "::error::缺少 $legal，拒绝打包：分发物必须附带许可与第三方声明"; exit 1; }
+            cp "$legal" "$bundle/$legal"
+          done
+
+          mkdir -p dist
+          # 与 Windows 相同：bundle 目录内容位于压缩包根，解压即就地覆盖。
+          # 用 ./* 而不是 . ：避免 zip 写入一个多余的 "./" 顶层条目。
+          ( cd "$bundle" && zip -r -q "$GITHUB_WORKSPACE/dist/XVPN-$ver-linux-x64.zip" ./* )
+
+          # 校验压缩包内容（zip 的条目记录就是接收者看到的东西）。
+          python3 - "$GITHUB_WORKSPACE/dist/XVPN-$ver-linux-x64.zip" <<'PY'
+          import sys, zipfile
+          names = set(zipfile.ZipFile(sys.argv[1]).namelist())
+          missing = [n for n in ("LICENSE", "NOTICE.md", "THIRD-PARTY-NOTICES.md") if n not in names]
+          if missing:
+              sys.exit("压缩包缺少：" + "、".join(missing))
+          print("zip 含 LICENSE、NOTICE.md 与 THIRD-PARTY-NOTICES.md")
+          PY
+          ls -la dist
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: dist/XVPN-*-linux-x64.zip
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------- Android
+  android:
+    name: Android arm64
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: 安装 Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools'
+
+      - name: 安装 Android NDK 28.2.13676358
+        run: |
+          # 与 Flutter 的 flutter.ndkVersion（FlutterExtension.kt）以及
+          # scripts/build-libbox.sh 用的 NDK 版本保持一致。
+          yes | sdkmanager --licenses >/dev/null 2>&1 || true
+          sdkmanager --install "ndk;28.2.13676358"
+
+      - name: 安装 Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: 接受 Android 许可
+        run: yes | flutter doctor --android-licenses >/dev/null 2>&1 || true
+
+      - name: 安装 Go（libbox 编译用）
+        if: ${{ inputs.rebuild_libbox }}
+        uses: actions/setup-go@v5
+        with:
+          # 基座 Go 不必满足 sing-box/gomobile 的全部要求：脚本设了
+          # GOTOOLCHAIN=auto，缺的版本会从模块代理自动拉取。
+          go-version: '1.25.x'
+          cache: false
+
+      - name: 重新编译 libbox.aar（可选）
+        if: ${{ inputs.rebuild_libbox }}
+        run: bash scripts/build-libbox.sh
+
+      - name: 校验 libbox.aar 存在
+        run: |
+          # 不勾选 rebuild_libbox 时直接用仓库里已提交的 AAR——这与
+          # CONTRIBUTING.md 的约定一致（只有改了内核行为才需要重编）。
+          test -f app/android/app/libs/libbox.aar || {
+            echo "::error::缺少 app/android/app/libs/libbox.aar；可勾选 rebuild_libbox 从源码编译。"
+            exit 1
+          }
+          ls -la app/android/app/libs/libbox.aar
+
+      - name: 还原 Android 发行签名密钥
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          # 发行包必须用固定密钥签名，否则自动更新装不上（见 build.gradle.kts 注释）。
+          # 签名材料缺失时**直接失败**，绝不回退到 debug 密钥——与 build.gradle.kts
+          # 末尾的「发行签名守卫」保持一致。用 debug 密钥签出的「正式版」无法覆盖
+          # 安装后续版本，用户必须卸载重装，而卸载会清掉配置与凭据。
+          if [ -z "$KEYSTORE_B64" ]; then
+            echo "::error::发行构建缺少 Android 签名密钥（ANDROID_KEYSTORE_BASE64），已中止：release 不再回退到 debug 签名。"
+            exit 1
+          fi
+          missing=''
+          [ -n "$KEYSTORE_PASSWORD" ] || missing="$missing ANDROID_KEYSTORE_PASSWORD"
+          [ -n "$KEY_ALIAS" ] || missing="$missing ANDROID_KEY_ALIAS"
+          [ -n "$KEY_PASSWORD" ] || missing="$missing ANDROID_KEY_PASSWORD"
+          if [ -n "$missing" ]; then
+            # 半套密钥会产出「签名不一致」的中间版本，比完全没配更危险，因此直接失败。
+            echo "::error::发行构建缺少 Android 签名密钥（${missing# }），已中止：release 不再回退到 debug 签名。"
+            exit 1
+          fi
+          echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.keystore"
+          {
+            echo "ANDROID_KEYSTORE_FILE=$RUNNER_TEMP/release.keystore"
+            echo "ANDROID_KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD"
+            echo "ANDROID_KEY_ALIAS=$KEY_ALIAS"
+            echo "ANDROID_KEY_PASSWORD=$KEY_PASSWORD"
+          } >> "$GITHUB_ENV"
+          echo "已启用发行签名。"
+
+      # GPL-3.0 §4/§6 要求接收二进制的人同时拿到许可证与对应源码获取方式。
+      # Android 侧把 LICENSE / NOTICE.md / THIRD-PARTY-NOTICES.md 复制进 Android 的
+      # native assets 源集（src/main/assets 由 AGP 默认合并进 APK），随后用 APK
+      # 内容校验兜底。APK 内的路径为 assets/licenses/<文件名>。
+      # 注意：这是 **Android native assets**，不是 Flutter assets——Dart 的
+      # rootBundle 读不到。应用内「开源许可」界面读的是 app/assets/legal/ 下
+      # 同一批文件的 Flutter asset 副本（由 prepare 任务校验其与根文件一致），
+      # 两者用途不同，见 NOTICE.md。
+      - name: 把许可与声明放进 APK assets
+        run: |
+          set -euo pipefail
+          dest='app/android/app/src/main/assets/licenses'
+          mkdir -p "$dest"
+          for legal in LICENSE NOTICE.md THIRD-PARTY-NOTICES.md; do
+            test -f "$legal" || { echo "::error::缺少 $legal，拒绝构建：APK 必须附带许可与第三方声明"; exit 1; }
+            cp "$legal" "$dest/$legal"
+          done
+          ls -la "$dest"
+
+      - name: 构建 Android arm64 Release
+        run: |
+          set -euo pipefail
+          cd app
+          flutter pub get
+          # 只构建 arm64-v8a：libbox.aar 只有这个 ABI，构建其它 ABI 会失败。
+          flutter build apk --release --target-platform android-arm64 \
+            --dart-define=XVPN_VERSION=${{ needs.prepare.outputs.ver }}
+
+      - name: 打包 APK 与 zip
+        run: |
+          set -euo pipefail
+          ver='${{ needs.prepare.outputs.ver }}'
+          apk='app/build/app/outputs/flutter-apk/app-release.apk'
+          test -f "$apk" || { echo "::error::未找到 APK：$apk"; exit 1; }
+
+          mkdir -p dist
+          # 更新器需要**裸 APK** 才能调用系统安装器；再附一份 zip，
+          # 让三端都有一个「下载即得压缩包」的入口。
+          cp "$apk" "dist/XVPN-$ver-android-arm64.apk"
+          ( cd dist && zip -q "XVPN-$ver-android-arm64.zip" "XVPN-$ver-android-arm64.apk" )
+
+          # 校验许可确实进了 APK：这条断言让「复制进 assets」不会静默失效。
+          python3 - "dist/XVPN-$ver-android-arm64.apk" <<'PY'
+          import sys, zipfile
+          names = set(zipfile.ZipFile(sys.argv[1]).namelist())
+          want = ("assets/licenses/LICENSE", "assets/licenses/NOTICE.md", "assets/licenses/THIRD-PARTY-NOTICES.md")
+          missing = [n for n in want if n not in names]
+          if missing:
+              sys.exit("APK 缺少：" + "、".join(missing))
+          print("APK 含 assets/licenses/ 下的 LICENSE、NOTICE.md 与 THIRD-PARTY-NOTICES.md")
+          PY
+          ls -la dist
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: android
+          path: |
+            dist/XVPN-*-android-arm64.apk
+            dist/XVPN-*-android-arm64.zip
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------- Release
+  release:
+    name: 创建 / 更新 Release
+    needs: [prepare, windows, linux, android]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: 下载全部构建产物
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          # 三个 artifact 合并到同一个 dist 目录；文件名互不冲突。
+          merge-multiple: true
+
+      - name: 生成 SHA256SUMS.txt
+        run: |
+          set -euo pipefail
+          cd dist
+          ls -la
+          # 按文件名排序，保证多次重跑得到完全一致的校验和文件。
+          sha256sum XVPN-*.zip XVPN-*.apk | sort -k2 > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: 创建或更新 GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          VER: ${{ needs.prepare.outputs.ver }}
+        run: |
+          set -euo pipefail
+          # 幂等：已存在只覆盖附件，不存在才新建。--clobber 让重跑不会失败。
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG 已存在，更新附件。"
+          else
+            gh release create "$TAG" \
+              --title "XVPN $VER" \
+              --notes "XVPN $VER
+
+          下载对应平台的压缩包，解压后运行 xvpn：
+          - Windows x64：XVPN-$VER-windows-x64.zip
+          - Linux x64：XVPN-$VER-linux-x64.zip
+          - Android arm64：XVPN-$VER-android-arm64.apk（可直接安装）
+            另附 XVPN-$VER-android-arm64.zip
+
+          校验方式：sha256sum -c SHA256SUMS.txt
+
+          许可与对应源码：每个压缩包根部含 LICENSE（GPL-3.0-or-later 全文）、
+          NOTICE.md（第三方组件、sing-box 附加条款与对应源码获取方式）与
+          THIRD-PARTY-NOTICES.md（内核静态内嵌的 Go 依赖许可聚合）；APK 内为
+          assets/licenses/ 下的同名文件，应用内设置页「关于 → 开源许可」也能读到。
+          本项目采用 GPL-3.0-or-later，对应源码即本仓库的 $TAG：
+          https://github.com/LSD-Apps/XVPN/tree/$TAG
+
+          应用内「检查更新」读取本 Release 的附件，因此请勿重命名。"
+          fi
+          gh release upload "$TAG" dist/*.zip dist/*.apk dist/SHA256SUMS.txt --clobber

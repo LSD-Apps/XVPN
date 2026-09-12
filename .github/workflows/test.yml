@@ -1,0 +1,180 @@
+# XVPN 测试门禁（PR / main 推送）
+#
+# 目的：把仓库里的整套测试真正跑起来。此前唯一的流水线是 release.yml，它只在
+# 打 tag 时构建发布包，从不执行 flutter analyze / flutter test——于是回归可以一路
+# 走到发布 tag 都没人发现，尤其是 platform_parity_test.dart 这条用来挡住
+# Windows / Linux / Android 三端漂移的守卫，此前一次都没在 CI 上跑过。
+#
+# 本文件只做「门禁」，不做构建：产物、打包、签名、发 Release 都在 release.yml。
+# 两者共用同一套固定版本与动作，改动时请保持同步（Flutter 版本、动作版本、
+# 缓存方式都以 release.yml 为准）。
+#
+# 触发方式：
+#   * pull_request      —— 任意目标分支的 PR；
+#   * push main         —— 合并进主干后再复查一次；
+#   * workflow_dispatch —— 手动重跑。
+name: Test
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+# 测试只需要读代码，不需要写仓库内容（与 release.yml 的默认权限一致）。
+permissions:
+  contents: read
+
+# 同一个 ref 上的旧 run 直接取消：PR 连续推送时只关心最后一次结果。
+# release.yml 用 cancel-in-progress: false（发布不能半途取消），这里相反。
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Flutter 版本与 release.yml 一致并同样钉死，保证门禁跑的就是发布用的那套
+  # SDK（本机开发环境同为 3.44.9 stable / Dart 3.12.2）。
+  FLUTTER_VERSION: '3.44.9'
+
+jobs:
+  # ---------------------------------------------------------------- 静态检查
+  analyze:
+    name: 静态检查
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: 拉取依赖
+        working-directory: app
+        run: flutter pub get
+
+      - name: 静态分析
+        working-directory: app
+        # CONTRIBUTING.md 要求「flutter analyze 必须无任何问题」：默认只对
+        # warning 及以上致命，info 会被放过，因此显式打开 --fatal-infos，
+        # 让任何一个 info 也能挡住合并。
+        run: flutter analyze --fatal-infos
+
+  # ---------------------------------------------------------------- 单元 / 集成测试
+  test:
+    name: 测试 (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # 一个平台失败不影响另一个：三端一致性需要同时拿到两端各自的结果。
+      fail-fast: false
+      matrix:
+        # 显式列出两个桌面 runner——这正是本工作流存在的理由：三端 parity 目标
+        # 要求 Windows 与 Linux 都被真实地跑一遍，而不是在开发者本机各跑一半。
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      # 仓库里带了随包分发的真实内核：Windows 是 sing-box.exe（git 已跟踪），
+      # Linux 是 sing-box（同为 git 跟踪的 ELF）。需要真实内核的用例
+      # （connect_path / proxy_cleanup / singbox_runtime / singbox_config_binary /
+      # wireguard_handshake_e2e）靠 test/support/host_platform.dart 的 existsSync()
+      # 自行决定「跑」还是「跳过」——内核在，它们就真的会对真实内核跑一遍，而不是
+      # 静默跳过显示为通过。
+      #
+      # 因此这里先**断言内核存在**：缺失时直接失败，而不是让 test 步骤把所有真实
+      # 内核用例 skip 掉、报告全绿——那正是本仓库在 host_platform.dart 里记录过的
+      # 坑（Linux 上整批用例被静默跳过却显示为「通过」）。
+      #
+      # Linux 上还要补执行位：git 对没有扩展名的文件通常按 100644 记录，检出后
+      # 没有执行位，Process.start 会报权限错误。chmod 幂等，对已带执行位的检出无副作用。
+      - name: 准备随包内核
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            bin='app/assets/bin/sing-box'
+          else
+            bin='app/assets/bin/sing-box.exe'
+          fi
+          test -f "$bin" || {
+            echo "::error::缺少随包内核 $bin：真实内核用例会被 existsSync() 静默跳过并显示为通过，拒绝放行。"
+            exit 1
+          }
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            chmod +x "$bin"
+          fi
+          echo "随包内核就绪：$bin"
+
+      - name: 拉取依赖
+        working-directory: app
+        run: flutter pub get
+
+      - name: 运行测试
+        working-directory: app
+        # 显式指定 bash：两个 runner 都能用，且「管道 + pipefail」可以用同一条
+        # 命令把测试输出完整落盘（pwsh 没有同名等价物，用 Tee-Object 会让两端
+        # 命令分叉）。pipefail 是关键——否则 tee 的退出码会吃掉测试失败的退出码，
+        # 门禁就成了摆设。
+        shell: bash
+        run: |
+          set -o pipefail
+          flutter test --reporter expanded 2>&1 | tee test-output.log
+
+      - name: 上传测试日志（失败时）
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-logs-${{ matrix.os }}
+          path: app/test-output.log
+          # 失败发生在上面的步骤之前（例如 pub get 挂了）时并没有日志文件，
+          # 不该因此再报一次「找不到文件」。
+          if-no-files-found: ignore
+
+  # ---------------------------------------------------------------- Android 界面一致性
+  #
+  # 本仓库没有 integration_test / flutter drive，`flutter test` 也只在宿主 Dart VM
+  # 上跑，无法把 dart:io 的 Platform.isAndroid 变成真——不存在任何 --dart-define
+  # 能改它。因此这里**不做**真机 / 模拟器 / APK（APK 构建属于 release.yml）。
+  #
+  # 但 Android 的界面与文案分支是可测的：platform_parity_test.dart 用
+  # debugDefaultTargetPlatformOverride = TargetPlatform.android 在普通用例里
+  # 渲染 Android 布局并断言「两端该有的信息与操作」都在。这里把它单独拉成一条
+  # 显式检查，作为三端一致性里 Android 那一端的可见门禁（同一批用例上面的 test
+  # 任务也会跑到，这里是把它命名出来、让它在检查列表里可见）。
+  #
+  # 因此本任务证明的是「Android 的界面与文案结构没有和桌面端漂移」，
+  # **不**证明 Android 运行期行为（VpnService / libbox.aar / TUN）——那只能在
+  # 真机或 release.yml 的 APK 构建里验证。
+  android-parity:
+    name: Android 界面一致性
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: 拉取依赖
+        working-directory: app
+        run: flutter pub get
+
+      - name: 运行 Android 平台覆盖的界面用例
+        working-directory: app
+        run: flutter test test/platform_parity_test.dart

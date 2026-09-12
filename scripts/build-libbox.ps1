@@ -16,7 +16,20 @@
 $ErrorActionPreference = 'Stop'
 
 $repo = Split-Path -Parent $PSScriptRoot
-$version = 'v1.14.0'
+
+# sing-box 版本**单一来源**：scripts/sing-box-version.txt。
+# Windows 端的 sing-box.exe、Linux 端的 sing-box、以及这里编译的 libbox
+# 必须来自同一版本，否则三端的协议能力会不一致（例如某个构建标签只在
+# 某个版本才有）。改版本时只改这一个文件，三个平台自动保持一致。
+$versionFile = Join-Path $PSScriptRoot 'sing-box-version.txt'
+if (-not (Test-Path -LiteralPath $versionFile)) {
+  throw "缺少 sing-box 版本文件：$versionFile"
+}
+$version = (Get-Content -LiteralPath $versionFile -Raw).Trim()
+if ([string]::IsNullOrWhiteSpace($version)) {
+  throw "sing-box 版本文件为空：$versionFile"
+}
+
 $buildRoot = Join-Path $repo '.build'
 $srcDir = Join-Path $buildRoot "sing-box-$version"
 $outAar = Join-Path $repo 'app\android\app\libs\libbox.aar'
