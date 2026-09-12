@@ -531,11 +531,16 @@ jobs:
           VER: ${{ needs.prepare.outputs.ver }}
         run: |
           set -euo pipefail
+          # 本任务只下载构建产物，**没有 checkout 仓库**，因此工作区里没有 .git，
+          # gh 无法自行推断目标仓库（首次真跑即报
+          # “failed to run git: fatal: not a git repository”）。
+          # 这里显式用 GITHUB_REPOSITORY 指定，避免为此多做一次完整检出。
+          REPO="$GITHUB_REPOSITORY"
           # 幂等：已存在只覆盖附件，不存在才新建。--clobber 让重跑不会失败。
-          if gh release view "$TAG" >/dev/null 2>&1; then
+          if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
             echo "Release $TAG 已存在，更新附件。"
           else
-            gh release create "$TAG" \
+            gh release create "$TAG" --repo "$REPO" \
               --title "XVPN $VER" \
               --notes "XVPN $VER
 
@@ -556,4 +561,4 @@ jobs:
 
           应用内「检查更新」读取本 Release 的附件，因此请勿重命名。"
           fi
-          gh release upload "$TAG" dist/*.zip dist/*.apk dist/SHA256SUMS.txt --clobber
+          gh release upload "$TAG" dist/*.zip dist/*.apk dist/SHA256SUMS.txt --clobber --repo "$REPO"
