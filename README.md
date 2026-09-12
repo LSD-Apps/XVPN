@@ -1,5 +1,9 @@
 # XVPN
 
+[![Tests](https://github.com/LSD-Apps/XVPN/actions/workflows/test.yml/badge.svg?branch=main)](https://github.com/LSD-Apps/XVPN/actions/workflows/test.yml)
+[![Release](https://img.shields.io/github/v/release/LSD-Apps/XVPN)](https://github.com/LSD-Apps/XVPN/releases/latest)
+[![License: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL--3.0--or--later-blue)](LICENSE)
+
 **A split-tunnel VPN client that just takes your `.conf`.**
 
 No node picking, no rule writing, no need to know what a geosite is — drop in your

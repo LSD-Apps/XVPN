@@ -1,5 +1,9 @@
 # XVPN
 
+[![测试](https://github.com/LSD-Apps/XVPN/actions/workflows/test.yml/badge.svg?branch=main)](https://github.com/LSD-Apps/XVPN/actions/workflows/test.yml)
+[![版本](https://img.shields.io/github/v/release/LSD-Apps/XVPN)](https://github.com/LSD-Apps/XVPN/releases/latest)
+[![许可：GPL-3.0-or-later](https://img.shields.io/badge/license-GPL--3.0--or--later-blue)](LICENSE)
+
 **导入一个 `.conf` 就能用的分流 VPN 客户端。**
 
 不需要选节点、不需要填规则、不需要理解什么是 geosite——把配置文件丢进来，
