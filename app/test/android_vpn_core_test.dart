@@ -12,7 +12,8 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   const channel = MethodChannel('com.xvpn.xvpn/vpn');
-  final messenger = TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+  final messenger =
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
 
   /// 拦截原生通道，并记录 Dart 侧发出的每一次调用。
   List<String> mockChannel({required bool running, String? error}) {
@@ -51,11 +52,9 @@ void main() {
 
       expect(adopted, isTrue);
       expect(calls, contains('status'));
-      expect(
-        recorder.statuses,
-        <VpnStatus>[VpnStatus.connected],
-        reason: '界面必须立刻反映「隧道其实还开着」，否则会显示未连接却仍在走隧道',
-      );
+      expect(recorder.statuses, <VpnStatus>[
+        VpnStatus.connected,
+      ], reason: '界面必须立刻反映「隧道其实还开着」，否则会显示未连接却仍在走隧道');
 
       // 接管后开始轮询，测试结束前必须停掉，否则会留下未取消的定时器。
       core.dispose();

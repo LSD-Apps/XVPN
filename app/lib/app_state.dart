@@ -1,16 +1,23 @@
 import 'dart:async';
 import 'dart:collection';
+import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 
 import 'core/auto_route.dart';
 import 'core/core_log.dart';
 import 'core/dns_monitor.dart';
+import 'core/domain_check.dart';
+import 'core/mtu_probe.dart';
 import 'core/record_buffer.dart';
 import 'core/rulesets.dart';
+import 'core/secret_protector.dart';
+import 'core/singbox_runner.dart';
 import 'core/startup_self_check.dart';
 import 'core/store.dart';
+import 'core/tunnel_health.dart';
 import 'core/vpn_core.dart';
+import 'core/wireguard_handshake.dart';
 import 'format.dart';
 import 'models.dart';
 import 'protocols/parsed_profile.dart';
@@ -25,7 +32,8 @@ import 'protocols/protocol_adapter.dart';
 /// 因此它的存储与筛选都做了专门处理——见 [_recordsRing] 与 [filteredRecords]。
 /// 这里的原则是：**每帧的构建里不做与数据量成正比的分配**。
 class AppState extends ChangeNotifier implements VpnCoreListener {
-  AppState({this.coreFactory, this.store}) {
+  AppState({this.coreFactory, this.store, SecretProtector? protector})
+    : protector = protector ?? SecretProtector.forPlatform() {
     // 恢复必须在构造里同步做完：界面第一次 build 时就应该拿到已保存的配置，
     // 否则会先闪一下「导入配置」的空状态。
     _restore();
@@ -37,13 +45,19 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
   /// 本地持久化。为 null 时不落盘（测试与演示内核用）。
   final AppStore? store;
 
+  /// 账号密码的落盘保护。见 [SecretProtector]。
+  ///
+  /// 可注入是为了让「密码确实是加密后写盘的」这件事能被测到，
+  /// 而不是只能在真实机器上翻 config.json 用肉眼确认。
+  final SecretProtector protector;
+
   /// 导入配置的原文，按 id 保存。
   ///
   /// 只存原文不存解析结果：解析结果是从原文推导出来的，存派生数据会在
   /// 解析器升级后变成一个需要迁移的历史包袱。
   final Map<String, String> _profileTexts = <String, String>{};
-  final Map<String, ({String? username, String? password})> _profileCredentials =
-      <String, ({String? username, String? password})>{};
+  final Map<String, ({String? username, String? password})>
+  _profileCredentials = <String, ({String? username, String? password})>{};
 
   /// 用户期望的连接状态。
   ///
@@ -77,8 +91,9 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
   /// 已存在的 500 条整体后移一格。每秒来几条连接时这不明显，但内核在
   /// 首次连接或批量请求时会一次推来大量连接，那时每插入一条都是一次
   /// 500 元素的搬移，界面直接卡住。环形缓冲把插入变成 O(1)。
-  late final RingBuffer<SplitRecord> _recordsRing =
-      RingBuffer<SplitRecord>(recordLimit);
+  late final RingBuffer<SplitRecord> _recordsRing = RingBuffer<SplitRecord>(
+    recordLimit,
+  );
 
   /// 筛选结果的缓存。
   ///
@@ -122,6 +137,10 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
   int _totalBytes = 0;
   int _directBytes = 0;
   int _proxiedBytes = 0;
+
+  /// 会话累计（按目标累加），见 [sessionProxiedBytes]。
+  int _sessionProxiedBytes = 0;
+  int _sessionDirectBytes = 0;
   int _connectionCount = 0;
   int _kernelMemory = 0;
   int? _latencyMs;
@@ -133,6 +152,15 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
 
   /// 最近一次启动自检报告。
   StartupSelfCheckReport? _selfCheckReport;
+
+  /// 最近一次隧道健康结论。为 null 表示还没有结论（未连接或尚未探测）。
+  TunnelHealth? _tunnelHealth;
+
+  /// 由健康结论写入的那条错误提示。
+  ///
+  /// 单记一份是为了在隧道恢复后**只**撤掉自己写的那句：直接清 _lastError
+  /// 会把同时存在的其它错误（例如系统代理设置失败）一起抹掉。
+  String? _healthNotice;
 
   /// 程序自动纠正过的域名，最新的在前。仅用于界面展示「它学会了什么」。
   final List<AutoRouteDecision> _learnedDecisions = <AutoRouteDecision>[];
@@ -154,7 +182,9 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
   /// 调用方只做遍历与索引访问，不修改。
   List<SplitRecord> get records => _recordsView;
 
-  late final List<SplitRecord> _recordsView = _RingView<SplitRecord>(_recordsRing);
+  late final List<SplitRecord> _recordsView = _RingView<SplitRecord>(
+    _recordsRing,
+  );
 
   List<ConnectionFailure> get failures => _failuresView;
 
@@ -183,8 +213,22 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
 
   /// 走隧道 / 走直连的已传输字节。用来回答「这些流量里有多少真的进了隧道」——
   /// 这是判断分流是否按预期工作的唯一依据。
+  ///
+  /// 注意口径：它们取自内核**当前活连接**的快照，因此短连接一旦关闭就从这里消失。
+  /// 想要「本次会话累计走了多少隧道」请看 [sessionProxiedBytes]。
   int get directBytes => _directBytes;
   int get proxiedBytes => _proxiedBytes;
+
+  /// 本次会话累计：按目标累加出来的走隧道 / 走直连字节数。
+  ///
+  /// 与 [directBytes] 的区别是**累计而非瞬时**。此前界面上那个「N% 走隧道」用的是
+  /// 瞬时快照，而 HTTP 请求大多在一秒内结束——轮询根本抓不到它们，于是数字常年
+  /// 停在 0，用户看到的是一个永远不动的面板。累计值随流量逐轮增长，才反映实情。
+  ///
+  /// 口径说明：只在能观察到增量的连接上累加，因此是**下界**（连接关闭瞬间的
+  /// 最后一段流量可能未被计入），但不会虚高。
+  int get sessionProxiedBytes => _sessionProxiedBytes;
+  int get sessionDirectBytes => _sessionDirectBytes;
 
   /// 当前活连接数。
   int get connectionCount => _connectionCount;
@@ -200,6 +244,25 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
   /// 最近一次启动自检报告。尚未跑完时为 null。
   StartupSelfCheckReport? get selfCheckReport => _selfCheckReport;
 
+  /// 最近一次隧道健康结论。尚未探测或已断开时为 null。
+  TunnelHealth? get tunnelHealth => _tunnelHealth;
+
+  /// 内核日志，最旧的在前。界面用于展示与复制。
+  ///
+  /// 出问题时这是唯一的原始材料：界面上看到的是「连不上」这类结论，而内核在
+  /// 日志里写明了它做了哪个判定、走的哪个出站、失败在哪一步。
+  List<String> get kernelLog => _core.kernelLog.lines;
+
+  /// 因为容量上限被丢弃的日志行数。大于 0 时界面要如实说明「更早的看不到了」。
+  int get kernelLogDropped => _core.kernelLog.droppedLines;
+
+  /// 清空内核日志。由用户显式触发——程序不自动清，因为跨重连保留的
+  /// 「崩之前那几行」正是排查时最需要的。
+  void clearKernelLog() {
+    _core.kernelLog.clear();
+    notifyListeners();
+  }
+
   /// 最近自动纠正的域名记录。
   List<AutoRouteDecision> get learnedDecisions =>
       List<AutoRouteDecision>.unmodifiable(_learnedDecisions);
@@ -207,9 +270,39 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
   /// 自动纠正表。为 null 表示当前内核不做学习（演示内核）。
   AutoRouteTable? get autoRoute => _core.autoRoute;
 
+  /// 最近观测到的 WireGuard 握手状态。
+  ///
+  /// 两端都由共用的内核日志管线喂出来，因此这里不需要按平台分支。
+  WireGuardHandshake get handshake => _core.handshake;
+
+  /// 本平台能否报告握手状态。为 false 时界面整行不显示。
+  bool get supportsHandshakeState => _core.supportsHandshakeState;
+
+  /// 界面层对「本平台能否报告握手状态」的覆盖值，仅用于测试。
+  ///
+  /// 存在的理由很具体：能力标志定义在**内核**侧（桌面 true / 安卓 false），
+  /// 而 widget 测试里注入的替身内核无法在两个平台标签之间切换。没有这个注入点，
+  /// 「安卓不显示握手行」这条分支就只能靠真机去撞——而它恰恰是真机上崩过一次
+  /// 才发现的。
+  bool? debugSupportsHandshakeOverride;
+
+  /// 界面实际使用的判定：覆盖值优先。
+  bool get handshakeVisible =>
+      debugSupportsHandshakeOverride ?? supportsHandshakeState;
+
   bool get hasProfiles => _profiles.isNotEmpty;
   bool get isConnected => _status == VpnStatus.connected;
-  bool get isConnecting => _status == VpnStatus.connecting;
+
+  /// 隧道正在建立（含预热）。
+  ///
+  /// 预热态对按钮而言与「连接中」完全一致——都不该让用户再点一次连接，
+  /// 否则会并发跑两遍 connect()。因此这里合并成一个判断。
+  bool get isConnecting =>
+      _status == VpnStatus.connecting || _status == VpnStatus.warmingUp;
+
+  /// 内核已就绪、但隧道还不能载流量。界面据此给出「正在建立隧道」而不是
+  /// 干脆的「连接中」，让那几秒等待有明确解释。
+  bool get isWarmingUp => _status == VpnStatus.warmingUp;
 
   VpnProfile? get activeProfile {
     if (_profiles.isEmpty) return null;
@@ -291,7 +384,7 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
   /// 因此 WireGuard 的 .conf 与 OpenVPN 的 .ovpn 走的是同一条路径。
   ///
   /// 解析失败会抛出 [VpnConfigException]，消息是中文，由界面直接展示。
-  void importConf({
+  ImportOutcome importConf({
     required String text,
     required String fileName,
     String? username,
@@ -305,11 +398,7 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
     );
     // 以「协议 + 文本」作为身份：同一份配置重复导入会覆盖而不是新增。
     final id = stableHash('${parsed.protocol.name}|$text');
-    final profile = VpnProfile(
-      id: id,
-      name: fileName,
-      parsed: parsed,
-    );
+    final profile = VpnProfile(id: id, name: fileName, parsed: parsed);
 
     final existing = _profiles.indexWhere((p) => p.id == id);
     if (existing >= 0) {
@@ -324,7 +413,76 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
     notifyListeners();
     _persist();
 
+    // 需要账号密码而这次没带：**先告诉调用方**，由界面弹表单补填。
+    // 注意配置此时已经导入成功——用户中途取消填写也只是「暂时连不上」，
+    // 不会丢掉刚导入的配置。
+    if (_needsCredentials(id)) {
+      return ImportOutcome.needsCredentials;
+    }
+
     if (_settings.autoConnectOnImport && _status == VpnStatus.disconnected) {
+      unawaited(connect());
+    }
+    return ImportOutcome.imported;
+  }
+
+  /// 这份配置是否「需要账号密码但还没填」。
+  bool _needsCredentials(String id) {
+    final credentials = _profileCredentials[id];
+    return _profileById(id)?.parsed.requiresCredentials == true &&
+        (credentials?.username == null || credentials?.password == null);
+  }
+
+  /// 某份配置是否还需要用户补填账号密码。界面据此显示提示入口。
+  bool profileNeedsCredentials(String id) => _needsCredentials(id);
+
+  VpnProfile? _profileById(String id) {
+    for (final profile in _profiles) {
+      if (profile.id == id) return profile;
+    }
+    return null;
+  }
+
+  /// 这份配置是否保存了账号密码。
+  bool profileHasCredentials(String id) {
+    final credentials = _profileCredentials[id];
+    return credentials?.username != null && credentials?.password != null;
+  }
+
+  /// 补填或修改某份配置的账号密码。
+  ///
+  /// 刻意不走 [importConf]：那个入口的副作用是「把它设为当前配置并按设置自动
+  /// 连接」，而给一份**没在用**的配置补密码不该顺手把隧道切过去。
+  void setProfileCredentials(
+    String id, {
+    required String username,
+    required String password,
+  }) {
+    final text = _profileTexts[id];
+    final name = _profileById(id)?.name;
+    if (text == null || name == null) return;
+
+    final parsed = VpnProtocolFactory.parse(
+      text,
+      name,
+      username: username,
+      password: password,
+    );
+    // 原文没变，因此 id 也不会变；这里仍然按解析结果重算一次，
+    // 避免依赖「id 一定相同」这个隐含前提。
+    final targetId = stableHash('${parsed.protocol.name}|$text');
+    final index = _profiles.indexWhere((VpnProfile p) => p.id == targetId);
+    if (index < 0) return;
+
+    _profiles[index] = VpnProfile(id: targetId, name: name, parsed: parsed);
+    _profileCredentials[targetId] = (username: username, password: password);
+    _lastError = null;
+    notifyListeners();
+    _persist();
+
+    // 隧道正连在这份配置上：凭据变了必须重建，否则内核里用的还是旧凭据
+    // （或者根本没凭据），而界面显示「已连接」。
+    if (_activeProfileId == targetId && _status != VpnStatus.disconnected) {
       unawaited(connect());
     }
   }
@@ -369,6 +527,15 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
       notifyListeners();
       return;
     }
+    // 需要账号密码却还没填：绝不能带着空凭据去建隧道。
+    //
+    // 真让它连下去，内核会照常启动、界面显示「已连接」，然后所有网页都打不开，
+    // 内核日志里只有一句握手失败——用户完全无从判断问题出在一行没填的输入框上。
+    if (_needsCredentials(profile.id)) {
+      _lastError = '「${profile.name}」需要账号密码，请先在配置页填写后再连接';
+      notifyListeners();
+      return;
+    }
     _lastError = null;
     // 先记意图再拨号：中途失败时下次启动会重试，符合用户「我要连着」的预期。
     _wantConnected = true;
@@ -399,7 +566,11 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
 
   Future<void> toggleConnection() async {
     switch (_status) {
+      // 预热态也允许断开：内核已经就绪、系统代理已经生效，用户此时想中止
+      // 连接是完全合理的诉求。此前这里只有 connected 一个分支，预热态会落到
+      // 「连接中」那条上被静默忽略——点了没反应，只能一直等门控超时。
       case VpnStatus.connected:
+      case VpnStatus.warmingUp:
         await disconnect();
       case VpnStatus.connecting:
         // 连接过程中重复触发会并发跑两遍 connect()，第二次会先把刚建好的隧道拆掉。
@@ -414,12 +585,26 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
 
   void clearRecords() {
     _recordsRing.clear();
+    _recordByTarget.clear();
+    _failureCounts.clear();
+    _sessionProxiedBytes = 0;
+    _sessionDirectBytes = 0;
     _failuresRing.clear();
     _recordsVersion++;
     _failuresVersion++;
     // 「最近学会的」也跟着清掉：它展示的是本次会话观察到的结论，
     // 用户点了清空却还留着十几条记录，会让人以为没清干净。
     _learnedDecisions.clear();
+    notifyListeners();
+  }
+
+  /// 只清空失败记录。
+  ///
+  /// 与 [clearRecords] 分开：失败记录是排查用的原始证据，用户在失败面板里点
+  /// 「清空」的意思是「这一批我看过了」，不该顺手把分流记录一起清掉。
+  void clearFailures() {
+    _failuresRing.clear();
+    _failuresVersion++;
     notifyListeners();
   }
 
@@ -449,6 +634,27 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
     return true;
   }
 
+  /// 对一个域名做查证。
+  ///
+  /// 汇总三份已有的证据：内核**实际**把它判到了哪条路（分流记录）、有没有规则
+  /// 覆盖它、两路 DNS 的解析是否一致。DNS 那一步是真的发查询，因此这是用户
+  /// 主动触发的动作，不会自己跑。
+  Future<DomainCheck> checkDomain(String domain) async {
+    final normalized = AutoRouteTable.normalizeDomain(domain);
+    if (normalized.isEmpty) {
+      // 非法域名（IP、单标签主机名、空串）不必发探测：分流规则本来就按域名，
+      // 对它们谈「有没有规则覆盖」没有意义。
+      return buildDomainCheck(domain: domain, records: _recordsView);
+    }
+    final dns = await _core.crossCheckDomain(normalized);
+    return buildDomainCheck(
+      domain: normalized,
+      records: _recordsView,
+      rule: _core.autoRoute?.match(normalized),
+      dns: dns,
+    );
+  }
+
   /// 淘汰长期没有新证据的学习规则。返回被淘汰的域名。
   ///
   /// 平时由内核在每次连接时自动做，这里给界面一个手工入口：
@@ -476,11 +682,33 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
     await _core.runSelfCheck();
   }
 
+  /// 最近一次 MTU 校验结论。未校验过时为 null。
+  MtuCheck? get mtuCheck => _mtuCheck;
+  MtuCheck? _mtuCheck;
+
+  /// 流量接管入口的展示串；为 null 表示该平台没有这样一个本地入口。
+  ///
+  /// 界面据此显示「系统代理已设置到哪个地址」，而不是写死一个默认值。
+  String? get takeOverEndpoint => _core.takeOverEndpoint;
+
+  /// 主动重测一次 MTU。
+  ///
+  /// 与 DNS/自检的重测入口同理：结论是采样出来的，只展示不给重测入口，用户
+  /// 换了节点或改了配置之后就只能干等下一次自动校验（而那要等下一次连接）。
+  Future<void> recheckMtu() async {
+    final check = await _core.checkMtu();
+    if (check != null) {
+      _mtuCheck = check;
+      notifyListeners();
+    }
+  }
+
   void updateSettings(AppSettings next) {
     final previous = _settings;
     _settings = next;
     if (!next.logSplits && previous.logSplits) {
       _recordsRing.clear();
+      _recordByTarget.clear();
       _recordsVersion++;
     }
     notifyListeners();
@@ -505,8 +733,11 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
         final name = item['name'];
         final text = item['text'];
         if (name is! String || text is! String || text.isEmpty) continue;
-        final username = item['username'] as String?;
-        final password = item['password'] as String?;
+        // 凭据是加密存的，取不回来时返回空——那种情况下配置**照常恢复**，
+        // 只是标记成「待补填账号密码」，用户补一次就能用。
+        final credentials = _readCredentials(item as Map<Object?, Object?>);
+        final username = credentials.username;
+        final password = credentials.password;
         try {
           final parsed = VpnProtocolFactory.parse(
             text,
@@ -525,7 +756,8 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
     }
 
     final activeId = data['activeProfileId'];
-    if (activeId is String && _profiles.any((VpnProfile p) => p.id == activeId)) {
+    if (activeId is String &&
+        _profiles.any((VpnProfile p) => p.id == activeId)) {
       _activeProfileId = activeId;
     } else if (_profiles.isNotEmpty) {
       _activeProfileId = _profiles.first.id;
@@ -537,8 +769,11 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
         _settings = AppSettings(
           autoConnectOnImport: settings['autoConnectOnImport'] as bool? ?? true,
           // 枚举按下标存：名字改了也不会让用户的选择失效。
-          splitMode:
-              _enumAt(SplitMode.values, settings['splitMode'], SplitMode.smart),
+          splitMode: _enumAt(
+            SplitMode.values,
+            settings['splitMode'],
+            SplitMode.smart,
+          ),
           logSplits: settings['logSplits'] as bool? ?? true,
           ruleSetUpdatedAt: DateTime.tryParse(
             settings['ruleSetUpdatedAt'] as String? ?? '',
@@ -562,35 +797,112 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
     return fallback;
   }
 
+  /// 一份配置的凭据落盘字段。
+  ///
+  /// 账号与密码打包成一个整体再加密：只加密密码而把账号明文写在旁边，
+  /// 等于把「谁在用这台机器上的哪个账号」直接告诉任何读到文件的人。
+  ///
+  /// 落盘形态：
+  /// ```
+  /// "credentials": "<密文>",        // 加密后（或未加密时的原文）
+  /// "credentialScheme": "dpapi",    // 用哪个方案解的，将来换方案时旧数据仍可读
+  /// ```
+  Map<String, Object?> _credentialFields(String id) {
+    final credentials = _profileCredentials[id];
+    final username = credentials?.username;
+    final password = credentials?.password;
+    if (username == null || password == null) return const <String, Object?>{};
+    return <String, Object?>{
+      'credentials': protector.protect(
+        jsonEncode(<String, String>{
+          'username': username,
+          'password': password,
+        }),
+      ),
+      'credentialScheme': protector.scheme,
+    };
+  }
+
+  /// 还原一份配置的凭据。
+  ///
+  /// 三条路径，按优先级：
+  ///   1. 有 `credentials` 且方案与当前一致 → 解密；
+  ///   2. 有 `credentials` 但方案不同（或解密失败）→ 放弃，等用户重新填；
+  ///   3. 老版本留下的明文 `username` / `password` → 直接采用（下次落盘
+  ///      就会升级成加密形态）。
+  ///
+  /// 第 2 条刻意不抛异常：换机器、换 Windows 账户都会走到这里，
+  /// 那时需要的是「请重新填一次密码」，而不是让这份配置消失。
+  ({String? username, String? password}) _readCredentials(
+    Map<Object?, Object?> item,
+  ) {
+    final encoded = item['credentials'];
+    if (encoded is String && encoded.isNotEmpty) {
+      final scheme = item['credentialScheme'];
+      if (scheme == protector.scheme) {
+        final plain = protector.unprotect(encoded);
+        if (plain != null) {
+          try {
+            final decoded = jsonDecode(plain);
+            if (decoded is Map) {
+              final username = decoded['username'];
+              final password = decoded['password'];
+              if (username is String && password is String) {
+                return (username: username, password: password);
+              }
+            }
+          } on FormatException {
+            // 内容坏了，按「需要重新填」处理。
+          }
+        }
+      }
+      return (username: null, password: null);
+    }
+
+    final legacyUsername = item['username'];
+    final legacyPassword = item['password'];
+    if (legacyUsername is String && legacyPassword is String) {
+      return (username: legacyUsername, password: legacyPassword);
+    }
+    return (username: null, password: null);
+  }
+
   /// 落盘。任何一处失败都不影响界面，只是这次不持久化。
   void _persist() {
     final target = store;
     if (target == null) return;
-    target.save(<String, Object?>{
-      'profiles': <Object?>[
-        for (final VpnProfile p in _profiles)
-          if (_profileTexts[p.id] case final String text)
-            <String, Object?>{
-              'name': p.name,
-              'text': text,
-              if (_profileCredentials[p.id]?.username != null)
-                'username': _profileCredentials[p.id]!.username,
-              if (_profileCredentials[p.id]?.password != null)
-                'password': _profileCredentials[p.id]!.password,
-            },
-      ],
-      'activeProfileId': _activeProfileId,
-      'wantConnected': _wantConnected,
-      'settings': <String, Object?>{
-        'autoConnectOnImport': _settings.autoConnectOnImport,
-        'splitMode': _settings.splitMode.index,
-        'logSplits': _settings.logSplits,
-        'ruleSetUpdatedAt': _settings.ruleSetUpdatedAt?.toIso8601String(),
-      },
-      // 自动纠正表随设置一起落盘。它的价值是「学一次，以后都记得」，
-      // 每次重启就忘掉会让用户觉得分流时好时坏。
-      'autoRoute': _core.exportAutoRoute(),
-    });
+    // 整段包在 try 里。组装落盘数据的阶段就会碰系统 API——凭据加密在 Windows 上
+    // 走 DPAPI，它可能失败（FFI 调用返回非零）。而 _persist 的调用点遍布各处，
+    // 其中一些是定时器回调（例如自动纠正学到规则时），异常在那里会变成一个
+    // **没人处理的异步错误**，界面既不提示、数据也没存下来。
+    try {
+      target.save(<String, Object?>{
+        'profiles': <Object?>[
+          for (final VpnProfile p in _profiles)
+            if (_profileTexts[p.id] case final String text)
+              <String, Object?>{
+                'name': p.name,
+                'text': text,
+                ..._credentialFields(p.id),
+              },
+        ],
+        'activeProfileId': _activeProfileId,
+        'wantConnected': _wantConnected,
+        'settings': <String, Object?>{
+          'autoConnectOnImport': _settings.autoConnectOnImport,
+          'splitMode': _settings.splitMode.index,
+          'logSplits': _settings.logSplits,
+          'ruleSetUpdatedAt': _settings.ruleSetUpdatedAt?.toIso8601String(),
+        },
+        // 自动纠正表随设置一起落盘。它的价值是「学一次，以后都记得」，
+        // 每次重启就忘掉会让用户觉得分流时好时坏。
+        'autoRoute': _core.exportAutoRoute(),
+      });
+    } on Object catch (e) {
+      // 说明清楚并继续跑：这次没存下来不该让整个界面崩掉或静默丢数据。
+      _lastError = '保存配置失败：$e';
+      notifyListeners();
+    }
   }
 
   /// 启动时把用户离开时的连接状态接回来。
@@ -643,9 +955,12 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
         _startTicker();
       case VpnStatus.disconnected:
       case VpnStatus.connecting:
+      case VpnStatus.warmingUp:
         _connectedSince = null;
         _stopTicker();
         // 每次重新连接都从干净的失败记录开始，避免旧失败误导判断。
+        // 预热不算「重新连接」：失败记录里可能已经有本次预热期间的真实失败，
+        // 那是排查用的证据，不该在预热转正时被抹掉。
         if (status == VpnStatus.connecting) {
           _failuresRing.clear();
           _failuresVersion++;
@@ -662,6 +977,9 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
           // 自动纠正表不清：那是学到的长期结论，与本次会话无关。
           _dnsReport = null;
           _selfCheckReport = null;
+          // 健康结论同理：它描述的是「刚才那条隧道」，断开后不再有意义。
+          _tunnelHealth = null;
+          _healthNotice = null;
         }
     }
     notifyListeners();
@@ -694,17 +1012,98 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
     notifyListeners();
   }
 
+  /// 同目标合并表的查找索引：target → 环形缓冲里的那一条记录。
+  ///
+  /// **必须是 O(1) 的**。这条路径每秒会被调用「目标数」次（每个目标一次流量增量），
+  /// 一旦退化成遍历整个缓冲（上限 500 条），每秒就是几万次比较——那是纯粹的
+  /// 界面开销，而它跑在与分流同一个进程里，界面卡住会直接影响分流数据的处理。
+  /// 因此淘汰清理放在写入侧做（见 [onSplitRecord]），读取侧只查表。
+  final Map<String, SplitRecord> _recordByTarget = <String, SplitRecord>{};
+
+  /// 每个目标的累计失败次数。内核只在日志里报失败，不算进连接快照，
+  /// 因此需要状态层自己按目标计数。
+  final Map<String, int> _failureCounts = <String, int>{};
+
   @override
   void onSplitRecord(SplitRecord record) {
     if (!_settings.logSplits) return;
-    _recordsRing.push(record);
+
+    final existing = _recordByTarget[record.target];
+    if (existing != null) {
+      // 同一目标再次出现：合并到已有那一行，不新增行。
+      existing.connections++;
+      existing.lastSeen = record.time;
+      _recordsVersion++;
+      return;
+    }
+
+    // 先记下即将被挤出的那一条，push 之后把它从索引里摘掉。
+    //
+    // 这一步是「读取侧只查表」的前提：环形缓冲满员时会静默丢弃最旧的一条，
+    // 若索引不跟着清理，它就会一直涨、并且留下指向已淘汰对象的引用。
+    final ring = _recordsRing;
+    final evicted = ring.length >= AppState.recordLimit
+        ? ring[ring.length - 1]
+        : null;
+
+    ring.push(record);
+    _recordByTarget[record.target] = record;
+    if (evicted != null &&
+        !identical(evicted, record) &&
+        identical(_recordByTarget[evicted.target], evicted)) {
+      _recordByTarget.remove(evicted.target);
+      // 失败计数与记录生命周期一致：记录被挤出后计数也一并清掉，
+      // 否则同一目标再次出现时会带着上一轮的旧计数。
+      _failureCounts.remove(evicted.target);
+    }
     _recordsVersion++;
-    notifyListeners();
+  }
+
+  /// 把一条连接的流量增量累加到它所属的那一行上。
+  ///
+  /// 目标还没出现过时不新建行：行由 [onSplitRecord] 建，流量只做累加——
+  /// 否则会出现「只有流量、没有连接事件」的记录。
+  ///
+  /// 这里是**每秒 × 目标数**的高频路径，因此只做常数级工作：查表、两个加法、
+  /// 一个计数器自增。**不调用 `notifyListeners`**——界面每秒有一次统一定时刷新，
+  /// 每条流量都触发重绘会把主线程占满，而它和分流共用同一个 isolate。
+  @override
+  void onConnectionTraffic(ConnectionTraffic traffic) {
+    if (!_settings.logSplits) return;
+
+    // 会话累计独立于记录是否存在：记录会被淘汰，而「本次累计走了多少隧道」
+    // 不该因为某一行被挤出就倒退。
+    if (traffic.kind == RouteKind.proxy) {
+      _sessionProxiedBytes += traffic.totalDelta;
+    } else {
+      _sessionDirectBytes += traffic.totalDelta;
+    }
+
+    final record = _recordByTarget[traffic.target];
+    if (record == null) {
+      _recordsVersion++;
+      return;
+    }
+    record.uploadBytes += traffic.uploadDelta;
+    record.downloadBytes += traffic.downloadDelta;
+    record.lastSeen = DateTime.now();
+    _recordsVersion++;
   }
 
   @override
   void onConnectionFailure(ConnectionFailure failure) {
     _failuresRing.push(failure);
+    final host = failure.host;
+    final total = (_failureCounts[host] ?? 0) + 1;
+    _failureCounts[host] = total;
+    // 立刻回填到对应那一行，而不是等到界面取列表时才填。
+    //
+    // 此前回填写在 filteredRecords 里，于是「失败次数」只在渲染路径上可见：
+    // 任何直接读记录的地方（测试、以后可能加的导出）拿到的都是 0，
+    // 同一份数据出现两个值。计数处就写进去，来源只有一个。
+    final record = _recordByTarget[host];
+    if (record != null) record.failures = total;
+    _recordsVersion++;
     _failuresVersion++;
     notifyListeners();
   }
@@ -736,11 +1135,52 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
 
   /// 记下一条自动纠正结论，供界面展示。只保留最近若干条。
   void _rememberDecision(AutoRouteDecision decision) {
-    _learnedDecisions.removeWhere((AutoRouteDecision d) => d.domain == decision.domain);
+    _learnedDecisions.removeWhere(
+      (AutoRouteDecision d) => d.domain == decision.domain,
+    );
     _learnedDecisions.insert(0, decision);
     if (_learnedDecisions.length > learnedDisplayLimit) {
-      _learnedDecisions.removeRange(learnedDisplayLimit, _learnedDecisions.length);
+      _learnedDecisions.removeRange(
+        learnedDisplayLimit,
+        _learnedDecisions.length,
+      );
     }
+  }
+
+  @override
+  void onTunnelHealth(TunnelHealth health) {
+    _tunnelHealth = health;
+    if (health.isProblem) {
+      // 任何异常结论都先在这里说清楚，这样即便某个平台没有自愈能力，
+      // 用户也不会只看到「网页打不开」却不知道原因。
+      //
+      // 有能力自愈的内核会在随后用一条更具体的消息覆盖它（例如
+      // 「第 1 次自动恢复」）——观测引擎刻意先通知界面、再通知内核，
+      // 就是为了让那条更具体的消息排在后面。
+      _healthNotice = health.summary;
+      _lastError = health.summary;
+    } else {
+      if (_healthNotice != null && _lastError == _healthNotice) {
+        // 恢复后撤掉这句已经过期的结论。
+        _lastError = null;
+        _healthNotice = null;
+      }
+      // 连接期那条「隧道尚未就绪」也要撤掉。
+      //
+      // 它是门控超时时写下的临时说明，而门控超时**不阻断连接**：隧道完全可能
+      // 再过几秒就通了——实测正是如此。没有这一句撤销，那条提示会一直挂在
+      // 界面上，用户拿着一个过期的结论去排查一条已经好了的隧道。
+      if (_lastError == tunnelNotReadyNotice) {
+        _lastError = null;
+      }
+    }
+    notifyListeners();
+  }
+
+  @override
+  void onMtuCheck(MtuCheck check) {
+    _mtuCheck = check;
+    notifyListeners();
   }
 
   @override
@@ -748,6 +1188,36 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
     _lastError = message;
     notifyListeners();
   }
+
+  @override
+  void onKernelLog() {
+    // 只重建界面，不写进 _lastError：日志是材料不是结论，绝大多数行都
+    // 不代表出错，按错误显示会把真正的错误淹掉。
+    //
+    // 但**必须合并同一轮里的多次通知**：内核日志是按块到达的，而且内核以
+    // debug 级别运行时每秒可能来几十块。逐块 notifyListeners 会让整棵界面树
+    // 每秒重建几十次，而界面与分流数据处理共用同一个 isolate——界面把主线程
+    // 占满，分流数据的处理就会被推迟。日志缓冲本身已经立刻写入（用户点开日志
+    // 看到的是最新的），这里只是把「重绘」这一步合并掉。
+    _notifyCoalesced();
+  }
+
+  /// 把同一轮事件里的多次重绘请求合并成一次。
+  ///
+  /// 用微任务而不是延时定时器：微任务在本轮事件循环结束时立刻执行，因此
+  /// 界面依然是「这一瞬间就更新」，只是不会为同一批数据重复重建多遍；
+  /// 而在测试里 `pump()` 会先冲掉微任务队列，通知不会被漏掉。
+  void _notifyCoalesced() {
+    if (_notifyScheduled) return;
+    _notifyScheduled = true;
+    scheduleMicrotask(() {
+      _notifyScheduled = false;
+      if (_disposed) return;
+      notifyListeners();
+    });
+  }
+
+  bool _notifyScheduled = false;
 
   // ---------------------------------------------------------------- 内部工具
 
@@ -767,7 +1237,10 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
   }
 
   void _startTicker() {
-    _ticker ??= Timer.periodic(const Duration(seconds: 1), (_) => notifyListeners());
+    _ticker ??= Timer.periodic(
+      const Duration(seconds: 1),
+      (_) => notifyListeners(),
+    );
   }
 
   void _stopTicker() {
@@ -791,10 +1264,10 @@ enum RouteFilter { all, proxy, direct }
 
 extension RouteFilterX on RouteFilter {
   String get label => switch (this) {
-        RouteFilter.all => '全部',
-        RouteFilter.proxy => '走代理',
-        RouteFilter.direct => '直连',
-      };
+    RouteFilter.all => '全部',
+    RouteFilter.proxy => '走代理',
+    RouteFilter.direct => '直连',
+  };
 }
 
 /// 把 [RingBuffer] 包装成只读的 `List`。
@@ -814,8 +1287,7 @@ class _RingView<T> extends ListBase<T> {
   int get length => _ring.length;
 
   @override
-  set length(int value) =>
-      throw UnsupportedError('记录视图是只读的');
+  set length(int value) => throw UnsupportedError('记录视图是只读的');
 
   @override
   T operator [](int index) {
@@ -827,6 +1299,5 @@ class _RingView<T> extends ListBase<T> {
   }
 
   @override
-  void operator []=(int index, T value) =>
-      throw UnsupportedError('记录视图是只读的');
+  void operator []=(int index, T value) => throw UnsupportedError('记录视图是只读的');
 }

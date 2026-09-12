@@ -84,7 +84,10 @@ void main() {
     });
 
     test('排序是稳定的：同档内不改变用户写的顺序', () {
-      final ordered = preferFastCiphersFirst(<String>['AES-256-GCM', 'AES-128-GCM']);
+      final ordered = preferFastCiphersFirst(<String>[
+        'AES-256-GCM',
+        'AES-128-GCM',
+      ]);
       expect(ordered, <String>['AES-256-GCM', 'AES-128-GCM']);
     });
   });
@@ -113,7 +116,10 @@ void main() {
         isTrue,
       );
       expect(looksLikeAmneziaWireGuard(<String, String>{'H1': '1'}), isTrue);
-      expect(looksLikeAmneziaWireGuard(<String, String>{'mtu': '1420'}), isFalse);
+      expect(
+        looksLikeAmneziaWireGuard(<String, String>{'mtu': '1420'}),
+        isFalse,
+      );
       expect(looksLikeAmneziaWireGuard(const <String, String>{}), isFalse);
     });
   });
@@ -133,8 +139,10 @@ PersistentKeepalive = 25
 ''';
 
     test('保活只在配置显式声明时才下发', () {
-      final endpoint = WireGuardAdapter()
-          .buildEndpoint(WireGuardProfile(_parseWg(conf)), context);
+      final endpoint = WireGuardAdapter().buildEndpoint(
+        WireGuardProfile(_parseWg(conf)),
+        context,
+      );
       final peers = endpoint['peers']! as List<Object?>;
       final peer = peers.first! as Map<String, Object?>;
       expect(peer['persistent_keepalive_interval'], 25);
@@ -142,9 +150,12 @@ PersistentKeepalive = 25
 
     test('没写保活就不下发，交给内核默认（0 = 不主动发包）', () {
       final withoutKeepalive = conf.replaceAll('PersistentKeepalive = 25', '');
-      final endpoint = WireGuardAdapter()
-          .buildEndpoint(WireGuardProfile(_parseWg(withoutKeepalive)), context);
-      final peer = (endpoint['peers']! as List<Object?>).first! as Map<String, Object?>;
+      final endpoint = WireGuardAdapter().buildEndpoint(
+        WireGuardProfile(_parseWg(withoutKeepalive)),
+        context,
+      );
+      final peer =
+          (endpoint['peers']! as List<Object?>).first! as Map<String, Object?>;
 
       // 老实现写的是 `?? 25`，会给所有配置硬塞 25 秒保活：
       // 移动网络上是实打实的耗电与流量，而配置作者显然不需要它。
@@ -157,37 +168,53 @@ PersistentKeepalive = 25
 
     test('不合理的 MTU 被换成默认值', () {
       final bogus = conf.replaceAll('MTU = 1420', 'MTU = 9000');
-      final endpoint = WireGuardAdapter()
-          .buildEndpoint(WireGuardProfile(_parseWg(bogus)), context);
+      final endpoint = WireGuardAdapter().buildEndpoint(
+        WireGuardProfile(_parseWg(bogus)),
+        context,
+      );
       expect(endpoint['mtu'], WireGuardAdapter.defaultMtu);
     });
 
     test('合理 MTU 原样保留', () {
       final custom = conf.replaceAll('MTU = 1420', 'MTU = 1380');
-      final endpoint = WireGuardAdapter()
-          .buildEndpoint(WireGuardProfile(_parseWg(custom)), context);
+      final endpoint = WireGuardAdapter().buildEndpoint(
+        WireGuardProfile(_parseWg(custom)),
+        context,
+      );
       expect(endpoint['mtu'], 1380);
     });
 
     test('未声明 MTU 时用 1420（wg-quick 默认值）', () {
       final withoutMtu = conf.replaceAll('MTU = 1420', '');
-      final endpoint = WireGuardAdapter()
-          .buildEndpoint(WireGuardProfile(_parseWg(withoutMtu)), context);
+      final endpoint = WireGuardAdapter().buildEndpoint(
+        WireGuardProfile(_parseWg(withoutMtu)),
+        context,
+      );
       expect(endpoint['mtu'], WireGuardAdapter.defaultMtu);
     });
 
     test('出站方向始终覆盖全部地址，与配置里的 AllowedIPs 无关', () {
-      final narrow = conf.replaceAll('AllowedIPs = 0.0.0.0/0', 'AllowedIPs = 10.0.0.0/24');
-      final endpoint = WireGuardAdapter()
-          .buildEndpoint(WireGuardProfile(_parseWg(narrow)), context);
-      final peer = (endpoint['peers']! as List<Object?>).first! as Map<String, Object?>;
+      final narrow = conf.replaceAll(
+        'AllowedIPs = 0.0.0.0/0',
+        'AllowedIPs = 10.0.0.0/24',
+      );
+      final endpoint = WireGuardAdapter().buildEndpoint(
+        WireGuardProfile(_parseWg(narrow)),
+        context,
+      );
+      final peer =
+          (endpoint['peers']! as List<Object?>).first! as Map<String, Object?>;
       expect(peer['allowed_ips'], <String>['0.0.0.0/0', '::/0']);
     });
 
     test('端点域名用直连解析器，避免引导死锁', () {
-      final endpoint = WireGuardAdapter()
-          .buildEndpoint(WireGuardProfile(_parseWg(conf)), context);
-      expect(endpoint['domain_resolver'], <String, Object?>{'server': 'dns-cn'});
+      final endpoint = WireGuardAdapter().buildEndpoint(
+        WireGuardProfile(_parseWg(conf)),
+        context,
+      );
+      expect(endpoint['domain_resolver'], <String, Object?>{
+        'server': 'dns-cn',
+      });
     });
   });
 
@@ -209,9 +236,9 @@ MIIB
 ''';
 
     Map<String, Object?> build(String text) => OpenVpnAdapter().buildEndpoint(
-          OpenVpnProfile(_parseOvpn(text)),
-          context,
-        );
+      OpenVpnProfile(_parseOvpn(text)),
+      context,
+    );
 
     test('不认识的套件被剔除，小写被归一化', () {
       final endpoint = build(conf);
@@ -248,7 +275,10 @@ MIIB
 
     test('没有可用套件时不下发 data_ciphers，而不是下发空列表', () {
       final onlyBogus = conf
-          .replaceAll('data-ciphers AES-256-GCM:aes-128-GCM:bogus-cipher', 'data-ciphers bogus-a:bogus-b')
+          .replaceAll(
+            'data-ciphers AES-256-GCM:aes-128-GCM:bogus-cipher',
+            'data-ciphers bogus-a:bogus-b',
+          )
           .replaceAll('data-ciphers-fallback aes-256-cbc', '');
       final endpoint = build(onlyBogus);
       expect(endpoint.containsKey('data_ciphers'), isFalse);
@@ -257,7 +287,10 @@ MIIB
 
     test('老式 cipher 指令在没有 data-ciphers 时作为协商列表', () {
       final legacy = conf
-          .replaceAll('data-ciphers AES-256-GCM:aes-128-GCM:bogus-cipher', 'cipher AES-256-CBC')
+          .replaceAll(
+            'data-ciphers AES-256-GCM:aes-128-GCM:bogus-cipher',
+            'cipher AES-256-CBC',
+          )
           .replaceAll('data-ciphers-fallback aes-256-cbc', '');
       final endpoint = build(legacy);
       expect(endpoint['data_ciphers'], <String>['AES-256-CBC']);
@@ -266,10 +299,12 @@ MIIB
     });
 
     test('老式 cipher 与 data-ciphers 并存时，cipher 作为兜底', () {
-      final both = conf.replaceAll(
-        'data-ciphers AES-256-GCM:aes-128-GCM:bogus-cipher',
-        'cipher BF-CBC\ndata-ciphers AES-256-GCM',
-      ).replaceAll('data-ciphers-fallback aes-256-cbc', '');
+      final both = conf
+          .replaceAll(
+            'data-ciphers AES-256-GCM:aes-128-GCM:bogus-cipher',
+            'cipher BF-CBC\ndata-ciphers AES-256-GCM',
+          )
+          .replaceAll('data-ciphers-fallback aes-256-cbc', '');
       final endpoint = build(both);
       expect(endpoint['data_ciphers'], <String>['AES-256-GCM']);
       expect(endpoint['data_ciphers_fallback'], 'BF-CBC');

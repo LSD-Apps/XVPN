@@ -19,10 +19,10 @@ resolvers to avoid poisoning.
 
 ## What this is — and what it is not
 
-**It is** a config parser and split-tunnel client. You hand it a WireGuard or
-OpenVPN config; it translates that config into something the core understands,
-decides which traffic goes direct and which goes through the tunnel, and checks
-whether that decision was wrong.
+**It is** a config parser and split-tunnel client. You hand it a WireGuard,
+OpenVPN or Hysteria2 config; it translates that config into something the core
+understands, decides which traffic goes direct and which goes through the tunnel,
+and checks whether that decision was wrong.
 
 **It is not** a VPN service. This project ships **no** nodes, servers,
 subscriptions, or accounts, and it does **not** implement cryptography — that is
@@ -38,7 +38,7 @@ reasoning is in [`docs/RELEASE.md`](docs/RELEASE.md).
 | --- | --- |
 | Choose which traffic goes where | Bundled `geosite-cn` + `geoip-cn` rule sets — domain and IP, belt and braces |
 | Set up DNS to avoid poisoning | Generates two resolvers: domestic DNS for domestic domains, in-tunnel DNS for the rest |
-| Understand WireGuard / OpenVPN parameters | Parses the config and maps every field to the core; invalid or outdated parameters are corrected automatically |
+| Understand WireGuard / OpenVPN / Hysteria2 parameters | Parses the config and maps every field to the core; invalid or outdated parameters are corrected automatically |
 | Reconfigure on every switch | Remembers multiple profiles; switching reconnects |
 
 Rule sets ship with the app, are unpacked to the app's private directory on first
@@ -51,8 +51,24 @@ implementing one adapter — the UI and core layer stay untouched.
 
 - WireGuard (`.conf`)
 - OpenVPN (`.ovpn`)
+- Hysteria2 (`hysteria2://` share link, the official `config.yaml`, or a sing-box outbound `.json`)
 
 See [`docs/PROTOCOLS.md`](docs/PROTOCOLS.md) (Chinese).
+
+## When something goes wrong
+
+The client heals what it can and tells you the rest:
+
+- The core is restarted automatically after a crash, a dead tunnel, or a wedged
+  process — with retry limits, so a genuinely broken node fails fast instead of
+  looping.
+- If ports 2080/2081 are taken, it picks free ones instead of failing to start.
+- The status card shows a failure breakdown (rule miss vs. node problem), the raw
+  kernel log, and a per-domain lookup that gathers what is actually known about one
+  hostname.
+
+Behaviour, limits, and the measurements behind them are documented in
+[`docs/RESILIENCE.md`](docs/RESILIENCE.md) (Chinese).
 
 ## Quick start
 
@@ -206,9 +222,10 @@ flutter analyze
 flutter test
 ```
 
-Coverage includes config parsing (WireGuard / OpenVPN), parameter normalisation,
+Coverage includes config parsing (WireGuard / OpenVPN / Hysteria2), parameter normalisation,
 core config generation, split-log attribution, Clash API parsing, DNS message
-codec and cross-validation, the auto-correction table, startup self-check, platform
+codec and cross-validation, the auto-correction table, startup self-check, tunnel
+warm-up and health verdicts, WireGuard handshake state, MTU validation, platform
 parity, and UI behaviour.
 
 **Protocol behaviour in this project is verified, not guessed.**
@@ -249,7 +266,8 @@ app/tool/        Dev tools: generate core config, validate config, build China I
 app/windows/     Custom borderless window, tray, system proxy takeover and restore
 app/android/     VpnService implementation, VpnService ↔ libbox bridge
 design/          Brand assets and UI mockups
-docs/            Protocols, rules, Android integration, release analysis, store listing
+docs/            Protocols, rules, self-healing and diagnostics, Android
+                 integration, release analysis, store listing
 scripts/         Core build script, China IP index generator
 testdata/        Sample configs used by tests
 ```

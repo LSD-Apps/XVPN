@@ -51,7 +51,8 @@ void main() {
     });
 
     test('域名端点与 IPv6 端点的端口解析', () {
-      String confWith(String endpoint) => '''
+      String confWith(String endpoint) =>
+          '''
 [Interface]
 PrivateKey = a2V5
 Address = 10.0.0.2/32
@@ -60,8 +61,14 @@ Address = 10.0.0.2/32
 PublicKey = cHVi
 Endpoint = $endpoint
 ''';
-      expect(WireGuardConf.parse(confWith('vpn.example.com:51820')).endpointHost, 'vpn.example.com');
-      expect(WireGuardConf.parse(confWith('vpn.example.com:51820')).endpointPort, 51820);
+      expect(
+        WireGuardConf.parse(confWith('vpn.example.com:51820')).endpointHost,
+        'vpn.example.com',
+      );
+      expect(
+        WireGuardConf.parse(confWith('vpn.example.com:51820')).endpointPort,
+        51820,
+      );
 
       final v6 = WireGuardConf.parse(confWith('[fd00::1]:51821'));
       expect(v6.endpointHost, 'fd00::1');
@@ -81,7 +88,9 @@ Endpoint = $endpoint
 
     test('缺失 PrivateKey 时给出可读的中文原因', () {
       expect(
-        () => WireGuardConf.parse('[Interface]\nAddress = 10.0.0.2/32\n\n[Peer]\nPublicKey = x\nEndpoint = 1.2.3.4:5'),
+        () => WireGuardConf.parse(
+          '[Interface]\nAddress = 10.0.0.2/32\n\n[Peer]\nPublicKey = x\nEndpoint = 1.2.3.4:5',
+        ),
         throwsA(
           isA<VpnConfigException>().having(
             (VpnConfigException e) => e.message,
@@ -94,7 +103,9 @@ Endpoint = $endpoint
 
     test('缺失 [Peer] 段时抛错', () {
       expect(
-        () => WireGuardConf.parse('[Interface]\nPrivateKey = k\nAddress = 10.0.0.2/32'),
+        () => WireGuardConf.parse(
+          '[Interface]\nPrivateKey = k\nAddress = 10.0.0.2/32',
+        ),
         throwsA(isA<VpnConfigException>()),
       );
     });

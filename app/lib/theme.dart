@@ -278,48 +278,58 @@ class XvText {
   XvText._();
 
   static TextStyle get screenTitle => TextStyle(
-        fontSize: 17,
-        fontWeight: FontWeight.w700,
-        letterSpacing: -0.2,
-        color: XV.text,
-      );
+    fontSize: 17,
+    fontWeight: FontWeight.w700,
+    letterSpacing: -0.2,
+    color: XV.text,
+  );
 
-  static TextStyle get screenSubtitle => TextStyle(fontSize: 12, color: XV.muted2, height: 1.5);
+  static TextStyle get screenSubtitle =>
+      TextStyle(fontSize: 12, color: XV.muted2, height: 1.5);
 
   static TextStyle get heroTitle => TextStyle(
-        fontSize: 25,
-        fontWeight: FontWeight.w700,
-        letterSpacing: -0.4,
-        color: XV.text,
-      );
+    fontSize: 25,
+    fontWeight: FontWeight.w700,
+    letterSpacing: -0.4,
+    color: XV.text,
+  );
 
   static TextStyle get sectionLabel => TextStyle(
-        fontSize: 12,
-        fontWeight: FontWeight.w600,
-        letterSpacing: 0.4,
-        color: XV.muted,
-      );
+    fontSize: 12,
+    fontWeight: FontWeight.w600,
+    letterSpacing: 0.4,
+    color: XV.muted,
+  );
 
-  static TextStyle get body => TextStyle(fontSize: 13, color: XV.text, height: 1.5);
+  static TextStyle get body =>
+      TextStyle(fontSize: 13, color: XV.text, height: 1.5);
 
-  static TextStyle get bodyMuted => TextStyle(fontSize: 12.5, color: XV.muted, height: 1.6);
+  static TextStyle get bodyMuted =>
+      TextStyle(fontSize: 12.5, color: XV.muted, height: 1.6);
 
-  static TextStyle get caption => TextStyle(fontSize: 11.5, color: XV.muted2, height: 1.7);
+  static TextStyle get caption =>
+      TextStyle(fontSize: 11.5, color: XV.muted2, height: 1.7);
 
-  static TextStyle get mono =>
-      TextStyle(fontSize: 12, color: XV.muted, fontFamilyFallback: XV.monoFallback);
+  static TextStyle get mono => TextStyle(
+    fontSize: 12,
+    color: XV.muted,
+    fontFamilyFallback: XV.monoFallback,
+  );
 
-  static TextStyle get monoSmall =>
-      TextStyle(fontSize: 11.5, color: XV.muted, fontFamilyFallback: XV.monoFallback);
+  static TextStyle get monoSmall => TextStyle(
+    fontSize: 11.5,
+    color: XV.muted,
+    fontFamilyFallback: XV.monoFallback,
+  );
 
   static TextStyle get statLabel => TextStyle(fontSize: 11.5, color: XV.muted2);
 
   static TextStyle get statValue => TextStyle(
-        fontSize: 20,
-        fontWeight: FontWeight.w600,
-        letterSpacing: -0.5,
-        color: XV.text,
-      );
+    fontSize: 20,
+    fontWeight: FontWeight.w600,
+    letterSpacing: -0.5,
+    color: XV.text,
+  );
 
   static TextStyle get statUnit =>
       TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: XV.muted);
@@ -329,11 +339,13 @@ class XvText {
   static TextStyle get navLabelActive =>
       TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: XV.text);
 
-  static TextStyle get tag => TextStyle(fontSize: 11, fontWeight: FontWeight.w600);
+  static TextStyle get tag =>
+      TextStyle(fontSize: 11, fontWeight: FontWeight.w600);
 
   static TextStyle get rowTitle => TextStyle(fontSize: 13, color: XV.text);
 
-  static TextStyle get rowDesc => TextStyle(fontSize: 11.5, color: XV.muted2, height: 1.55);
+  static TextStyle get rowDesc =>
+      TextStyle(fontSize: 11.5, color: XV.muted2, height: 1.55);
 }
 
 /// 组装全局 ThemeData。全部使用调色板取值，不依赖 Material 默认配色。

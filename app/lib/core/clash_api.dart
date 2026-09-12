@@ -123,7 +123,8 @@ class ClashConnection {
       id: id,
       host: metadata['host']?.toString() ?? '',
       destinationIp: metadata['destinationIP']?.toString() ?? '',
-      destinationPort: int.tryParse(metadata['destinationPort']?.toString() ?? '') ?? 0,
+      destinationPort:
+          int.tryParse(metadata['destinationPort']?.toString() ?? '') ?? 0,
       rule: ruleDisplayName(json['rule']?.toString() ?? ''),
       outbound: outbound,
       proxied: chains.any((Object? c) => c.toString() == 'vpn'),

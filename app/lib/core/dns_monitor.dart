@@ -61,12 +61,30 @@ class ResolverHealth {
 
   bool get healthy => consecutiveFailures == 0 && samples > 0;
 
+  /// 连续失败多少次才认定这个解析器「不响应」。
+  ///
+  /// 定在 3 而不是 1：DNS 探测走的是**明文 UDP**，偶尔丢一个包很正常。单次失败
+  /// 不足以支撑一条要用户去改设置的结论，也不该让界面变黄——否则一次抖动就会
+  /// 让「DNS 检测」长期看起来有问题，而这恰恰是用户最容易误解的地方。
+  ///
+  /// [statusLabel] 与界面的告警判定共用这个阈值，避免两处各写一个数而漂移。
+  static const int downThreshold = 3;
+
+  /// 是否已经可以判定这个解析器不响应。
+  ///
+  /// 界面据此决定要不要把这一行标成需要注意。刻意不复用 `consecutiveFailures > 0`：
+  /// 那会让「文字说一致、颜色说异常」同时出现，用户只能得出「这软件一直报错」。
+  bool get isDown => consecutiveFailures >= downThreshold;
+
+  /// 有过失败但还没到定性程度。用于「不稳定」这种中间态展示。
+  bool get isFlaky => consecutiveFailures > 0 && !isDown;
+
   double get successRate => samples == 0 ? 0 : (samples - failures) / samples;
 
   /// 界面用的可读状态。
   String get statusLabel {
     if (samples == 0) return '待探测';
-    if (consecutiveFailures >= 3) return '不响应';
+    if (isDown) return '不响应';
     if (consecutiveFailures > 0) return '不稳定';
     return '正常';
   }
@@ -109,7 +127,9 @@ class LatencyWindow {
 
   int? get p95 => quantile(0.95);
 
-  int? get min => _samples.isEmpty ? null : _samples.reduce((int a, int b) => a < b ? a : b);
+  int? get min => _samples.isEmpty
+      ? null
+      : _samples.reduce((int a, int b) => a < b ? a : b);
 
   int? get average {
     if (_samples.isEmpty) return null;
@@ -183,24 +203,35 @@ enum DnsVerdict {
 
   /// 国内解析器整体不可用。
   directResolverDown,
+
+  /// **本机无法执行 DNS 探测**（探测套接字都建不起来），而不是解析器坏了。
+  ///
+  /// 与 [directResolverDown] 分开的理由很实际：两者的处置方式相反。
+  /// 解析器坏了换个解析器有用；而本机不允许建 UDP 套接字时（企业策略、安全软件、
+  /// 防火墙规则），换解析器毫无用处——把结论说成前者会让用户一直白折腾。
+  probeUnavailable,
 }
 
 extension DnsVerdictX on DnsVerdict {
   String get label => switch (this) {
-        DnsVerdict.unknown => '未校验',
-        DnsVerdict.consistent => '一致',
-        DnsVerdict.dualStack => '国内外双部署',
-        DnsVerdict.suspectPoisoning => '疑似投毒',
-        DnsVerdict.directResolverDown => '国内解析异常',
-      };
+    DnsVerdict.unknown => '尚未校验（连接后会自动校验一次）',
+    DnsVerdict.consistent => '一致',
+    DnsVerdict.dualStack => '国内外双部署',
+    DnsVerdict.suspectPoisoning => '疑似投毒',
+    DnsVerdict.directResolverDown => '国内解析异常',
+    DnsVerdict.probeUnavailable => '探测不可用',
+  };
 
   String get advice => switch (this) {
-        DnsVerdict.unknown => '连接后会自动完成一次校验',
-        DnsVerdict.consistent => '域名按规则库判定即可，无需额外干预',
-        DnsVerdict.dualStack => '两套答案分别指向国内外节点，按域名判定分流是正确的',
-        DnsVerdict.suspectPoisoning => '这类域名直连必然失败，已自动改为走隧道',
-        DnsVerdict.directResolverDown => '检查是否被本地 DNS 或运营商劫持，可尝试更换国内解析器',
-      };
+    DnsVerdict.unknown => '连接后会自动完成一次校验',
+    DnsVerdict.consistent => '域名按规则库判定即可，无需额外干预',
+    DnsVerdict.dualStack => '两套答案分别指向国内外节点，按域名判定分流是正确的',
+    DnsVerdict.suspectPoisoning => '这类域名直连必然失败，已自动改为走隧道',
+    DnsVerdict.directResolverDown => '检查是否被本地 DNS 或运营商劫持，可尝试更换国内解析器',
+    DnsVerdict.probeUnavailable =>
+      '本机不允许建立 DNS 探测套接字（安全软件或系统策略），这不是节点问题，'
+          '也不影响隧道使用；分流与隧道解析照常工作',
+  };
 }
 
 /// 一次域名交叉校验的原始证据。
@@ -284,9 +315,9 @@ class DnsMonitor {
     CnIpIndex? cnIpIndex,
     this.crossCheckTtl = const Duration(minutes: 10),
     this.windowCapacity = 32,
-  })  : cnIpIndex = cnIpIndex ?? CnIpIndex.empty,
-        direct = LatencyWindow(capacity: windowCapacity),
-        tunnel = LatencyWindow(capacity: windowCapacity);
+  }) : cnIpIndex = cnIpIndex ?? CnIpIndex.empty,
+       direct = LatencyWindow(capacity: windowCapacity),
+       tunnel = LatencyWindow(capacity: windowCapacity);
   final DnsMonitorConfig config;
   final DnsResolver resolver;
 
@@ -318,22 +349,32 @@ class DnsMonitor {
   /// 失败往往成批出现（节点掉线、某个站点挂了），而每次交叉校验都要发 UDP 查询
   /// 加一次隧道往返。没有这层去重，一批失败会同时拉起几十个探测，
   /// 既互相抢带宽、又把「耗时」测成排队时间，让 DNS 健康度看起来比实际差。
-  final Map<String, Future<DnsCrossCheck>> _inFlight = <String, Future<DnsCrossCheck>>{};
+  final Map<String, Future<DnsCrossCheck>> _inFlight =
+      <String, Future<DnsCrossCheck>>{};
 
   DnsVerdict _lastVerdict = DnsVerdict.unknown;
   DateTime? _lastRunAt;
   bool _running = false;
 
+  /// 「国内解析器全部失败」连续出现了几次。
+  ///
+  /// 用它给「国内解析异常」这条结论加一道门槛：单次失败可能只是丢了一个 UDP 包，
+  /// 而界面上它是一条要用户去改设置的重结论。
+  int _domesticAllFailedStreak = 0;
+
+  /// 连续几次全失败才认定国内解析真的不可用。
+  static const int domesticFailureThreshold = 2;
+
   /// 正在探测时返回 true。上层据此跳过本轮，避免慢探测把定时器堆起来。
   bool get isRunning => _running;
 
   DnsReport get report => DnsReport(
-        checkedAt: _lastRunAt ?? DateTime.fromMillisecondsSinceEpoch(0),
-        resolvers: List<ResolverHealth>.unmodifiable(_health.values),
-        direct: direct,
-        tunnel: tunnel,
-        verdict: _lastVerdict,
-      );
+    checkedAt: _lastRunAt ?? DateTime.fromMillisecondsSinceEpoch(0),
+    resolvers: List<ResolverHealth>.unmodifiable(_health.values),
+    direct: direct,
+    tunnel: tunnel,
+    verdict: _lastVerdict,
+  );
 
   /// 跑一轮完整监测。
   ///
@@ -404,7 +445,11 @@ class DnsMonitor {
     );
   }
 
-  void _record(String server, {required String role, required DnsOutcome outcome}) {
+  void _record(
+    String server, {
+    required String role,
+    required DnsOutcome outcome,
+  }) {
     final previous = _health[server];
     final failuresSoFar = previous?.failures ?? 0;
     final samples = (previous?.samples ?? 0) + 1;
@@ -465,11 +510,18 @@ class DnsMonitor {
     var domesticAnswers = const <String>[];
     int? domesticMillis;
     var domesticAllFailed = true;
+    // 所有失败是否都属于「本机建不出探测套接字」。只有全失败时才有意义。
+    var domesticAllLocalFailure = true;
     if (config.domesticServers.isNotEmpty) {
       for (final server in config.domesticServers) {
-        final outcome = await resolver.query(server, domain, timeout: config.timeout);
+        final outcome = await resolver.query(
+          server,
+          domain,
+          timeout: config.timeout,
+        );
         _record(server, role: '直连', outcome: outcome);
         if (outcome.succeeded) domesticAllFailed = false;
+        if (!outcome.localProbeUnavailable) domesticAllLocalFailure = false;
         if (outcome.resolved) {
           domesticAnswers = outcome.answers;
           domesticMillis = outcome.millis;
@@ -478,7 +530,12 @@ class DnsMonitor {
       }
       // 一个都没配或全失败时，domesticAllFailed 仍然为真。
       domesticAllFailed = domesticAllFailed && domesticAnswers.isEmpty;
+      domesticAllLocalFailure = domesticAllFailed && domesticAllLocalFailure;
     }
+    // 记录连续全失败次数：结论的门槛依赖它（见 [_classify]）。
+    _domesticAllFailedStreak = domesticAllFailed
+        ? _domesticAllFailedStreak + 1
+        : 0;
 
     // 2) 隧道侧：让内核经隧道解析同一个域名。
     final tunnelMillis = await tunnelLatencyProbe();
@@ -489,6 +546,7 @@ class DnsMonitor {
       domesticAnswers: domesticAnswers,
       tunnelAnswers: tunnelAnswers,
       domesticAllFailed: domesticAllFailed,
+      domesticAllLocalFailure: domesticAllLocalFailure,
     );
     _lastVerdict = verdict;
 
@@ -500,8 +558,10 @@ class DnsMonitor {
       tunnelMillis: tunnelMillis,
       verdict: verdict,
     );
-    _crossChecks[domain] =
-        _CachedCheck(check, DateTime.now().add(crossCheckTtl));
+    _crossChecks[domain] = _CachedCheck(
+      check,
+      DateTime.now().add(crossCheckTtl),
+    );
     return check;
   }
 
@@ -527,12 +587,28 @@ class DnsMonitor {
     required List<String> domesticAnswers,
     required List<String> tunnelAnswers,
     required bool domesticAllFailed,
+    bool domesticAllLocalFailure = false,
   }) {
-    if (domesticAllFailed) return DnsVerdict.directResolverDown;
+    if (domesticAllFailed) {
+      // 先区分「本机探测跑不起来」与「解析器真的不通」——两者的处置方式相反。
+      if (domesticAllLocalFailure) return DnsVerdict.probeUnavailable;
+      // 单次失败不足以定性「国内解析异常」。
+      //
+      // 这里的探测是明文 UDP，丢一个包就会走到这条分支；而界面上它是一条**醒目
+      // 的异常结论**，用户会照它去改解析器设置。要求连续两次全失败才下结论：
+      // 真坏掉的解析器两次都失败，偶发丢包则几乎不会。
+      final consecutive = _domesticAllFailedStreak;
+      if (consecutive < domesticFailureThreshold) {
+        // 还不到阈值：不下异常结论，交给下面的地理比对给出正常结论。
+        return DnsVerdict.consistent;
+      }
+      return DnsVerdict.directResolverDown;
+    }
     if (domesticAnswers.isEmpty) return DnsVerdict.consistent;
 
     final region = classifyRegion(cnIpIndex, domesticAnswers);
-    final disjoint = tunnelAnswers.isNotEmpty &&
+    final disjoint =
+        tunnelAnswers.isNotEmpty &&
         !domesticAnswers.any(tunnelAnswers.toSet().contains);
 
     if (region == AddressRegion.domestic) {
@@ -562,6 +638,7 @@ class DnsMonitor {
     direct.clear();
     tunnel.clear();
     _lastVerdict = DnsVerdict.unknown;
+    _domesticAllFailedStreak = 0;
     _lastRunAt = null;
   }
 }

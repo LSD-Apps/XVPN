@@ -50,7 +50,10 @@ void main() {
 
     test('识别 i/o timeout 与 IPv6 缺失等具体原因', () {
       expect(parseConnectionFailure(_directDialTimeout)!.reasonSummary, '连接超时');
-      expect(parseConnectionFailure(_ipv6Missing)!.reasonSummary, '隧道缺少 IPv6 地址');
+      expect(
+        parseConnectionFailure(_ipv6Missing)!.reasonSummary,
+        '隧道缺少 IPv6 地址',
+      );
     });
 
     test('解析隧道端点自身解析失败（此时连接还没建立）', () {
@@ -72,7 +75,10 @@ void main() {
 
   group('suggestsMissingRule 的判断', () {
     test('域名走直连却失败 → 疑似规则未覆盖', () {
-      expect(parseConnectionFailure(_directTimeout)!.suggestsMissingRule, isTrue);
+      expect(
+        parseConnectionFailure(_directTimeout)!.suggestsMissingRule,
+        isTrue,
+      );
     });
 
     test('IP 走直连失败 → 不归咎于规则（域名规则管不到 IP）', () {
@@ -82,8 +88,14 @@ void main() {
     });
 
     test('走隧道失败 → 是节点问题，与规则无关', () {
-      expect(parseConnectionFailure(_proxyTimeout)!.suggestsMissingRule, isFalse);
-      expect(parseConnectionFailure(_ipv6Missing)!.suggestsMissingRule, isFalse);
+      expect(
+        parseConnectionFailure(_proxyTimeout)!.suggestsMissingRule,
+        isFalse,
+      );
+      expect(
+        parseConnectionFailure(_ipv6Missing)!.suggestsMissingRule,
+        isFalse,
+      );
     });
 
     test('域名解析失败不归咎于分流规则', () {

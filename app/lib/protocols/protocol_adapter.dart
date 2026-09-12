@@ -1,7 +1,23 @@
+import 'hysteria2_adapter.dart';
 import 'openvpn_adapter.dart';
 import 'parsed_profile.dart';
 import 'vpn_protocol.dart';
 import 'wireguard_adapter.dart';
+
+/// 生成的内核片段应该放进配置的哪个位置。
+///
+/// sing-box 1.11 起把协议分成两类建模，放错位置内核会**直接拒绝启动**：
+///   * `endpoints`：自带隧道地址的协议（WireGuard / OpenVPN），
+///     放错时报 `unknown endpoint type: hysteria2`；
+///   * `outbounds`：流式代理协议（Hysteria2 等），放错时报
+///     `unknown outbound type: wireguard`（实测确认，不是推测）。
+enum FragmentPlacement {
+  /// 放进 `endpoints`。
+  endpoint,
+
+  /// 放进 `outbounds`。
+  outbound,
+}
 
 /// 生成内核端点片段时的上下文。
 class OutboundContext {
@@ -42,7 +58,28 @@ abstract class VpnProtocolAdapter {
   });
 
   /// 生成 sing-box 的端点/出站片段。
-  Map<String, Object?> buildEndpoint(ParsedProfile profile, OutboundContext context);
+  Map<String, Object?> buildEndpoint(
+    ParsedProfile profile,
+    OutboundContext context,
+  );
+
+  /// [buildEndpoint] 的产物应该放到配置的哪个位置。
+  ///
+  /// 抽成一个显式声明，是为了让「新增协议」不必去改配置生成器的分支：
+  /// 生成器只按这个值决定放进 `endpoints` 还是 `outbounds`。
+  FragmentPlacement get placement;
+
+  /// TUN 入站应该使用的 MTU。
+  ///
+  /// 这个值必须与**隧道自身的 MTU 对齐**，不能沿用内核默认值。sing-box 的
+  /// tun 入站默认 MTU 是 9000，而 WireGuard 隧道内可承载的 IP 包只有
+  /// 1420（或配置里声明的值）——两者不一致时，系统栈会按 9000 组出 TCP 段，
+  /// 交给隧道后被迫在 IP 层分片，每个大包裂成六七个 UDP 包。代价是吞吐下降
+  /// 与延迟抖动，而且完全不会报错，只是「慢」。
+  ///
+  /// 安卓端由 VpnService 提供 TUN，因此这个值只在 tun 入站下有意义；
+  /// 桌面端走混合入站，不会用到。
+  int tunMtu(ParsedProfile profile);
 }
 
 /// 协议工厂：按内容自动识别协议，并分发到对应适配器。
@@ -50,9 +87,14 @@ class VpnProtocolFactory {
   VpnProtocolFactory._();
 
   /// 已注册的适配器。新增协议时在这里加一项即可。
+  ///
+  /// 顺序即识别优先级：[detect] 按内容逐个询问，先命中的胜出。
+  /// Hysteria2 排最后，因为它的识别条件最宽（一份 YAML 里出现 `server:`
+  /// 就算数），而 WireGuard / OpenVPN 的指令特征要具体得多。
   static final List<VpnProtocolAdapter> adapters = <VpnProtocolAdapter>[
     WireGuardAdapter(),
     OpenVpnAdapter(),
+    Hysteria2Adapter(),
   ];
 
   static VpnProtocolAdapter adapterForProtocol(VpnProtocol protocol) {
@@ -88,7 +130,12 @@ class VpnProtocolFactory {
         '请确认导入的是这些客户端导出的配置文件。',
       );
     }
-    return adapter.parse(text, fileName, username: username, password: password);
+    return adapter.parse(
+      text,
+      fileName,
+      username: username,
+      password: password,
+    );
   }
 
   /// 某个文件名是否可能是受支持的配置。

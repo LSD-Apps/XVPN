@@ -12,6 +12,10 @@ class OpenVpnAdapter implements VpnProtocolAdapter {
   @override
   VpnProtocol get protocol => VpnProtocol.openVpn;
 
+  /// OpenVPN 自带隧道地址（服务端通过 PUSH_REPLY 下发），是 endpoint 类协议。
+  @override
+  FragmentPlacement get placement => FragmentPlacement.endpoint;
+
   /// 按内容识别 OpenVPN 配置。
   ///
   /// 注意 `.conf` 扩展名双方都可能用，所以必须有可靠的指令特征：
@@ -19,14 +23,20 @@ class OpenVpnAdapter implements VpnProtocolAdapter {
   @override
   bool canParse(String text, String fileName) {
     final lower = text.toLowerCase();
-    if (lower.contains('<ca>') || lower.contains('<cert>') || lower.contains('<tls-auth>')) {
+    if (lower.contains('<ca>') ||
+        lower.contains('<cert>') ||
+        lower.contains('<tls-auth>')) {
       return true;
     }
-    final hasRemote = RegExp(r'^[ \t]*remote[ \t]+\S+', multiLine: true).hasMatch(lower);
+    final hasRemote = RegExp(
+      r'^[ \t]*remote[ \t]+\S+',
+      multiLine: true,
+    ).hasMatch(lower);
     if (!hasRemote) return false;
-    final hasClientMarker =
-        RegExp(r'^[ \t]*(client|dev[ \t]+tun|proto[ \t]+(udp|tcp))', multiLine: true)
-            .hasMatch(lower);
+    final hasClientMarker = RegExp(
+      r'^[ \t]*(client|dev[ \t]+tun|proto[ \t]+(udp|tcp))',
+      multiLine: true,
+    ).hasMatch(lower);
     return hasClientMarker;
   }
 
@@ -43,7 +53,10 @@ class OpenVpnAdapter implements VpnProtocolAdapter {
   }
 
   @override
-  Map<String, Object?> buildEndpoint(ParsedProfile profile, OutboundContext context) {
+  Map<String, Object?> buildEndpoint(
+    ParsedProfile profile,
+    OutboundContext context,
+  ) {
     if (profile is! OpenVpnProfile) {
       throw VpnConfigException('内部错误：配置与协议不匹配');
     }
@@ -143,4 +156,18 @@ class OpenVpnAdapter implements VpnProtocolAdapter {
       'tls': tls,
     };
   }
+
+  /// TUN 入站的 MTU。
+  ///
+  /// 取 1500 与 OpenVPN 自己的 `tun-mtu` 默认值对齐。sing-box 的 tun 入站默认
+  /// 是 9000，远超隧道能装下的尺寸，包一进隧道就得在 IP 层分片。
+  ///
+  /// 局限要说清楚：服务端可能通过 PUSH_REPLY 下发别的 tun-mtu，而那个值在
+  /// 连接建立前无从得知（客户端配置里通常也不写）。因此这里只能取协议默认值
+  /// 这一最合理的选择——即便服务端用的是 1400，对齐到 1500 也远好于 9000。
+  @override
+  int tunMtu(ParsedProfile profile) => defaultTunMtu;
+
+  /// OpenVPN 的 `tun-mtu` 默认值。
+  static const int defaultTunMtu = 1500;
 }

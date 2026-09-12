@@ -1,0 +1,31 @@
+# XVPN 测试用配置（示例数据，非真实服务器）
+#
+# 用途：验证官方 Hysteria2 客户端 config.yaml 的解析。
+# 注意：主机名属于 RFC 2606 保留域名，凭据是占位值，不可能连通，
+#       本文件只用于校验解析结果，不做真实连接。
+#
+# 这是 Hysteria2 官方文档里那份 config.yaml 的形状，字段名一个都没改：
+# 官方用 camelCase（pinSHA256 / hopInterval），sing-box 风格用下划线，
+# 两种写法本 App 都接受。
+server: hy2.example.net:443
+auth: mypassword
+
+tls:
+  sni: hy2.example.net
+  insecure: false
+  # 服务端证书公钥的 SHA-256（base64）。填了就只认这把公钥，
+  # 比 insecure 安全得多，建议有固定服务端时使用。
+  # pinSHA256: QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUE=
+
+# salamander 混淆：服务端也开了才要写；两边的密码必须一致。
+obfs:
+  type: salamander
+  password: obfspass
+
+# 服务端上下行带宽（Mbps）。声明后内核不再自动探测，拥塞控制直接按这个值跑。
+up: 100 mbps
+down: 300 mbps
+
+# 端口跳跃：服务端开了端口跳跃时才需要，写法为「主机:主端口,区间」。
+# server: hy2.example.net:443,20000-30000
+# hopInterval: 30s

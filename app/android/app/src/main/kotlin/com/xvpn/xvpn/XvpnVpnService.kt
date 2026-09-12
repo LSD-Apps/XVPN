@@ -64,6 +64,9 @@ class XvpnVpnService : VpnService(), PlatformInterface {
         private const val CHANNEL_ID = "xvpn_vpn"
         private const val NOTIFICATION_ID = 1
 
+        /// 落盘诊断日志的容量上限。超过就清空重来，避免无限增长。
+        private const val DIAG_MAX_BYTES = 256 * 1024L
+
         const val ACTION_CONNECT = "com.xvpn.xvpn.CONNECT"
         const val ACTION_DISCONNECT = "com.xvpn.xvpn.DISCONNECT"
         const val EXTRA_CONFIG = "config"
@@ -110,6 +113,27 @@ class XvpnVpnService : VpnService(), PlatformInterface {
     private val mainHandler = Handler(Looper.getMainLooper())
     private var defaultNetworkCallback: ConnectivityManager.NetworkCallback? = null
 
+    /**
+     * 连接过程的落盘诊断。
+     *
+     * 存在的理由很具体：这台设备上 logcat 过滤掉了本应用的日志，一旦内核在
+     * 原生层出问题，用户能提供的只有「连不上」三个字。这里只记**连接生命周期
+     * 的关键节点**（几步、TUN 是否建立、内核是否启动、异常），不记内核的逐行
+     * 日志——那些走 [Handler.writeDebugMessage] 进 Dart 的日志缓冲，界面里能看。
+     *
+     * 用 `run-as <包名> cat .../diag.log` 读取；超过 [DIAG_MAX_BYTES] 就重来，
+     * 避免无限增长。
+     */
+    private fun diag(message: String) {
+        try {
+            val f = File(filesDir, "diag.log")
+            if (f.exists() && f.length() > DIAG_MAX_BYTES) f.delete()
+            f.appendText("${System.currentTimeMillis()} $message\n")
+        } catch (_: Throwable) {
+            // 诊断日志失败绝不能影响主流程。
+        }
+    }
+
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
@@ -150,11 +174,16 @@ class XvpnVpnService : VpnService(), PlatformInterface {
             return
         }
         try {
+            diag("startBox enter, configLen=${configJson.length}")
             setupLibbox()
+            diag("setupLibbox ok")
             startForeground(NOTIFICATION_ID, buildNotification())
+            diag("startForeground ok")
 
             val server = Libbox.newCommandServer(Handler(), this)
+            diag("newCommandServer ok")
             server.start()
+            diag("commandServer.start ok")
             // 先登记再启动：内核启动失败时 stopBox() 才能把这个 server 收掉。
             commandServer = server
             // 这里必须传一个真实对象。sing-box 1.14 的 StartOrReloadService 会
@@ -163,11 +192,14 @@ class XvpnVpnService : VpnService(), PlatformInterface {
             // autoRedirect 只在「无 VpnService 的 root 重定向」场景用，走 TUN 时保持 false。
             val overrides = OverrideOptions()
             overrides.autoRedirect = false
+            diag("startOrReloadService ...")
             server.startOrReloadService(configJson, overrides)
             isRunning = true
             lastError = null
+            diag("startOrReloadService ok, 内核已启动")
             Log.i(TAG, "内核已启动")
         } catch (e: Throwable) {
+            diag("startBox 抛异常: ${e::class.java.name}: ${e.message}")
             Log.e(TAG, "启动失败", e)
             // 启动中途失败可能已经把 server 登记上了，这里统一收尾，
             // 否则 TUN 与内核会残留在半启动状态。
@@ -222,8 +254,21 @@ class XvpnVpnService : VpnService(), PlatformInterface {
         // 安卓上必须开启：修正 netstack 与系统协议栈的差异。
         options.fixAndroidStack = true
         options.logMaxLines = 300
-        options.debug = false
+        // 打开平台侧 DEBUG 日志。
+        //
+        // 这曾经是**开不得**的：DEBUG 日志会经 `writeDebugMessage` 转发给 Dart，
+        // 而那一层直接在原生线程里调 Flutter 的 MethodChannel，触发 JNI 校验
+        // 失败并 abort 整个进程。根因已修（见 [Handler.writeDebugMessage] 的
+        // 注释），现在打开是安全的。
+        //
+        // 注意它只是平台侧的开关，「会不会产生 DEBUG 行」由配置里的
+        // `log.level` 决定——WireGuard 的握手行是 DEBUG 级，配置侧已按协议
+        // 下发 debug（见 Dart 侧的 `ParsedProfile.wantsDebugLogs`）。两者都打开，
+        // 界面上的「隧道握手」一行才有数据。
+        options.debug = true
+        diag("setupLibbox: 即将调用 Libbox.setup")
         Libbox.setup(options)
+        diag("setupLibbox: Libbox.setup 返回")
         libboxReady = true
     }
 
@@ -236,6 +281,7 @@ class XvpnVpnService : VpnService(), PlatformInterface {
      * VpnService.Builder 的调用——包括地址、路由、DNS 与分包名过滤。
      */
     override fun openTun(options: TunOptions): Int {
+        diag("openTun enter, mtu=${options.mtu}")
         val builder = Builder()
         builder.setSession("XVPN")
         builder.setMtu(options.mtu)
@@ -286,6 +332,7 @@ class XvpnVpnService : VpnService(), PlatformInterface {
 
         val fd = builder.establish() ?: throw IllegalStateException("建立 TUN 失败，请检查 VPN 授权")
         tunFd = fd
+        diag("openTun ok, fd=${fd.fd}")
         return fd.fd
     }
 
@@ -659,8 +706,22 @@ class XvpnVpnService : VpnService(), PlatformInterface {
 
         override fun writeDebugMessage(message: String) {
             Log.d(TAG, message)
-            // 转发给 Dart：这是安卓端失败归因的唯一日志来源。
-            onLog?.invoke(message)
+            // **必须** post 到主线程再转发给 Dart。
+            //
+            // 这个方法由内核的 Go 线程调用，而 `onLog` 最终会走到 Flutter 的
+            // MethodChannel——Flutter 要求通道调用必须在平台主线程。直接在原生
+            // 线程里调它会触发 ART 的 JNI 校验失败并 `abort()`：
+            //
+            //   JNI called with thread not attached to the JVM
+            //     at XvpnVpnService$Handler.writeDebugMessage(...)
+            //     at MethodChannel.invokeMethod
+            //
+            // 后果是整个进程原生崩溃（不是抛异常，没有 Java 栈），而且因为它只在
+            // DEBUG 级日志上触发，此前一直藏得很深：**一开内核调试日志应用就崩，
+            // 而且因此永远拿不到安卓端的内核日志**——「手机上连不上」查不下去
+            // 正是卡在这里。
+            val handler = mainHandler
+            handler.post { onLog?.invoke(message) }
         }
 
         override fun triggerNativeCrash() {

@@ -29,7 +29,11 @@ AllowedIPs = 0.0.0.0/0, ::/0
 PersistentKeepalive = 25
 ''';
 
-Future<void> _pumpShell(WidgetTester tester, AppState state, {Size size = const Size(1400, 900)}) async {
+Future<void> _pumpShell(
+  WidgetTester tester,
+  AppState state, {
+  Size size = const Size(1400, 900),
+}) async {
   tester.view.physicalSize = size;
   tester.view.devicePixelRatio = 1.0;
   addTearDown(tester.view.reset);
@@ -63,8 +67,14 @@ void main() {
     await tester.pumpWidget(const XvpnApp());
     await tester.pumpAndSettle();
 
-    expect(find.text('导入你的 WireGuard 配置'), findsOneWidget);
-    expect(find.text('选择 .conf 文件'), findsOneWidget);
+    expect(find.text('导入你的 VPN 配置'), findsOneWidget);
+    expect(find.text('选择配置文件'), findsOneWidget);
+    // 空状态要如实体现在支持两种协议，不能只写 WireGuard。
+    expect(
+      find.textContaining('.ovpn'),
+      findsWidgets,
+      reason: '两种协议的入口文案要一起出现',
+    );
     expect(find.text('分流记录'), findsOneWidget);
     expect(find.text('配置文件'), findsOneWidget);
     expect(find.text('设置'), findsOneWidget);
@@ -165,8 +175,7 @@ void main() {
     await _stopCore(tester, state);
   });
 
-  testWidgets('连接后分流记录会出现在界面上，并区分代理与直连',
-      (WidgetTester tester) async {
+  testWidgets('连接后分流记录会出现在界面上，并区分代理与直连', (WidgetTester tester) async {
     final state = AppState();
     addTearDown(state.dispose);
     await _pumpShell(tester, state);
@@ -246,7 +255,9 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('搜索域名或 IP…'), findsOneWidget);
-    expect(find.text('命中规则'), findsOneWidget);
+    // 表头改为「流量 / 失败 / 延迟」：规则名移到每行的第二行小字里
+    // （它解释「为什么走这条路」，但不该占据一个宽列）。
+    expect(find.text('流量 ↓/↑'), findsOneWidget);
     // 国内直连的域名应命中 geosite-cn。
     //
     // 这里期望的是**归一化之后**的名字：内核返回的 rule 是一整句描述
@@ -264,10 +275,7 @@ void main() {
     await tester.pumpAndSettle();
     final proxies = state.filteredRecords(RouteFilter.proxy, '');
     expect(proxies, isNotEmpty);
-    expect(
-      proxies.every((SplitRecord r) => r.kind == RouteKind.proxy),
-      isTrue,
-    );
+    expect(proxies.every((SplitRecord r) => r.kind == RouteKind.proxy), isTrue);
 
     await _stopCore(tester, state);
   });
@@ -296,7 +304,9 @@ void main() {
 
     expect(find.textContaining('疑似规则未覆盖'), findsOneWidget);
     expect(find.textContaining('www.example.com'), findsWidgets);
-    expect(state.failureDigest.suspectedMissingRules, <String>['www.example.com']);
+    expect(state.failureDigest.suspectedMissingRules, <String>[
+      'www.example.com',
+    ]);
 
     await _stopCore(tester, state);
   });
@@ -510,12 +520,16 @@ void main() {
     await tester.pump(const Duration(seconds: 1));
     expect(find.text('国内直连'), findsWidgets);
 
-    state.updateSettings(state.settings.copyWith(splitMode: SplitMode.globalProxy));
+    state.updateSettings(
+      state.settings.copyWith(splitMode: SplitMode.globalProxy),
+    );
     await tester.pumpAndSettle();
     expect(find.text('国内直连'), findsNothing, reason: '全局代理下显示「国内直连」是错误信息');
     expect(find.textContaining('全局代理'), findsWidgets);
 
-    state.updateSettings(state.settings.copyWith(splitMode: SplitMode.globalDirect));
+    state.updateSettings(
+      state.settings.copyWith(splitMode: SplitMode.globalDirect),
+    );
     await tester.pumpAndSettle();
     expect(find.text('全部直连'), findsOneWidget);
 
@@ -673,11 +687,15 @@ void main() {
     expect(find.text('外观'), findsOneWidget);
     expect(find.text('主题'), findsOneWidget);
 
-    await tester.tap(find.descendant(of: find.byType(XvSegmented), matching: find.text('深色')));
+    await tester.tap(
+      find.descendant(of: find.byType(XvSegmented), matching: find.text('深色')),
+    );
     await tester.pumpAndSettle();
     expect(theme.value, ThemeMode.dark);
 
-    await tester.tap(find.descendant(of: find.byType(XvSegmented), matching: find.text('亮色')));
+    await tester.tap(
+      find.descendant(of: find.byType(XvSegmented), matching: find.text('亮色')),
+    );
     await tester.pumpAndSettle();
     expect(theme.value, ThemeMode.light);
   });
@@ -704,7 +722,12 @@ void main() {
       await tester.pumpAndSettle();
 
       // 从设置页切换后，标题栏上的标签要同步变化
-      await tester.tap(find.descendant(of: find.byType(XvSegmented), matching: find.text('亮色')));
+      await tester.tap(
+        find.descendant(
+          of: find.byType(XvSegmented),
+          matching: find.text('亮色'),
+        ),
+      );
       await tester.pumpAndSettle();
       expect(theme.value, ThemeMode.light);
       expect(find.text('亮色'), findsNWidgets(2), reason: '设置页选项与标题栏标签应同时显示「亮色」');
@@ -770,7 +793,11 @@ void main() {
       expect(find.text('流量接管方式'), findsOneWidget);
       expect(find.text('系统代理'), findsOneWidget);
       expect(find.text('TUN 虚拟网卡'), findsNothing, reason: '不能提供无法兑现的选项');
-      expect(find.textContaining('暂不支持 TUN'), findsOneWidget, reason: '要说明为什么没有');
+      expect(
+        find.textContaining('暂不支持 TUN'),
+        findsOneWidget,
+        reason: '要说明为什么没有',
+      );
     } finally {
       debugDefaultTargetPlatformOverride = null;
     }
@@ -797,9 +824,17 @@ void main() {
       }
 
       expect(find.text('流量接管方式'), findsOneWidget);
-      expect(find.text('TUN 虚拟网卡'), findsOneWidget, reason: '安卓走 VpnService 的 TUN');
+      expect(
+        find.text('TUN 虚拟网卡'),
+        findsOneWidget,
+        reason: '安卓走 VpnService 的 TUN',
+      );
       expect(find.text('系统代理'), findsNothing, reason: '安卓没有系统代理这条路');
-      expect(find.textContaining('VpnService'), findsWidgets, reason: '要说明为什么只能是 TUN');
+      expect(
+        find.textContaining('VpnService'),
+        findsWidgets,
+        reason: '要说明为什么只能是 TUN',
+      );
     } finally {
       debugDefaultTargetPlatformOverride = null;
     }
@@ -810,7 +845,9 @@ void main() {
 Finder _brandImageAsset() {
   return find.byWidgetPredicate(
     (Widget w) =>
-        w is Image && w.image is AssetImage && (w.image as AssetImage).assetName == 'assets/vpn.png',
+        w is Image &&
+        w.image is AssetImage &&
+        (w.image as AssetImage).assetName == 'assets/vpn.png',
     description: 'assets/vpn.png',
   );
 }

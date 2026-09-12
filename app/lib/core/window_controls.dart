@@ -2,19 +2,28 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
 /// 窗口可缩放的边与角。
-enum WindowEdge { left, right, top, bottom, topLeft, topRight, bottomLeft, bottomRight }
+enum WindowEdge {
+  left,
+  right,
+  top,
+  bottom,
+  topLeft,
+  topRight,
+  bottomLeft,
+  bottomRight,
+}
 
 extension WindowEdgeX on WindowEdge {
   String get wireName => switch (this) {
-        WindowEdge.left => 'left',
-        WindowEdge.right => 'right',
-        WindowEdge.top => 'top',
-        WindowEdge.bottom => 'bottom',
-        WindowEdge.topLeft => 'topLeft',
-        WindowEdge.topRight => 'topRight',
-        WindowEdge.bottomLeft => 'bottomLeft',
-        WindowEdge.bottomRight => 'bottomRight',
-      };
+    WindowEdge.left => 'left',
+    WindowEdge.right => 'right',
+    WindowEdge.top => 'top',
+    WindowEdge.bottom => 'bottom',
+    WindowEdge.topLeft => 'topLeft',
+    WindowEdge.topRight => 'topRight',
+    WindowEdge.bottomLeft => 'bottomLeft',
+    WindowEdge.bottomRight => 'bottomRight',
+  };
 }
 
 /// 与原生窗口对接的通道。
@@ -58,6 +67,28 @@ class WindowControls {
     } on Object {
       return false;
     }
+  }
+
+  /// 当前是否最大化，**由原生推送**。
+  ///
+  /// 为什么需要它：最大化并不只发生在点按钮的时候。双击标题栏、Win+↑、贴边、
+  /// 从任务栏还原……这些都绕过了 Dart，窗口状态变了而界面不知道——标题栏会停在
+  /// 旧图标上（已经最大化了却还画着「最大化」），用户按下去实际是还原，图形与
+  /// 行为对不上。原生在 WM_SIZE 里判断状态翻转后推一次，这里接住并广播。
+  static final ValueNotifier<bool> maximized = ValueNotifier<bool>(false);
+
+  /// 接住原生推来的窗口状态。应在应用启动时调用一次。
+  static Future<void> listen() async {
+    if (!supported) return;
+    _channel.setMethodCallHandler((MethodCall call) async {
+      if (call.method == 'maximizedChanged') {
+        final value = call.arguments;
+        if (value is bool) maximized.value = value;
+      }
+      return null;
+    });
+    // 启动时先同步一次，避免「以最大化状态启动」时要等第一次 WM_SIZE 才纠正。
+    maximized.value = await isMaximized();
   }
 
   static Future<void> _invoke(String method, [Object? arguments]) async {

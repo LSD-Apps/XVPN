@@ -53,6 +53,15 @@ class FlutterWindow : public Win32Window {
   // （最小化 / 最大化 / 关闭 / 查询最大化状态）。
   std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>>
       window_channel_;
+
+  // 上一次已通知给 Dart 的最大化状态。
+  //
+  // WM_SIZE 在拖动窗口时**每一帧都会来**，而最大化状态通常不变；不去重的话
+  // 会按帧向 Dart 推送消息。只在状态真的翻转时才通知。
+  //
+  // 用 -1 表示「还不知道」：这样首次 WM_SIZE 一定会通知一次，Dart 侧不必自己
+  // 猜初始状态。
+  int last_maximized_ = -1;
 };
 
 #endif  // RUNNER_FLUTTER_WINDOW_H_

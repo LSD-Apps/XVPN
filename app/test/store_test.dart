@@ -58,15 +58,17 @@ void main() {
 
     test('内容损坏时返回空表，不让应用起不来', () {
       dir.createSync(recursive: true);
-      File('${dir.path}${Platform.pathSeparator}${AppStore.fileName}')
-          .writeAsStringSync('{ 这不是 JSON');
+      File(
+        '${dir.path}${Platform.pathSeparator}${AppStore.fileName}',
+      ).writeAsStringSync('{ 这不是 JSON');
       expect(store.load(), isEmpty);
     });
 
     test('未来版本的存档不解析，避免读出错的数据', () {
       dir.createSync(recursive: true);
-      File('${dir.path}${Platform.pathSeparator}${AppStore.fileName}')
-          .writeAsStringSync('{"version": 99, "profiles": []}');
+      File(
+        '${dir.path}${Platform.pathSeparator}${AppStore.fileName}',
+      ).writeAsStringSync('{"version": 99, "profiles": []}');
       expect(store.load(), isEmpty);
     });
 
@@ -123,11 +125,13 @@ void main() {
 
     test('设置项被记住', () {
       final first = AppState(store: store);
-      first.updateSettings(first.settings.copyWith(
-        autoConnectOnImport: false,
-        splitMode: SplitMode.globalProxy,
-        logSplits: false,
-      ));
+      first.updateSettings(
+        first.settings.copyWith(
+          autoConnectOnImport: false,
+          splitMode: SplitMode.globalProxy,
+          logSplits: false,
+        ),
+      );
       first.dispose();
 
       final second = AppState(store: store);
@@ -142,7 +146,9 @@ void main() {
       // 早已移除的字段。恢复逻辑必须忽略它们，而不是抛异常退回默认值——
       // 那会让用户的其他设置一起丢光。
       dir.createSync(recursive: true);
-      File('${dir.path}${Platform.pathSeparator}${AppStore.fileName}').writeAsStringSync(
+      File(
+        '${dir.path}${Platform.pathSeparator}${AppStore.fileName}',
+      ).writeAsStringSync(
         '{"version":1,"settings":{"autoConnectOnImport":false,'
         '"splitMode":1,"logSplits":false,"launchAtStartup":true,"takeoverMode":1}}',
       );
@@ -156,8 +162,9 @@ void main() {
 
     test('存档损坏时退回空状态，而不是崩溃', () {
       dir.createSync(recursive: true);
-      File('${dir.path}${Platform.pathSeparator}${AppStore.fileName}')
-          .writeAsStringSync('{"version":1,"profiles":"不是列表"}');
+      File(
+        '${dir.path}${Platform.pathSeparator}${AppStore.fileName}',
+      ).writeAsStringSync('{"version":1,"profiles":"不是列表"}');
       final state = AppState(store: store);
       addTearDown(state.dispose);
       expect(state.profiles, isEmpty);
@@ -165,7 +172,9 @@ void main() {
 
     test('单份配置解析失败时跳过它，其余配置照常恢复', () {
       dir.createSync(recursive: true);
-      File('${dir.path}${Platform.pathSeparator}${AppStore.fileName}').writeAsStringSync(
+      File(
+        '${dir.path}${Platform.pathSeparator}${AppStore.fileName}',
+      ).writeAsStringSync(
         '{"version":1,"profiles":['
         '{"name":"坏配置.conf","text":"这不是任何已知格式"},'
         '{"name":"wg.conf","text":${_jsonEscape(_wg)}}'
@@ -193,8 +202,11 @@ void main() {
       final second = AppState(store: store);
       addTearDown(second.dispose);
       await second.restoreConnection();
-      expect(second.status, VpnStatus.disconnected,
-          reason: '用户主动断开过，重开应用不应自动连上');
+      expect(
+        second.status,
+        VpnStatus.disconnected,
+        reason: '用户主动断开过，重开应用不应自动连上',
+      );
     });
 
     test('导入配置后重启会按上次的意图自动连上', () async {

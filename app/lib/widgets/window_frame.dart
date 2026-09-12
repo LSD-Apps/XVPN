@@ -22,16 +22,49 @@ class WindowFrame extends StatelessWidget {
   Widget build(BuildContext context) {
     if (!WindowControls.supported) return child;
 
-    const edges = <({WindowEdge edge, Alignment align, SystemMouseCursor cursor})>[
-      (edge: WindowEdge.top, align: Alignment.topCenter, cursor: SystemMouseCursors.resizeUpDown),
-      (edge: WindowEdge.bottom, align: Alignment.bottomCenter, cursor: SystemMouseCursors.resizeUpDown),
-      (edge: WindowEdge.left, align: Alignment.centerLeft, cursor: SystemMouseCursors.resizeLeftRight),
-      (edge: WindowEdge.right, align: Alignment.centerRight, cursor: SystemMouseCursors.resizeLeftRight),
-      (edge: WindowEdge.topLeft, align: Alignment.topLeft, cursor: SystemMouseCursors.resizeUpLeftDownRight),
-      (edge: WindowEdge.topRight, align: Alignment.topRight, cursor: SystemMouseCursors.resizeUpRightDownLeft),
-      (edge: WindowEdge.bottomLeft, align: Alignment.bottomLeft, cursor: SystemMouseCursors.resizeUpRightDownLeft),
-      (edge: WindowEdge.bottomRight, align: Alignment.bottomRight, cursor: SystemMouseCursors.resizeUpLeftDownRight),
-    ];
+    const edges =
+        <({WindowEdge edge, Alignment align, SystemMouseCursor cursor})>[
+          (
+            edge: WindowEdge.top,
+            align: Alignment.topCenter,
+            cursor: SystemMouseCursors.resizeUpDown,
+          ),
+          (
+            edge: WindowEdge.bottom,
+            align: Alignment.bottomCenter,
+            cursor: SystemMouseCursors.resizeUpDown,
+          ),
+          (
+            edge: WindowEdge.left,
+            align: Alignment.centerLeft,
+            cursor: SystemMouseCursors.resizeLeftRight,
+          ),
+          (
+            edge: WindowEdge.right,
+            align: Alignment.centerRight,
+            cursor: SystemMouseCursors.resizeLeftRight,
+          ),
+          (
+            edge: WindowEdge.topLeft,
+            align: Alignment.topLeft,
+            cursor: SystemMouseCursors.resizeUpLeftDownRight,
+          ),
+          (
+            edge: WindowEdge.topRight,
+            align: Alignment.topRight,
+            cursor: SystemMouseCursors.resizeUpRightDownLeft,
+          ),
+          (
+            edge: WindowEdge.bottomLeft,
+            align: Alignment.bottomLeft,
+            cursor: SystemMouseCursors.resizeUpRightDownLeft,
+          ),
+          (
+            edge: WindowEdge.bottomRight,
+            align: Alignment.bottomRight,
+            cursor: SystemMouseCursors.resizeUpLeftDownRight,
+          ),
+        ];
 
     return Stack(
       children: <Widget>[
@@ -39,7 +72,11 @@ class WindowFrame extends StatelessWidget {
         for (final e in edges)
           Align(
             alignment: e.align,
-            child: _ResizeHandle(edge: e.edge, cursor: e.cursor, thickness: thickness),
+            child: _ResizeHandle(
+              edge: e.edge,
+              cursor: e.cursor,
+              thickness: thickness,
+            ),
           ),
       ],
     );
@@ -47,7 +84,11 @@ class WindowFrame extends StatelessWidget {
 }
 
 class _ResizeHandle extends StatelessWidget {
-  const _ResizeHandle({required this.edge, required this.cursor, required this.thickness});
+  const _ResizeHandle({
+    required this.edge,
+    required this.cursor,
+    required this.thickness,
+  });
 
   final WindowEdge edge;
   final SystemMouseCursor cursor;

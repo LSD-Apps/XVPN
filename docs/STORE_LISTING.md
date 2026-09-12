@@ -19,14 +19,14 @@ XVPN · 分流隧道客户端
 **简短说明（80 字符以内）**
 
 ```
-导入你自己的 WireGuard / OpenVPN 配置即可使用，自动分流、无需填规则。
+导入你自己的 WireGuard / OpenVPN / Hysteria2 配置即可使用，自动分流、无需填规则。
 ```
 
 **完整说明**
 
 ```
-XVPN 是一个配置客户端：把你自己的 WireGuard（.conf）或 OpenVPN（.ovpn）
-配置导入进来，剩下的交给它。
+XVPN 是一个配置客户端：把你自己的 WireGuard（.conf）、OpenVPN（.ovpn）或
+Hysteria2（分享链接 / config.yaml）配置导入进来，剩下的交给它。
 
 它不提供节点、不提供订阅、不需要注册账号。你需要自备配置。
 
@@ -36,7 +36,7 @@ XVPN 是一个配置客户端：把你自己的 WireGuard（.conf）或 OpenVPN�
   规则集，域名与 IP 双重判定，不需要你写任何规则。
 · 自动 DNS：生成两套解析——国内域名用国内 DNS，其余走隧道内解析，
   避免解析结果被污染。
-· 自动翻译配置：WireGuard / OpenVPN 的字段全部自动映射到内核配置，
+· 自动翻译配置：WireGuard / OpenVPN / Hysteria2 的字段全部自动映射到内核配置，
   非法或过时的参数会被纠正成内核认可的写法，不需要你查文档。
 · 记住多份配置：切换即重连，不用每次重新导入。
 
@@ -97,9 +97,9 @@ Play Console 在检测到 `BIND_VPN_SERVICE` 后会要求填写声明。以下�
 ```
 XVPN 的核心功能就是在设备上建立一条用户自定义的加密 VPN 隧道。
 
-用户导入一份 WireGuard（.conf）或 OpenVPN（.ovpn）配置，应用把它翻译成
-内核（sing-box）配置，通过 VpnService 建立 TUN 接口，使这台设备的流量
-经由用户自己的服务器转发。
+用户导入一份 WireGuard（.conf）、OpenVPN（.ovpn）或 Hysteria2（分享链接 /
+config.yaml）配置，应用把它翻译成内核（sing-box）配置，通过 VpnService 建立
+TUN 接口，使这台设备的流量经由用户自己的服务器转发。
 
 VpnService 是本应用存在的唯一理由——没有它，应用没有任何功能。
 它属于政策中「核心 VPN 功能」这一类别。
@@ -145,8 +145,9 @@ VpnService 是本应用存在的唯一理由——没有它，应用没有任何
 
 ```
 是。加密由内核（sing-box）按用户配置实现：WireGuard 使用
-ChaCha20-Poly1305，OpenVPN 按用户配置协商的套件（通常为 AES-GCM）。
-本应用自身不实现加密，只负责生成配置与分流决策。
+ChaCha20-Poly1305；Hysteria2 走 QUIC / TLS 1.3，加密套件由 TLS 协商
+（通常为 AES-128-GCM 或 ChaCha20-Poly1305）；OpenVPN 按用户配置协商的套件
+（通常为 AES-GCM）。本应用自身不实现加密，只负责生成配置与分流决策。
 ```
 
 ---
@@ -186,7 +187,7 @@ Play Console 的表单逐项答案。**必须与 `PRIVACY.md` 及实际实现一
 
 | 问题 | 答案 |
 | --- | --- |
-| 传输中的数据是否加密？ | **是**（隧道内由 WireGuard / OpenVPN 加密） |
+| 传输中的数据是否加密？ | **是**（隧道内由 WireGuard / OpenVPN / Hysteria2 加密） |
 | 用户是否可以请求删除数据？ | **是**，见下 |
 
 **数据删除**
@@ -239,6 +240,8 @@ Play Console 的表单逐项答案。**必须与 `PRIVACY.md` 及实际实现一
 - [ ] 商店列表中的开发者名称与联系方式为真实可用的信息
 - [ ] 已在真机上验证：首次连接会弹出系统 VPN 授权对话框
 - [x] 已确认应用内**没有**暗示与 sing-box 官方有关联（见 `NOTICE.md`）
+- [ ] 完整说明里列出的协议与 [`README.md`](../README.md)「支持的协议」一致
+      （新增协议后要同时复核本文件，否则文案会落后于实现）
 
 ---
 

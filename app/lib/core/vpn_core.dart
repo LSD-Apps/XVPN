@@ -8,8 +8,12 @@ import 'cn_ip_index.dart';
 import 'core_log.dart';
 import 'core_monitor.dart';
 import 'dns_monitor.dart';
+import 'kernel_log.dart';
+import 'mtu_probe.dart';
 import 'singbox_config.dart';
 import 'startup_self_check.dart';
+import 'tunnel_health.dart';
+import 'wireguard_handshake.dart';
 
 /// 内核事件回调。UI 状态层实现它，内核只负责上报。
 ///
@@ -39,6 +43,16 @@ abstract class VpnCoreListener {
 
   void onSplitRecord(SplitRecord record);
 
+  /// 一条连接上的流量增量。
+  ///
+  /// 与 [onSplitRecord] 分开的理由：分流记录是「一条连接出现了」这个事件，
+  /// 而流量是连接存活期间每秒增长的量。界面把同目标的记录合并成一行之后，
+  /// 需要把每秒的增量累加到那一行上，两者是不同性质的信号。
+  ///
+  /// 只有增量、没有累计：内核给的是每条连接的累计值，相减的工作留在观测引擎，
+  /// 状态层不需要自己维护一份连接账本。
+  void onConnectionTraffic(ConnectionTraffic traffic) {}
+
   /// 一条连接失败。
   ///
   /// 这是「检测能力」的数据来源：失败本身用户看得见（网站打不开），
@@ -62,6 +76,28 @@ abstract class VpnCoreListener {
 
   /// 自动纠正表的整体变化（含用户手工增删）。
   void onAutoRouteChanged(AutoRouteTable table) {}
+
+  /// 内核日志有新内容。
+  ///
+  /// 单独一个回调而不是复用 [onError]：日志是**材料**不是结论，绝大多数行
+  /// 都不代表出错。界面据此刷新日志视图即可，不该按错误去处理。
+  void onKernelLog() {}
+
+  /// 隧道健康状态发生变化。
+  ///
+  /// 只在**结论变化**时上报：从正常变为异常、从异常恢复为正常，以及异常
+  /// 原因在「隧道断了」与「本地网络断了」之间切换。不是每次探测都报——
+  /// 那样会把界面刷成噪声。
+  ///
+  /// 内核据此决定要不要自动恢复。断开状态下的正常上报同样重要：它是
+  /// 「已经自愈」的证据，没有它，自愈限流器就永远不会解除。
+  void onTunnelHealth(TunnelHealth health) {}
+
+  /// MTU 校验有了新结论。
+  ///
+  /// 只在校验完成时上报（连接后自动一次、用户点重测一次），不是周期性探测：
+  /// 它要真的往隧道里推一个接近 MTU 的包，不该反复做。
+  void onMtuCheck(MtuCheck check) {}
 }
 
 /// 隧道内核抽象。
@@ -108,24 +144,89 @@ abstract class VpnCore {
   ///
   /// 默认返回一个不做自动纠正的配置，让演示内核与测试不需要额外准备。
   CoreMonitorHooks monitorHooks() => CoreMonitorHooks(
-        listener: listener,
-        clashApiPort: SingBoxConfigBuilder.defaultClashApiPort,
-        probesEnabled: probesEnabled,
-      );
+    listener: listener,
+    clashApiPort: SingBoxConfigBuilder.defaultClashApiPort,
+    probesEnabled: probesEnabled,
+  );
 
   /// 自动纠正表。为 null 表示本实现不做学习。
   AutoRouteTable? get autoRoute => monitor.autoRoute;
 
+  /// 内核日志缓冲。两端共用同一份实现。
+  ///
+  /// 放在基类而不是各写一份：日志是排查问题的唯一原始材料，一端有、一端没有
+  /// 正是「安卓上出了问题什么都查不到」的原因。
+  final KernelLogBuffer kernelLog = KernelLogBuffer();
+
+  /// 最近观测到的 WireGuard 握手状态。
+  ///
+  /// 放在基类，两端因此自动都有：解析发生在共用的 [CoreMonitor] 里，而日志
+  /// 也由两端各自喂进同一条 [handleCoreLog] 管线。这正是「两端能力一致」最容易
+  /// 做到的一种——不是各自实现一遍，而是根本不重复实现。
+  WireGuardHandshake get handshake => monitor.handshake;
+
+  /// 本平台能否报告 WireGuard 握手状态。
+  ///
+  /// 两端都为 true：内核日志管线两端共用，握手解析发生在 [CoreMonitor] 里，
+  /// 日志也由两端各自喂进同一条 [handleCoreLog] 管线。此前安卓端为 false，
+  /// 是因为 DEBUG 日志转发会在原生线程里调 MethodChannel 并 abort 进程；
+  /// 根因修掉后两端能力一致。
+  ///
+  /// 「能报告」的前提是内核真的产生了那些行：握手行是 DEBUG 级的，因此生成
+  /// 配置时会按 [ParsedProfile.wantsDebugLogs] 把 WireGuard 的 `log.level`
+  /// 调到 debug。少了下发这一步，两端都会停在「正在读取内核握手状态…」。
+  bool get supportsHandshakeState => true;
+
+  /// 最近一次 MTU 校验结论。未校验过时为 null；配置没声明 MTU 时为 notDeclared。
+  MtuCheck? get mtuCheck => monitor.mtuCheck;
+
+  /// 由界面主动触发一次 MTU 校验。与 DNS/自检的重测入口同理。
+  Future<MtuCheck?> checkMtu() => monitor.checkMtu();
+
+  /// 流量接管入口的展示串，例如 `127.0.0.1:2080`。
+  ///
+  /// 为 null 表示该平台没有这样一个本地入口（安卓走 TUN，由 VpnService 接管
+  /// 全部程序）。做成基类成员而不是让界面写死：默认端口 2080 被占用时内核会
+  /// 换一个，界面若照旧显示 2080 就是在告诉用户一个错地址——而那一行恰恰是
+  /// 「代理配到哪」的唯一说明。
+  String? get takeOverEndpoint => null;
+
   CoreMonitor _createMonitor() => CoreMonitor(monitorHooks());
 
   /// 内核日志回调的统一入口。两端各自把日志行喂进来。
-  void handleCoreLog(String line) => monitor.onCoreLogLine(line);
+  void handleCoreLog(String line) {
+    if (line.trim().isEmpty) return;
+    kernelLog.add(line);
+    monitor.onCoreLogLine(line);
+    listener.onKernelLog();
+  }
+
+  /// 内核输出的一整块文本。
+  ///
+  /// 子进程的 stdout/stderr 是按块到达的，一个日志行可能横跨两块。交给缓冲去
+  /// 拼接完整行，只对**新凑齐**的行做失败归因——半截行拿去解析只会得到噪声。
+  void handleCoreLogChunk(String chunk) {
+    final fresh = kernelLog.addChunk(chunk);
+    if (fresh.isEmpty) return;
+    for (final line in fresh) {
+      monitor.onCoreLogLine(line);
+    }
+    // 按块通知而不是按行：一次输出动辄几十行，逐行通知会把界面刷成噪声。
+    listener.onKernelLog();
+  }
 
   /// 由界面主动触发一次 DNS 监测。
   Future<void> refreshDns() => monitor.refreshDns();
 
   /// 由界面主动触发一次自检。
   Future<void> runSelfCheck() => monitor.runSelfCheck();
+
+  /// 对单个域名做一次两路 DNS 对照。
+  ///
+  /// 这是**用户主动发起**的探测，因此不受 [probesEnabled] 限制：那个开关的
+  /// 作用是「别在背后偷偷发流量」，而这里用户就是在明确要求查一次。
+  Future<DnsCrossCheck?> crossCheckDomain(String domain) =>
+      monitor.crossCheck(domain);
 
   /// 中国 IP 索引，供界面展示地理判定。默认空表。
   CnIpIndex get cnIpIndex => CnIpIndex.empty;
@@ -142,7 +243,16 @@ abstract class VpnCore {
   /// 导出自动纠正表，供界面层持久化。
   List<Map<String, Object?>> exportAutoRoute();
 
+  /// 本内核是否已经销毁。
+  ///
+  /// 放在基类而不是各实现自己记：就绪门控会干等最多 20 秒，等待期间必须能判断
+  /// 「这个内核还在不在」——原先只有演示内核有这个旗标，真实的两端都拿不到，
+  /// 于是安卓端的门控只能靠一个自己新加的字段兜住。
+  bool get isDisposed => _isDisposed;
+  bool _isDisposed = false;
+
   void dispose() {
+    _isDisposed = true;
     monitor.dispose();
   }
 }
@@ -164,10 +274,17 @@ class DemoVpnCore extends VpnCore {
   int _directTotal = 0;
   int _proxiedTotal = 0;
   int _hostIndex = 0;
-  var _disposed = false;
 
   @override
   String get name => 'demo';
+
+  /// 演示内核同样模拟「系统代理已设置」，因此报出真实实现会用到的默认端口。
+  ///
+  /// 返回 null 会让界面显示成裸的 `127.0.0.1`——那是**假信息**，而演示内核的
+  /// 用途恰恰是让界面在没有真实内核时也能被完整走查。
+  @override
+  String get takeOverEndpoint =>
+      '127.0.0.1:${SingBoxConfigBuilder.defaultMixedPort}';
 
   /// 演示内核不参与自动纠正：它没有真实的连接失败，也就没有可学的证据。
   ///
@@ -177,7 +294,8 @@ class DemoVpnCore extends VpnCore {
   void initAutoRoute(Object? saved) {}
 
   @override
-  List<Map<String, Object?>> exportAutoRoute() => const <Map<String, Object?>>[];
+  List<Map<String, Object?>> exportAutoRoute() =>
+      const <Map<String, Object?>>[];
 
   /// 演示数据：域名与预期判定，覆盖两种分流路径与三种命中规则。
   ///
@@ -187,11 +305,23 @@ class DemoVpnCore extends VpnCore {
   /// 「界面显示内核术语」的问题在演示数据上永远暴露不出来。
   static const _demoTargets = <(String, RouteKind, String)>[
     ('www.youtube.com', RouteKind.proxy, 'final'),
-    ('www.baidu.com', RouteKind.direct, 'rule_set=[geosite-cn geoip-cn] => route'),
+    (
+      'www.baidu.com',
+      RouteKind.direct,
+      'rule_set=[geosite-cn geoip-cn] => route',
+    ),
     ('api.openai.com', RouteKind.proxy, 'final'),
-    ('220.181.38.148', RouteKind.direct, 'rule_set=[geosite-cn geoip-cn] => route'),
+    (
+      '220.181.38.148',
+      RouteKind.direct,
+      'rule_set=[geosite-cn geoip-cn] => route',
+    ),
     ('github.com', RouteKind.proxy, 'final'),
-    ('npmmirror.com', RouteKind.direct, 'rule_set=[geosite-cn geoip-cn] => route'),
+    (
+      'npmmirror.com',
+      RouteKind.direct,
+      'rule_set=[geosite-cn geoip-cn] => route',
+    ),
     ('192.168.1.1', RouteKind.direct, 'ip_is_private=true => route'),
     ('cdn.jsdelivr.net', RouteKind.proxy, 'final'),
     ('taobao.com', RouteKind.direct, 'rule_set=[geosite-cn geoip-cn] => route'),
@@ -202,7 +332,7 @@ class DemoVpnCore extends VpnCore {
   Future<void> connect(VpnProfile profile, AppSettings settings) async {
     listener.onStatusChanged(VpnStatus.connecting);
     await Future<void>.delayed(const Duration(milliseconds: 700));
-    if (_disposed) return;
+    if (isDisposed) return;
     listener.onStatusChanged(VpnStatus.connected);
     listener.onLatency(38 + _random.nextInt(20));
     _startTraffic();
@@ -223,6 +353,11 @@ class DemoVpnCore extends VpnCore {
   }
 
   void _startTraffic() {
+    // 先取消上一个：connect 可能被连续调用（切配置、改密码都会重建连接），
+    // 而这里若直接覆盖字段，旧的那个每秒定时器就成了没人持有的孤儿——
+    // 它会一直跑下去，流量数字按两倍速往上跳，测试里还会表现为「有未完成的
+    // 定时器」。
+    _trafficTimer?.cancel();
     // 首帧立即给一个非零值，避免界面出现 0.00 MB/s 的空白感。
     _down = 1.1 * 1024 * 1024;
     _up = 300 * 1024;
@@ -233,12 +368,29 @@ class DemoVpnCore extends VpnCore {
       final delta = (_down + _up).round();
       _total += delta;
       // 演示内核也把总量拆成两条路径，界面上的分流占比才有数据。
-      if (_hostIndex.isEven) {
+      final kind = _hostIndex.isEven ? RouteKind.proxy : RouteKind.direct;
+      if (kind == RouteKind.proxy) {
         _proxiedTotal += delta;
       } else {
         _directTotal += delta;
       }
       _emitTraffic();
+
+      // 同时上报**按目标的流量增量**，与真实内核走同一条路径。
+      //
+      // 不补这一步的话，演示内核下「本次分流」那行永远是空的——而它的用途正是
+      // 让界面在没有真实内核时也能被完整走查。演示数据必须流经与真实内核相同的
+      // 代码路径，否则它掩盖的恰恰是要检查的东西。
+      final (target, _, _) = _demoTargets[_hostIndex % _demoTargets.length];
+      listener.onConnectionTraffic(
+        ConnectionTraffic(
+          target: target,
+          kind: kind,
+          // 演示数据按 7:3 分配上下行，让两列都有非零值。
+          uploadDelta: (delta * 0.3).round(),
+          downloadDelta: delta - (delta * 0.3).round(),
+        ),
+      );
     });
   }
 
@@ -257,9 +409,13 @@ class DemoVpnCore extends VpnCore {
       connectionCount: 6 + _hostIndex % 5,
     );
   }
+
   void _startRecords() {
+    // 同上：重复连接不能留下上一个记录定时器。
+    _recordTimer?.cancel();
     _recordTimer = Timer.periodic(const Duration(milliseconds: 2600), (_) {
-      final (target, kind, rule) = _demoTargets[_hostIndex % _demoTargets.length];
+      final (target, kind, rule) =
+          _demoTargets[_hostIndex % _demoTargets.length];
       _hostIndex++;
       listener.onSplitRecord(
         SplitRecord(
@@ -276,10 +432,10 @@ class DemoVpnCore extends VpnCore {
 
   @override
   void dispose() {
-    _disposed = true;
     _trafficTimer?.cancel();
     _recordTimer?.cancel();
     _connectTimer?.cancel();
+    // 处置状态由基类统一记账（见 VpnCore.isDisposed）。
     super.dispose();
   }
 }

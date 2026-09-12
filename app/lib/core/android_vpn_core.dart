@@ -7,7 +7,9 @@ import '../models.dart';
 import 'auto_route.dart';
 import 'core_monitor.dart';
 import 'cn_ip_index.dart';
+import 'dns_client.dart';
 import 'singbox_config.dart';
+import 'singbox_runner.dart';
 import 'vpn_core.dart';
 
 /// 安卓端内核：通过 VpnService + libbox 建立隧道。
@@ -21,7 +23,12 @@ import 'vpn_core.dart';
 /// [CoreMonitor] 提供，与 Windows 端是同一份代码——此前的实现是两端各写一份，
 /// 结果一端修好的问题在另一端依旧存在。
 class AndroidVpnCore extends VpnCore {
-  AndroidVpnCore(super.listener, {super.probesEnabled});
+  AndroidVpnCore(super.listener, {super.probesEnabled, this.dnsResolver});
+
+  /// DNS 解析实现。为 null 时由观测引擎自建真实 UDP 解析器。
+  ///
+  /// 与 Windows 端保持同一个可注入点：两端观测逻辑共用，注入点也该一样。
+  final DnsResolver? dnsResolver;
 
   /// 与 MainActivity / XvpnVpnService 约定的通道名。
   static const MethodChannel _channel = MethodChannel('com.xvpn.xvpn/vpn');
@@ -47,7 +54,33 @@ class AndroidVpnCore extends VpnCore {
   /// 自动纠正表。跨连接保留。
   final AutoRouteTable _autoRoute = AutoRouteTable();
 
+  /// 安卓端与桌面端一样能报告握手状态。
+  ///
+  /// 这条路曾经是不通的：DEBUG 级日志经 `writeDebugMessage` 转发给 Dart 时，
+  /// 直接在原生线程里调 MethodChannel，触发 JNI 校验失败并把进程 abort 掉。
+  /// 根因已在原生侧修掉（改为 post 到主线程，见 [XvpnVpnService] 的
+  /// `writeDebugMessage`），`SetupOptions.debug` 因此可以打开。
+  ///
+  /// 但光打开平台开关还不够：握手行是 DEBUG 级的，配置文件里的 `log.level`
+  /// 必须是 debug（由 [ParsedProfile.wantsDebugLogs] 按协议下发）。两者缺一，
+  /// 这里就会显示一个永远读不出来的占位。
+  @override
+  bool get supportsHandshakeState => true;
+
   CnIpIndex _cnIpIndex = CnIpIndex.empty;
+
+  /// 本次隧道开始建立的时刻，供观测引擎计算预热宽限期。
+  ///
+  /// 与桌面端同义：刻意不用「观测引擎启动时刻」，否则门控已经花掉的那几秒
+  /// 会被一笔勾销，紧接着一次探测失败就又被判成「隧道不通」。
+  DateTime? _tunnelSince;
+
+  /// 是否正在建立连接。
+  ///
+  /// 就绪门控会在这里干等最多 20 秒，而用户完全可能在这期间点断开。断开之后
+  /// 若还继续探测、甚至宣布「已连接」，就会把一个已经拆掉的隧道说成可用。
+  /// 桌面端靠 `_userDisconnect` 拦住这件事，安卓端此前没有对应的旗标。
+  bool _connecting = false;
 
   @override
   CnIpIndex get cnIpIndex => _cnIpIndex;
@@ -60,18 +93,25 @@ class AndroidVpnCore extends VpnCore {
 
   @override
   CoreMonitorHooks monitorHooks() => CoreMonitorHooks(
-        listener: listener,
-        clashApiPort: SingBoxConfigBuilder.defaultClashApiPort,
-        autoRoute: _autoRoute,
-        cnIpIndex: _cnIpIndex,
-        probesEnabled: probesEnabled,
-      );
+    listener: listener,
+    clashApiPort: SingBoxConfigBuilder.defaultClashApiPort,
+    autoRoute: _autoRoute,
+    cnIpIndex: _cnIpIndex,
+    probesEnabled: probesEnabled,
+    dnsResolver: dnsResolver,
+    // MTU 校验在安卓端**不做**，这是能力差异而不是遗漏：
+    // 校验要把包经本地混合入站送进隧道，而 TUN 模式没有这个端口——内核自己
+    // 按 MTU 分片，用户侧没有可校验的入口。界面两端都会显示这一行，只是移动端
+    // 说明「由内核自行处理」，而不是显示一个永远「无法校验」的占位。
+    declaredMtu: null,
+  );
 
   // ---------------------------------------------------------------- 启动
 
   @override
   Future<void> connect(VpnProfile profile, AppSettings settings) async {
     await disconnect();
+    _connecting = true;
     listener.onStatusChanged(VpnStatus.connecting);
 
     try {
@@ -112,17 +152,41 @@ class AndroidVpnCore extends VpnCore {
         final status = await _status();
         final detail = status['error'] as String?;
         listener.onError(
-          detail == null || detail.isEmpty ? '内核启动超时，请查看系统日志' : '内核启动失败：$detail',
+          detail == null || detail.isEmpty
+              ? '内核启动超时，请查看系统日志'
+              : '内核启动失败：$detail',
         );
         await disconnect();
         return;
       }
 
+      // 6) 就绪门控：与桌面端同一套逻辑。
+      //
+      // 安卓这边同样存在「内核报就绪、隧道还不能载流量」的窗口，而它比桌面端
+      // 更容易被误解：TUN 已经接管了全部流量，用户看到的是**整个网络都不通**，
+      // 而不是某一个网站打不开。若此时界面写着「已连接」，用户会直接认为软件
+      // 把网络弄坏了。
+      //
+      // 门控失败**不阻断连接**：超时后照旧宣布已连接，但明确说一句尚未就绪。
+      // 两端连这条提示的措辞都取自同一个常量，避免同一个现象两种说法。
+      _tunnelSince = DateTime.now();
+      // 与桌面端调用的是**同一个**门控实现：预热态广播、等待、超时提示都在里面。
+      // 两端各写一遍的话，迟早会出现「一端改了措辞、另一端还是老话」。
+      await runTunnelReadyGate(
+        listener: listener,
+        probe: monitor.probeTunnelReadiness,
+        isAborted: () => isDisposed || !_connecting,
+      );
+      if (isDisposed || !_connecting) return;
+
       listener.onStatusChanged(VpnStatus.connected);
-      monitor.start();
+      // 预热起点用隧道建立那一刻，这样门控已经花掉的时间不会被重复计算。
+      monitor.start(since: _tunnelSince);
     } on Object catch (e) {
       listener.onError('启动失败：$e');
       await disconnect();
+    } finally {
+      _connecting = false;
     }
   }
 
@@ -130,6 +194,9 @@ class AndroidVpnCore extends VpnCore {
 
   @override
   Future<void> disconnect() async {
+    // 先落旗标：就绪门控可能正在等待，旗标不到位它会把一个已经拆掉的隧道
+    // 接着宣布成「已连接」。
+    _connecting = false;
     monitor.stop();
     try {
       await _channel.invokeMethod<void>('disconnect');
@@ -176,7 +243,15 @@ class AndroidVpnCore extends VpnCore {
       final name = asset.split('/').last;
       final target = File('${dir.path}${Platform.pathSeparator}$name');
       if (target.existsSync() && target.lengthSync() > 64) continue;
-      final data = await rootBundle.load(asset);
+      final ByteData data;
+      try {
+        data = await rootBundle.load(asset);
+      } on Object {
+        // 资源缺失只可能是安装包损坏或被裁剪（应用商店重新打包、增量更新出错）。
+        // 原先它会以「启动失败：Unable to load asset: ...」的样子冒到界面上——
+        // 用户看到的是一条英文的构建产物路径。这里换成与桌面端同一句可操作的话。
+        throw StateError(missingRuleSetMessage(asset));
+      }
       await target.writeAsBytes(
         data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes),
         flush: true,

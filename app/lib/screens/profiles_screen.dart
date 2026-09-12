@@ -5,6 +5,7 @@ import '../models.dart';
 import '../protocols/vpn_protocol.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
+import 'credential_dialog.dart';
 import 'import_conf.dart';
 
 /// 配置文件页。
@@ -57,7 +58,8 @@ class ProfilesScreen extends StatelessWidget {
                   itemBuilder: (BuildContext context, int i) => _ProfileCard(
                     profile: state.profiles[i],
                     isActive: state.profiles[i].id == state.activeProfile?.id,
-                    onActivate: () => state.setActiveProfile(state.profiles[i].id),
+                    onActivate: () =>
+                        state.setActiveProfile(state.profiles[i].id),
                     onRemove: () => state.removeProfile(state.profiles[i].id),
                   ),
                 )
@@ -112,6 +114,26 @@ class ProfilesScreen extends StatelessWidget {
                       overflow: TextOverflow.ellipsis,
                     ),
                   ),
+                  // 需要账号密码的配置（OpenVPN 的 auth-user-pass）有两种状态：
+                  // 还没填（红色标签 + 填写入口）和已经填好（只留一个改密码入口）。
+                  // 没有这个入口时，用户会看到「需要账号密码」的提示却无处可填。
+                  if (p.parsed.requiresCredentials &&
+                      !state.profileHasCredentials(p.id))
+                    Padding(
+                      padding: const EdgeInsets.only(right: 8),
+                      child: RouteTag.warn('缺账号密码'),
+                    ),
+                  if (p.parsed.requiresCredentials &&
+                      !state.profileHasCredentials(p.id))
+                    TapAction(
+                      label: '填写',
+                      onTap: () => _promptCredentials(context, p),
+                    )
+                  else if (p.parsed.requiresCredentials)
+                    TapAction(
+                      label: '改密码',
+                      onTap: () => _promptCredentials(context, p),
+                    ),
                   if (p.id == state.activeProfile?.id)
                     RouteTag.green('当前')
                   else
@@ -133,6 +155,27 @@ class ProfilesScreen extends StatelessWidget {
           _ImportCard(state: state, compact: true),
         ],
       ),
+    );
+  }
+
+  /// 补填或修改某份配置的账号密码。
+  ///
+  /// 改密码会让隧道按新凭据重建（见 [AppState.setProfileCredentials]），
+  /// 因此这里不需要额外提示——状态栏会如实反映「连接中」。
+  Future<void> _promptCredentials(
+    BuildContext context,
+    VpnProfile profile,
+  ) async {
+    final credentials = await showCredentialDialog(
+      context,
+      fileName: profile.name,
+      storageNote: '账号密码：${state.protector.description}',
+    );
+    if (credentials == null) return;
+    state.setProfileCredentials(
+      profile.id,
+      username: credentials.username,
+      password: credentials.password,
     );
   }
 
@@ -160,10 +203,17 @@ class ProfilesScreen extends StatelessWidget {
               children: <Widget>[
                 Text(
                   '删除配置',
-                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: XV.text),
+                  style: TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w700,
+                    color: XV.text,
+                  ),
                 ),
                 const SizedBox(height: 8),
-                Text('确定删除「${profile.name}」？删除后需要重新导入才能使用。', style: XvText.caption),
+                Text(
+                  '确定删除「${profile.name}」？删除后需要重新导入才能使用。',
+                  style: XvText.caption,
+                ),
                 const SizedBox(height: 18),
                 Row(
                   mainAxisAlignment: MainAxisAlignment.end,
@@ -220,7 +270,7 @@ class _ImportCard extends StatelessWidget {
         final fileTile = ImportActionTile(
           icon: Icons.folder_open_outlined,
           title: '选择配置文件',
-          description: '从本机挑一个 .conf 或 .ovpn 文件',
+          description: '从本机挑一个 .conf、.ovpn 或 Hysteria2 节点文件',
           primary: true,
           onTap: () => pickAndImportConf(context, state),
         );
@@ -238,11 +288,7 @@ class _ImportCard extends StatelessWidget {
             constraints.maxWidth < minTileWidth * 2 + 10) {
           return Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: <Widget>[
-              fileTile,
-              const SizedBox(height: 10),
-              pasteTile,
-            ],
+            children: <Widget>[fileTile, const SizedBox(height: 10), pasteTile],
           );
         }
         // 横向并排时**不能**用 CrossAxisAlignment.stretch：卡片在移动端设置页里
@@ -347,7 +393,11 @@ class _ProfileCard extends StatelessWidget {
                 XvButton(label: '设为当前', onPressed: onActivate),
                 const SizedBox(width: 8),
               ],
-              XvButton(label: '删除', kind: XvButtonKind.danger, onPressed: onRemove),
+              XvButton(
+                label: '删除',
+                kind: XvButtonKind.danger,
+                onPressed: onRemove,
+              ),
             ],
           ),
         ],
@@ -368,7 +418,10 @@ class _Field extends StatelessWidget {
       text: TextSpan(
         style: XvText.bodyMuted,
         children: <InlineSpan>[
-          TextSpan(text: '$label ', style: TextStyle(color: XV.muted2)),
+          TextSpan(
+            text: '$label ',
+            style: TextStyle(color: XV.muted2),
+          ),
           TextSpan(
             text: value,
             style: TextStyle(color: XV.text, fontWeight: FontWeight.w600),

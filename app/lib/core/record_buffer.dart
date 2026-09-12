@@ -13,8 +13,8 @@ library;
 /// 容量写满后每插入一条就丢弃最旧的一条，不会增长、不会扩容、不产生垃圾。
 class RingBuffer<T> {
   RingBuffer(this.capacity)
-      : assert(capacity > 0, '容量必须为正数'),
-        _slots = List<T?>.filled(capacity, null);
+    : assert(capacity > 0, '容量必须为正数'),
+      _slots = List<T?>.filled(capacity, null);
 
   /// 最多保留的元素个数。
   final int capacity;
@@ -79,8 +79,8 @@ class RingBuffer<T> {
 /// 已上报过的连接不会被重复上报。
 class BoundedIdSet {
   BoundedIdSet(this.capacity)
-      : assert(capacity > 0, '容量必须为正数'),
-        _order = List<String?>.filled(capacity, null);
+    : assert(capacity > 0, '容量必须为正数'),
+      _order = List<String?>.filled(capacity, null);
 
   /// 容量上限。会在运行中按需增长，见 [_grow]。
   int capacity;

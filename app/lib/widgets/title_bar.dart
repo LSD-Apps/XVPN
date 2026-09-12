@@ -166,54 +166,40 @@ class _ThemeButtonState extends State<_ThemeButton> {
 }
 
 /// 最小化 / 最大化 / 关闭。图标为自绘，比默认图标更粗更大，便于点击辨认。
-class _WindowButtons extends StatefulWidget {
+class _WindowButtons extends StatelessWidget {
   const _WindowButtons();
-
-  @override
-  State<_WindowButtons> createState() => _WindowButtonsState();
-}
-
-class _WindowButtonsState extends State<_WindowButtons> {
-  bool _maximized = false;
-
-  @override
-  void initState() {
-    super.initState();
-    _refreshMaximized();
-  }
-
-  Future<void> _refreshMaximized() async {
-    final value = await WindowControls.isMaximized();
-    if (!mounted) return;
-    setState(() => _maximized = value);
-  }
 
   @override
   Widget build(BuildContext context) {
     if (!WindowControls.supported) return const SizedBox.shrink();
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: <Widget>[
-        _WindowButton(
-          glyph: WindowGlyph.minimize,
-          onTap: WindowControls.minimize,
-          tooltip: '最小化',
-        ),
-        _WindowButton(
-          glyph: _maximized ? WindowGlyph.restore : WindowGlyph.maximize,
-          onTap: () async {
-            await WindowControls.toggleMaximize();
-            await _refreshMaximized();
-          },
-          tooltip: _maximized ? '还原' : '最大化',
-        ),
-        _WindowButton(
-          glyph: WindowGlyph.close,
-          onTap: WindowControls.close,
-          tooltip: '关闭',
-          danger: true,
-        ),
-      ],
+    // 状态取自原生推送的 notifier，而不是本组件自己查一次记住。
+    //
+    // 自己记住的话，只有「点这个按钮」这条路径能刷新；双击标题栏、Win+↑、
+    // 贴边这些由系统直接处理的最大化，界面收不到通知，图标就会停在旧状态上
+    // ——窗口都最大化了，按钮还画着「最大化」的方框。
+    return ValueListenableBuilder<bool>(
+      valueListenable: WindowControls.maximized,
+      builder: (BuildContext context, bool maximized, Widget? _) => Row(
+        mainAxisSize: MainAxisSize.min,
+        children: <Widget>[
+          _WindowButton(
+            glyph: WindowGlyph.minimize,
+            onTap: WindowControls.minimize,
+            tooltip: '最小化',
+          ),
+          _WindowButton(
+            glyph: maximized ? WindowGlyph.restore : WindowGlyph.maximize,
+            onTap: WindowControls.toggleMaximize,
+            tooltip: maximized ? '还原' : '最大化',
+          ),
+          _WindowButton(
+            glyph: WindowGlyph.close,
+            onTap: WindowControls.close,
+            tooltip: '关闭',
+            danger: true,
+          ),
+        ],
+      ),
     );
   }
 }
@@ -305,17 +291,51 @@ class _WindowGlyphPainter extends CustomPainter {
           paint,
         );
       case WindowGlyph.restore:
-        // 两个错位的方框，表示「还原」
-        final back = Rect.fromLTWH(center.dx - 5, center.dy - 6, 10, 10);
-        final front = Rect.fromLTWH(center.dx - 6, center.dy - 3, 10, 10);
-        canvas.drawRRect(
-          RRect.fromRectAndRadius(back, const Radius.circular(1.5)),
-          paint..color = color.withValues(alpha: 0.55),
+        // Windows 的「还原」是**两个错位交叠的方框**：后面那个只露出未被前面
+        // 遮住的部分（上边与右边），前面那个完整描边。
+        //
+        // 上一版画的是两个**完整**的方框、只把后面那个调淡到 55%，看起来像
+        // 「两张纸叠在一起」，与系统按钮不是同一个图形——那是把透明度当成了
+        // 层次，而正确做法是**把后面那个方框裁掉被前面遮住的部分**。
+        const double offset = 3;
+        const double side = 9;
+        const double radius = 1.5;
+
+        // 前面那个（左下）
+        final front = RRect.fromRectAndRadius(
+          Rect.fromLTWH(
+            center.dx - side / 2 - offset / 2,
+            center.dy - side / 2 + offset / 2,
+            side,
+            side,
+          ),
+          const Radius.circular(radius),
         );
-        canvas.drawRRect(
-          RRect.fromRectAndRadius(front, const Radius.circular(1.5)),
-          paint..color = color,
+        // 后面那个（右上）
+        final back = RRect.fromRectAndRadius(
+          Rect.fromLTWH(
+            center.dx - side / 2 + offset / 2,
+            center.dy - side / 2 - offset / 2,
+            side,
+            side,
+          ),
+          const Radius.circular(radius),
         );
+
+        canvas.save();
+        canvas.clipPath(
+          Path.combine(
+            PathOperation.difference,
+            Path()..addRect(back.outerRect.inflate(2)),
+            Path()..addRRect(front),
+          ),
+          doAntiAlias: true,
+        );
+        canvas.drawRRect(back, paint);
+        canvas.restore();
+
+        // 前面那个压在后面之上，两条边因此交汇干净。
+        canvas.drawRRect(front, paint);
       case WindowGlyph.close:
         final s = 6.0;
         canvas.drawLine(
@@ -332,5 +352,6 @@ class _WindowGlyphPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(_WindowGlyphPainter old) => old.glyph != glyph || old.color != color;
+  bool shouldRepaint(_WindowGlyphPainter old) =>
+      old.glyph != glyph || old.color != color;
 }

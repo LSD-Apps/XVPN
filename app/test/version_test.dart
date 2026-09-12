@@ -30,7 +30,8 @@ void main() {
     expect(
       fallbackVersion,
       pubspecVersion(),
-      reason: 'version.dart 的 fallbackVersion 必须与 pubspec.yaml 的 version 一致；'
+      reason:
+          'version.dart 的 fallbackVersion 必须与 pubspec.yaml 的 version 一致；'
           '两处版本号不一致正是这个测试要防的问题',
     );
   });

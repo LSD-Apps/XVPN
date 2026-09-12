@@ -4,7 +4,10 @@ import 'package:xvpn/core/auto_route.dart';
 void main() {
   group('域名归一化', () {
     test('小写、去端口、去尾部点', () {
-      expect(AutoRouteTable.normalizeDomain('WWW.Example.COM'), 'www.example.com');
+      expect(
+        AutoRouteTable.normalizeDomain('WWW.Example.COM'),
+        'www.example.com',
+      );
       expect(AutoRouteTable.normalizeDomain('example.com:443'), 'example.com');
       expect(AutoRouteTable.normalizeDomain('example.com.'), 'example.com');
       expect(AutoRouteTable.normalizeDomain('  example.com  '), 'example.com');
@@ -34,13 +37,19 @@ void main() {
       table.setUserRule('example.com', RoutePreference.forceProxy);
       table.setUserRule('direct.example.com', RoutePreference.forceDirect);
 
-      expect(table.match('example.com')!.preference, RoutePreference.forceProxy);
+      expect(
+        table.match('example.com')!.preference,
+        RoutePreference.forceProxy,
+      );
       expect(
         table.match('direct.example.com')!.preference,
         RoutePreference.forceDirect,
         reason: '更具体的域名必须赢',
       );
-      expect(table.match('www.example.com')!.preference, RoutePreference.forceProxy);
+      expect(
+        table.match('www.example.com')!.preference,
+        RoutePreference.forceProxy,
+      );
     });
 
     test('后缀匹配落在标签边界上，不误伤相似域名', () {
@@ -77,10 +86,16 @@ void main() {
     test('连续失败达到阈值才纠正', () {
       final table = AutoRouteTable(promotionThreshold: 3);
 
-      final first = table.recordDirectFailure('blocked.example', reason: '连接超时');
+      final first = table.recordDirectFailure(
+        'blocked.example',
+        reason: '连接超时',
+      );
       expect(first.added, isFalse);
-      expect(first.entry!.preference, RoutePreference.forceProxy,
-          reason: '内部倾向已经记下，但还没对外生效');
+      expect(
+        first.entry!.preference,
+        RoutePreference.forceProxy,
+        reason: '内部倾向已经记下，但还没对外生效',
+      );
       expect(table.match('blocked.example'), isNotNull);
 
       table.recordDirectFailure('blocked.example');
@@ -122,7 +137,10 @@ void main() {
     test('直连成功两次会撤销程序学到的强制代理', () {
       final table = AutoRouteTable(promotionThreshold: 1);
       table.recordDirectFailure('maybe.example');
-      expect(table.match('maybe.example')!.preference, RoutePreference.forceProxy);
+      expect(
+        table.match('maybe.example')!.preference,
+        RoutePreference.forceProxy,
+      );
 
       table.recordDirectSuccess('maybe.example');
       table.recordDirectSuccess('maybe.example');
@@ -219,7 +237,9 @@ void main() {
       table.recordProxiedBytes('useful.example', 8192);
 
       // 两条规则的 lastHitAt 都是「现在」，用一个更晚的时间点触发淘汰。
-      final removed = table.evictStale(now: DateTime.now().add(const Duration(days: 30)));
+      final removed = table.evictStale(
+        now: DateTime.now().add(const Duration(days: 30)),
+      );
       expect(removed, contains('stale.example'));
       expect(removed, isNot(contains('useful.example')));
       expect(table.match('useful.example'), isNotNull);
@@ -228,7 +248,9 @@ void main() {
     test('用户规则不受衰减影响', () {
       final table = AutoRouteTable(decayAfter: Duration.zero);
       table.setUserRule('mine.example', RoutePreference.forceProxy);
-      final removed = table.evictStale(now: DateTime.now().add(const Duration(days: 1)));
+      final removed = table.evictStale(
+        now: DateTime.now().add(const Duration(days: 1)),
+      );
       expect(removed, isEmpty);
       expect(table.match('mine.example'), isNotNull);
     });
@@ -338,7 +360,10 @@ void main() {
         ]);
       expect(table.length, 2);
       expect(table.match('good.example'), isNotNull);
-      expect(table.match('ok.example')!.preference, RoutePreference.forceDirect);
+      expect(
+        table.match('ok.example')!.preference,
+        RoutePreference.forceDirect,
+      );
     });
 
     test('非列表输入不会抛异常', () {

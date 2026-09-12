@@ -19,6 +19,7 @@ library;
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import '../models.dart';
 import 'auto_route.dart';
@@ -27,10 +28,14 @@ import 'cn_ip_index.dart';
 import 'core_log.dart';
 import 'dns_client.dart';
 import 'dns_monitor.dart';
+import 'mtu_probe.dart';
+import 'port_allocator.dart';
 import 'record_buffer.dart';
 import 'singbox_config.dart';
 import 'startup_self_check.dart';
+import 'tunnel_health.dart';
 import 'vpn_core.dart';
+import 'wireguard_handshake.dart';
 
 /// 观测引擎的依赖注入点。
 class CoreMonitorHooks {
@@ -42,10 +47,24 @@ class CoreMonitorHooks {
     this.dnsResolver,
     this.probesEnabled = true,
     this.httpClient,
+    this.tunnelLatencyProbe,
+    this.directLatencyProbe,
+    this.onHealth,
+    this.latencyProbeInterval = CoreMonitor.latencyInterval,
+    this.unreachableThreshold = CoreMonitor.defaultUnreachableThreshold,
+    this.warmupSince,
+    this.mixedPort,
+    this.declaredMtu,
   }) : cnIpIndex = cnIpIndex ?? CnIpIndex.empty;
 
   final VpnCoreListener listener;
-  final int clashApiPort;
+
+  /// Clash API 端口。
+  ///
+  /// **可变**，理由与 [cnIpIndex] 相同：端口在连接时才最终确定。默认的 2081
+  /// 被占用时内核会换一个端口监听（见 [PortAllocator]），而观测引擎是构造期
+  /// 就建好的，只有让它每次读取时都拿最新值，才不会一直去问一个没人听的端口。
+  int clashApiPort;
 
   /// 自动纠正表。为 null 时不做学习，行为与改造前一致。
   final AutoRouteTable? autoRoute;
@@ -72,21 +91,67 @@ class CoreMonitorHooks {
   /// 做成可注入是为了让「一轮采样到底上报了什么数字」可以被真正测到——
   /// 那是界面上所有统计的唯一来源，只靠读代码确认等于没测。
   final HttpClient? httpClient;
+
+  /// 隧道延迟探测。默认走内核的 `/proxies/{tag}/delay`。
+  ///
+  /// 可注入的理由与 [httpClient] 相同：健康判定是「连续失败多少次 → 该不该
+  /// 自动恢复」的逻辑，必须在**不真的连网**的前提下被完整测到，否则只能靠
+  /// 拔网线来验证。
+  final Future<int?> Function()? tunnelLatencyProbe;
+
+  /// 直连延迟探测。默认直连访问一个国内站点。
+  ///
+  /// 它是健康判定的对照组：只有「直连通、隧道不通」才说明问题在隧道这一侧。
+  /// 同理做成可注入。
+  final Future<int?> Function()? directLatencyProbe;
+
+  /// 隧道健康结论的**决策**回调。
+  ///
+  /// [listener] 负责显示，这里负责行动。分成两条路是必要的：要重启内核的
+  /// 是内核实现自己，而它只是观测引擎的一个持有者，不该被塞进界面回调里。
+  final void Function(TunnelHealth health)? onHealth;
+
+  /// 两次延迟探测之间的最小间隔。
+  ///
+  /// 可注入是为了让「连续失败三次后触发健康判定」这条链路能被直接测到：
+  /// 否则一个用例要真等 45 秒，等于没法测。
+  final Duration latencyProbeInterval;
+
+  /// 连续多少次读不到内核才判定「内核卡住」。
+  ///
+  /// 可注入的理由同上：测试不该为了验证一个阈值等 5 秒。
+  final int unreachableThreshold;
+
+  /// 预热宽限期的起点。为 null 时由 [CoreMonitor.start] 取当时时刻。
+  ///
+  /// 可注入是为了让「预热窗口内不下故障结论」这条能被直接测到：否则一个用例
+  /// 只能靠真的等 12 秒，而 `start()` 又会顺手拉起真实 DNS 与自检探测，
+  /// 把一个纯逻辑用例变成一次真实网络访问。
+  final DateTime? warmupSince;
+
+  /// 内核混合入站的端口，MTU 校验要从这里把包送进隧道。
+  ///
+  /// 与 [clashApiPort] 同理是**可变**的：端口在连接时才最终确定（默认端口被占
+  /// 时会换一个）。为 null 表示还没有可用端口，此时不做 MTU 校验。
+  int? mixedPort;
+
+  /// 配置里声明的 Tunnel MTU（字节）。为 null 表示没声明，校验直接跳过。
+  int? declaredMtu;
 }
 
 /// 观测引擎。
 class CoreMonitor {
   CoreMonitor(this.hooks)
-      : _autoRoute = hooks.autoRoute,
-        _clashApiPort = hooks.clashApiPort,
-        _http = hooks.httpClient ??
-            (HttpClient()
-              ..connectionTimeout = const Duration(seconds: 3)
-              ..idleTimeout = const Duration(seconds: 30));
+    : _autoRoute = hooks.autoRoute,
+      _connectedSince = hooks.warmupSince,
+      _http =
+          hooks.httpClient ??
+          (HttpClient()
+            ..connectionTimeout = const Duration(seconds: 3)
+            ..idleTimeout = const Duration(seconds: 30));
 
   final CoreMonitorHooks hooks;
   final AutoRouteTable? _autoRoute;
-  final int _clashApiPort;
 
   /// 复用的 HTTP 客户端。
   ///
@@ -114,6 +179,12 @@ class CoreMonitor {
 
   late final DnsResolver _dnsResolver = hooks.dnsResolver ?? UdpDnsResolver();
 
+  /// 隧道与直连探测的实现。默认走真实网络，测试可注入桩。
+  late final Future<int?> Function() _tunnelProbe =
+      hooks.tunnelLatencyProbe ?? probeTunnelLatency;
+  late final Future<int?> Function() _directProbe =
+      hooks.directLatencyProbe ?? probeDirectLatency;
+
   DnsMonitor? _dnsMonitor;
   StartupSelfCheck? _selfCheck;
 
@@ -137,11 +208,40 @@ class CoreMonitor {
   /// 延迟探测间隔。
   static const Duration latencyInterval = Duration(seconds: 15);
 
+  /// 连续失败多少次才算「隧道可能不正常」。
+  ///
+  /// 定在 3 而不是 1：单次失败多半只是网络抖动，用它触发自愈会造成
+  /// 「一抖动就重连」，那比不重连更影响体验。
+  static const int unhealthyThreshold = 3;
+
+  /// 连续多少次读不到内核才判定「内核卡住」。
+  ///
+  /// 定在 5：轮询周期是 1 秒，也就是给内核 5 秒的宽限。内核在重负载下偶尔
+  /// 一次应答超时是正常的，但连续 5 秒完全不应答就不是「忙」了。
+  static const int defaultUnreachableThreshold = 5;
+
   Timer? _pollTimer;
   Timer? _dnsTimer;
   Timer? _selfCheckTimer;
   DateTime? _lastLatencyProbe;
   int _latencyFailures = 0;
+
+  /// 上一次已上报的健康结论。
+  ///
+  /// 只在**结论变化**时上报：否则每 15 秒一条「隧道还是不通」，界面会被
+  /// 同样的句子刷满，真正重要的状态切换反而被埋掉。
+  TunnelHealthVerdict? _lastHealthVerdict;
+
+  /// 连续多少次采样没能从内核读到数据。
+  int _tickFailures = 0;
+
+  /// 本会话开始观测的时刻，用于「刚连上」的预热宽限期判定。
+  ///
+  /// 构造期就取 [CoreMonitorHooks.warmupSince]，而不是只在 [start] 里赋值：
+  /// 后者一旦漏调（或探测先于 start 发生），这里就是 null，而
+  /// [isWithinWarmupWindow] 对 null 一律返回 false——宽限期会被**静默关闭**，
+  /// 预热期的失败又会被当成节点故障。默认值放在构造期，这个失效路径就不存在。
+  DateTime? _connectedSince;
 
   AutoRouteTable? get autoRoute => _autoRoute;
 
@@ -152,14 +252,27 @@ class CoreMonitor {
   // ---------------------------------------------------------------- 生命周期
 
   /// 内核就绪后调用。清空上一次会话的观测状态并开始定时采样。
-  void start() {
+  ///
+  /// [since] 是**隧道开始建立**的时刻，预热宽限期从它算起。默认取当前时刻，
+  /// 但连接路径应当把更早的那个真实起点传进来：门控本身可能已经花掉几秒，
+  /// 若这里再重置一次，就等于把已经等过的时间一笔勾销——门控都确认隧道通了，
+  /// 紧接着一次探测失败又会报「隧道不通」。
+  void start({DateTime? since}) {
     _seen.clear();
     _directSuccessSeen.clear();
     _rate.reset();
     _lastLatencyProbe = null;
     _latencyFailures = 0;
+    _lastHealthVerdict = null;
+    _tickFailures = 0;
     _lastConnectionCount = 0;
     _kernelMemory = 0;
+    // 预热宽限期从这里开始：隧道刚建好时握手可能还没完成，这段窗口内的探测
+    // 失败属于正常现象，不能当成节点故障（否则用户会看到一句错误的「换节点」）。
+    _connectedSince = since ?? hooks.warmupSince ?? DateTime.now();
+    // 握手状态是「本次连接」的事实，跨连接保留会让用户看着上一次的结论排查
+    // 这一条隧道。日志缓冲刻意跨重连保留，这一项则不。
+    _handshake = WireGuardHandshake.unknown;
 
     _pollTimer?.cancel();
     _pollTimer = Timer.periodic(pollInterval, (_) => unawaited(tick()));
@@ -180,6 +293,13 @@ class CoreMonitor {
       // 而不是先空白一分多钟。
       unawaited(refreshDns());
       unawaited(runSelfCheck());
+      // 自动做一次 DNS 交叉校验：界面一直承诺「连接后会校验」，
+      // 而在此之前它只发生在「连接失败学习」与「手动查证」两条路径上，
+      // 于是一般会话里结论永远是「未校验」。延后一点执行，避免与
+      // 上面两个探测抢带宽、把耗时测成排队时间。
+      unawaited(
+        Future<void>.delayed(const Duration(seconds: 3), runInitialDnsCheck),
+      );
     }
   }
 
@@ -220,7 +340,7 @@ class CoreMonitor {
         tunnelProbeUrl: tunnelProbeUrl,
       ),
       resolver: _dnsResolver,
-      tunnelLatencyProbe: probeTunnelLatency,
+      tunnelLatencyProbe: _tunnelProbe,
       cnIpIndex: hooks.cnIpIndex,
     );
     // 经内核 DNS 模块解析，用于交叉校验的第二组答案。
@@ -228,8 +348,8 @@ class CoreMonitor {
     _dnsMonitor = monitor;
 
     _selfCheck ??= StartupSelfCheck(
-      directProbe: probeDirectLatency,
-      tunnelProbe: probeTunnelLatency,
+      directProbe: _directProbe,
+      tunnelProbe: _tunnelProbe,
       coreResolve: resolveViaCoreDns,
       domesticResolve: _resolveDomestically,
     );
@@ -245,7 +365,11 @@ class CoreMonitor {
     _tickRunning = true;
     try {
       final body = await _get('/connections');
-      if (body == null) return;
+      if (body == null) {
+        _onTickMissed();
+        return;
+      }
+      _onTickSucceeded();
       Map<String, Object?> json;
       try {
         json = jsonDecode(body) as Map<String, Object?>;
@@ -278,6 +402,10 @@ class CoreMonitor {
       // 2) 新连接：只有这一路需要构造对象与拼字符串。
       _emitNewConnections(json);
 
+      // 2b) 流量增量：界面把同目标的记录合并成一行，需要把每条连接这次新增的
+      //     字节累加到那一行上。放在这里是因为连接列表已经在手上，不必再解析一次。
+      _emitTrafficDeltas(json);
+
       // 3) 延迟探测按自己的节奏走。
       await probeLatency();
     } finally {
@@ -304,7 +432,8 @@ class CoreMonitor {
       final conn = raw.cast<String, Object?>();
       final bytes = _int(conn['upload']) + _int(conn['download']);
       final rawChains = conn['chains'];
-      final proxied = rawChains is List &&
+      final proxied =
+          rawChains is List &&
           rawChains.any((Object? c) => c.toString() == 'vpn');
       if (proxied) {
         proxiedBytes += bytes;
@@ -323,6 +452,92 @@ class CoreMonitor {
     if (raw is num) return raw.toInt();
     if (raw is String) return int.tryParse(raw) ?? 0;
     return 0;
+  }
+
+  /// 每条连接上一轮读到的字节数，用于算增量。
+  ///
+  /// 键是连接 id。连接从内核列表里消失（关闭）时就地清理，因此这个表的大小
+  /// 与实际活连接数同阶，不会随会话时长增长。
+  final Map<String, int> _lastBytes = <String, int>{};
+
+  /// 把「每条连接累计多少字节」换算成「本目标这一轮新增多少」，上报给界面。
+  ///
+  /// 为什么必须算增量：内核的 `upload` / `download` 是**该连接的累计值**，
+  /// 直接累加会让数字随轮询次数成倍膨胀。相减之后才是真实新增。
+  ///
+  /// 连接关闭后会从列表里消失，它最后一段流量就统计不到了——这是这套观测方式
+  /// 的固有限制（快照里没有关闭的连接），因此界面上的流量是**偏低**的下界，
+  /// 而不是虚高的估计值。
+  void _emitTrafficDeltas(Map<String, Object?> json) {
+    final rawList = json['connections'];
+    if (rawList is! List) {
+      // 读不到列表时**不能**清空账本：清掉会让下一轮的每条连接都被当成新连接，
+      // 于是那一轮的流量增量被整体丢弃。留着旧值最多让某条连接的增量算成 0。
+      return;
+    }
+
+    final live = <String>{};
+    // 同一目标可能同时有多条连接，先把增量按目标归并再一次上报，
+    // 避免一秒内为同一个域名回调十几次。
+    final deltas = <String, ({RouteKind kind, int up, int down})>{};
+
+    for (final raw in rawList) {
+      if (raw is! Map) continue;
+      final conn = ClashConnection.fromJson(raw);
+      if (conn == null) continue;
+      live.add(conn.id);
+
+      final total = conn.upload + conn.download;
+      final previous = _lastBytes[conn.id];
+      _lastBytes[conn.id] = total;
+      // 第一次见到这条连接时没有增量可言：它的全部字节都发生在建连那一刻之前，
+      // 而那部分流量属于「连接刚建立」这个事件，不是本轮的增量。
+      if (previous == null) continue;
+
+      final delta = total - previous;
+      if (delta <= 0) continue;
+
+      final target = conn.target;
+      final kind = conn.proxied ? RouteKind.proxy : RouteKind.direct;
+      final previousOfTarget = deltas[target];
+      // 上传/下载的增量无法从总量差里精确拆开（账本只存了总量），
+      // 按当前比例近似分摊。这不影响总量正确性，只影响拆分精度。
+      final splitUp = _splitUpload(conn, delta);
+      deltas[target] = (
+        kind: kind,
+        up: (previousOfTarget?.up ?? 0) + splitUp,
+        down: (previousOfTarget?.down ?? 0) + (delta - splitUp),
+      );
+    }
+
+    // 清理已关闭连接的账目，否则这个表会随会话一直增长。
+    if (_lastBytes.length > live.length) {
+      _lastBytes.removeWhere((String id, int _) => !live.contains(id));
+    }
+
+    for (final entry in deltas.entries) {
+      hooks.listener.onConnectionTraffic(
+        ConnectionTraffic(
+          target: entry.key,
+          kind: entry.value.kind,
+          uploadDelta: entry.value.up,
+          downloadDelta: entry.value.down,
+        ),
+      );
+    }
+  }
+
+  /// 把一条连接本轮的总增量拆成上传部分。
+  ///
+  /// 内核只给两个累计值，精确拆分需要同时保存上一轮的 up/down；这里账本只存了
+  /// 总量，因此按两个分量当前占总量的比例近似分摊。对「这一行跑了多少流量」
+  /// 这个用途足够：总量准确，只有上传/下载的边界是近似的。
+  static int _splitUpload(ClashConnection conn, int delta) {
+    final total = conn.upload + conn.download;
+    if (total <= 0) return 0;
+    final candidate = (delta * (conn.upload / total)).round();
+    if (candidate < 0) return 0;
+    return candidate > delta ? delta : candidate;
   }
 
   /// 新连接 → 分流记录，并顺带做两件事：
@@ -368,11 +583,25 @@ class CoreMonitor {
   /// 这是「自动化智能化分流」的入口：判为直连却失败是唯一能同时说明
   /// 「规则库没覆盖」与「需要改为走隧道」的证据。
   void onCoreLogLine(String line) {
+    // 握手状态与失败归因吃的是同一份日志，但两者互不依赖：没有失败的那些行
+    // 恰恰是握手最有价值的证据（「收到了应答」本身不是错误行）。
+    // 因此这一句必须在失败判空**之前**执行。
+    final handshake = parseWireGuardHandshake(line, previous: _handshake);
+    if (handshake != null) _handshake = handshake;
+
     final failure = parseConnectionFailure(line);
     if (failure == null) return;
     hooks.listener.onConnectionFailure(failure);
     unawaited(_learnFromFailure(failure));
   }
+
+  /// 最近观测到的 WireGuard 握手状态。
+  ///
+  /// 供界面显示。内核换了措辞时它会停在 `unknown`，界面据此不显示这一行——
+  /// 宁可少说一句，也不要显示一个猜出来的结论。
+  WireGuardHandshake get handshake => _handshake;
+
+  WireGuardHandshake _handshake = WireGuardHandshake.unknown;
 
   /// 把一次直连失败转成自动纠正的证据。
   ///
@@ -388,7 +617,8 @@ class CoreMonitor {
     final monitor = _dnsMonitor;
     if (monitor != null) {
       try {
-        final check = monitor.cachedCheck(failure.host) ??
+        final check =
+            monitor.cachedCheck(failure.host) ??
             await monitor.crossCheck(failure.host);
         verdict = check.verdict.name;
       } on Object {
@@ -407,6 +637,30 @@ class CoreMonitor {
   }
 
   // ---------------------------------------------------------------- DNS 监测
+
+  /// 连接后自动做**一次** DNS 交叉校验。
+  ///
+  /// 补的是一个「界面承诺了、程序却没做」的缺口：DNS 那一行一直写着「连接后会自动
+  /// 完成一次校验」，而实际上交叉校验只在两种情况下发生——某个域名判为直连却失败
+  /// （自动纠正的学习路径），或用户手动「查证域名」。于是绝大多数会话里结论永远是
+  /// 「未校验」，用户看到的是一个永远不会兑现的承诺。
+  ///
+  /// 用一个**必定走隧道**的域名来校验：它能同时回答两件事——国内解析器是否可用、
+  /// 隧道内解析是否给出不同答案（污染或双部署）。失败或超时都不影响连接。
+  Future<void> runInitialDnsCheck() async {
+    if (_disposed) return;
+    try {
+      await crossCheck(initialDnsCheckDomain);
+    } on Object {
+      // 校验失败不改变任何连接行为，界面保持「未校验」即可。
+    }
+  }
+
+  /// 自动校验使用的域名。
+  ///
+  /// 必须是稳定的境外站点：国内解析器对它的答案与隧道内不同，才能暴露污染；
+  /// 同时它在国内是可解析的（否则国内那一侧永远失败，结论会退化成「国内异常」）。
+  static const String initialDnsCheckDomain = 'www.google.com';
 
   /// 跑一轮 DNS 监测并上报。
   Future<void> refreshDns() async {
@@ -462,6 +716,125 @@ class CoreMonitor {
       return (delay != null && delay > 0) ? delay : null;
     } on Object {
       return null;
+    }
+  }
+
+  /// 隧道是否已经能载流量的**快速**探测，专供连接流程做就绪门控。
+  ///
+  /// 与 [probeTunnelLatency] 的区别只在超时：那个走 `/delay?timeout=8000` +
+  /// 12 秒 HTTP 超时，适合放在后台按 15 秒一轮观测；这里是连接路径上的等门，
+  /// 一次就要几秒的话，20 秒的上限只够试两三次。因此把内核侧超时压到 3 秒、
+  /// HTTP 超时压到 4 秒——**内层必须小于外层**，否则内核还没到点，HTTP 先断了，
+  /// 失败原因会被记成「读不到 Clash API」而不是「隧道没通」。
+  Future<int?> probeTunnelReadiness() async {
+    final body = await _get(
+      '/proxies/${SingBoxConfigBuilder.vpnTag}/delay'
+      '?timeout=3000&url=$tunnelProbeUrl',
+      timeout: const Duration(seconds: 4),
+    );
+    if (body == null) return null;
+    try {
+      final json = jsonDecode(body) as Map<String, Object?>;
+      final delay = (json['delay'] as num?)?.toInt();
+      return (delay != null && delay > 0) ? delay : null;
+    } on Object {
+      return null;
+    }
+  }
+
+  // ---------------------------------------------------------------- MTU 校验
+
+  /// 最近一次 MTU 校验结论。未校验过时为 null。
+  MtuCheck? get mtuCheck => _mtuCheck;
+  MtuCheck? _mtuCheck;
+
+  /// 校验「配置里写的 MTU」在这个节点上是否真的能用。
+  ///
+  /// 做法见 [mtu_probe] 的说明：只测**上传**方向，且只给三种结论。这里负责
+  /// 把包送进隧道并计时，判定全部交给纯函数 [evaluateMtuCheck]，因此三种分支
+  /// 都能在不联网的前提下被测到。
+  ///
+  /// 结论通过 [CoreMonitorHooks.listener] 的 `onMtuCheck` 上报；两端都由基类
+  /// 转发，不存在「一端有、一端没有」的余地。
+  Future<MtuCheck?> checkMtu() async {
+    if (_disposed) return null;
+    final mtu = hooks.declaredMtu;
+    final port = hooks.mixedPort;
+    if (mtu == null || mtu <= 0 || port == null) {
+      _mtuCheck = const MtuCheck.notDeclared();
+      return _mtuCheck;
+    }
+
+    // 先试小负载：它决定「隧道到底通不通」。不通就不必再测大包，也绝不能
+    // 把结论说成 MTU 问题。
+    final smallPassed = await _uploadThroughTunnel(
+      port: port,
+      bodyBytes: mtuProbeSmallBody,
+    );
+    if (_disposed) return null;
+
+    var largestPassing = smallPassed ? mtuProbeSmallBody : null;
+    var fullPassed = false;
+
+    if (smallPassed) {
+      final body = probeBodyForMtu(mtu);
+      fullPassed = await _uploadThroughTunnel(port: port, bodyBytes: body);
+      if (_disposed) return null;
+      if (fullPassed) largestPassing = body;
+    }
+
+    final check = evaluateMtuCheck(
+      declaredMtu: mtu,
+      fullPassed: fullPassed,
+      smallPassed: smallPassed,
+      largestPassingBody: largestPassing,
+    );
+    _mtuCheck = check;
+    hooks.listener.onMtuCheck(check);
+    return check;
+  }
+
+  /// 把指定大小的请求体经内核混合入站发出去，看它能否完整走完一个来回。
+  ///
+  /// [HttpClient.findProxy] 指向内核的混合入站，因此这一次请求的路径与用户
+  /// 浏览器完全一致：内核按规则判定 → 走隧道出站。这样测到的就是**真实路径**，
+  /// 而不是我们另造的一条连接。
+  ///
+  /// 判定标准是「有没有收到一个完整的 HTTP 响应」，不看状态码：状态码 4xx/5xx
+  /// 同样证明请求体完整送达并被处理了；我们测的是链路承载能力，不是那个站点
+  /// 的业务逻辑。
+  Future<bool> _uploadThroughTunnel({
+    required int port,
+    required int bodyBytes,
+  }) async {
+    final client = HttpClient()
+      ..connectionTimeout = const Duration(seconds: 8)
+      ..findProxy = (Uri _) => 'PROXY 127.0.0.1:$port';
+    try {
+      final request = await client
+          .postUrl(Uri.parse(mtuProbeUrl))
+          .timeout(const Duration(seconds: 12));
+      request.headers.contentType = ContentType.binary;
+      request.contentLength = bodyBytes;
+      // 用同一个字节重复填充：内容无关紧要，要的是**体积**。
+      final chunk = Uint8List(1024);
+      var remaining = bodyBytes;
+      while (remaining > 0) {
+        final take = remaining < chunk.length ? remaining : chunk.length;
+        request.add(take == chunk.length ? chunk : chunk.sublist(0, take));
+        remaining -= take;
+      }
+      final response = await request.close().timeout(
+        const Duration(seconds: 15),
+      );
+      // 必须把响应体读干（或丢弃）才算真的收到完整响应。
+      await response.drain<void>().timeout(const Duration(seconds: 10));
+      return true;
+    } on Object {
+      // 超时、连接被重置、写入失败——都算「这个体积过不去」。
+      return false;
+    } finally {
+      client.close(force: true);
     }
   }
 
@@ -543,24 +916,115 @@ class CoreMonitor {
   }
 
   /// 延迟探测：把结果上报给界面，并区分抖动与真的挂了。
+  ///
+  /// 连续失败达到 [unhealthyThreshold] 时做一次**健康判定**：拿直连的结果
+  /// 做对照，判断问题在隧道这一侧还是本地网络。两者要区分开——隧道不通
+  /// 重启内核有意义，本地网络断了重启只会空转。
   Future<void> probeLatency() async {
     final now = DateTime.now();
     final last = _lastLatencyProbe;
-    if (last != null && now.difference(last) < latencyInterval) return;
+    if (last != null && now.difference(last) < hooks.latencyProbeInterval) {
+      return;
+    }
     _lastLatencyProbe = now;
 
-    final delay = await probeTunnelLatency();
+    final delay = await _tunnelProbe();
     if (delay != null) {
       hooks.listener.onLatency(delay);
       _latencyFailures = 0;
+      // 恢复正常同样要上报：它是自动恢复的「已解除」信号，没有它，
+      // 自愈限流器就永远停在上一次事故里。
+      _publishHealth(TunnelHealth.healthy(consecutiveFailures: 0));
       return;
     }
+
     _latencyFailures++;
     hooks.listener.onLatency(null);
-    // 连续失败才提醒：偶发一次多半是网络抖动。
-    if (_latencyFailures == 3) {
-      hooks.listener.onError('连续 3 次延迟探测失败，节点可能不稳定');
+    if (_latencyFailures < unhealthyThreshold) return;
+
+    // 先判一次「是不是还在预热」。预热期间不下任何结论，也就**不需要**打那次
+    // 直连对照探测——省掉一次无意义的 TCP 连接，也避免把「预热」显示成故障。
+    final verdictNow = evaluateTunnelHealth(
+      consecutiveFailures: _latencyFailures,
+      threshold: unhealthyThreshold,
+      now: DateTime.now(),
+      sinceConnect: _connectedSince,
+    );
+    if (verdictNow.isWarmingUp) {
+      _publishHealth(verdictNow);
+      return;
     }
+
+    // 做对照探测需要真的发一次 TCP 连接。用户明确关掉主动探测时不做，
+    // 退回到改造前的行为：只提示，不判定，也不触发自动恢复。
+    if (!hooks.probesEnabled) {
+      if (_latencyFailures == unhealthyThreshold) {
+        hooks.listener.onError('连续 3 次延迟探测失败，节点可能不稳定');
+      }
+      return;
+    }
+
+    final directLatency = await _directProbe();
+    _publishHealth(
+      evaluateTunnelHealth(
+        consecutiveFailures: _latencyFailures,
+        threshold: unhealthyThreshold,
+        directLatencyMillis: directLatency,
+        now: DateTime.now(),
+        sinceConnect: _connectedSince,
+      ),
+    );
+  }
+
+  /// 一次采样从内核读到了数据。
+  void _onTickSucceeded() {
+    _tickFailures = 0;
+    // 只在「刚刚还在读不到」的情况下补报健康：正常情况下这里什么都不做，
+    // 否则每次成功采样都会把「隧道不通」那个结论冲掉——那是另一路信号的事，
+    // 两条信号共用一个结论字段，谁都不该去清对方。
+    if (_lastHealthVerdict == TunnelHealthVerdict.coreUnreachable) {
+      _publishHealth(TunnelHealth.healthy(consecutiveFailures: 0));
+    }
+  }
+
+  /// 一次采样没能从内核读到数据。
+  ///
+  /// 单次读不到很正常（内核正忙），但**连续**读不到是另一回事：Clash API 监听
+  /// 在回环地址上，不受外网影响，连续不应答只说明内核进程自己卡住了。此前这种
+  /// 情况是完全静默的——界面照旧显示「已连接」，速率和连接数停在几分钟前的
+  /// 数字上，用户只会觉得「网速怎么不动了」。
+  void _onTickMissed() {
+    _tickFailures++;
+    if (_tickFailures < hooks.unreachableThreshold) return;
+    // 预热宽限期内不下「内核卡住」的结论：刚连上时内核正在加载规则集、建立
+    // 握手，几秒读不到状态是正常的。宽限期一过，同样次数的失败才说明它真的卡了。
+    if (isWithinWarmupWindow(
+      now: DateTime.now(),
+      sinceConnect: _connectedSince,
+    )) {
+      return;
+    }
+    _publishHealth(
+      TunnelHealth(
+        verdict: TunnelHealthVerdict.coreUnreachable,
+        consecutiveFailures: _tickFailures,
+      ),
+    );
+  }
+
+  /// 只在结论变化时把健康状态上报出去。
+  ///
+  /// **上报顺序是有意的**：先交给界面显示结论，再交给内核去行动。
+  /// 这样能保证「隧道有问题」在任何平台上都至少有一条用户可见的提示——即便
+  /// 那个平台没有自愈能力。有能力自愈的实现会紧接着用一条更具体的消息覆盖它
+  /// （如「第 1 次自动恢复」）。反过来先行动后显示的话，通用结论会把具体结论
+  /// 盖掉，用户就看不到内核已经做了什么。
+  void _publishHealth(TunnelHealth health) {
+    if (_disposed) return;
+    if (_lastHealthVerdict == health.verdict) return;
+    _lastHealthVerdict = health.verdict;
+    hooks.listener.onTunnelHealth(health);
+    hooks.onHealth?.call(health);
   }
 
   // ---------------------------------------------------------------- HTTP
@@ -577,7 +1041,7 @@ class CoreMonitor {
     if (_disposed) return null;
     try {
       final request = await _http
-          .getUrl(Uri.parse('http://127.0.0.1:$_clashApiPort$path'))
+          .getUrl(Uri.parse('http://127.0.0.1:${hooks.clashApiPort}$path'))
           .timeout(timeout);
       final response = await request.close().timeout(timeout);
       if (response.statusCode != 200) return null;
@@ -590,16 +1054,46 @@ class CoreMonitor {
   /// 轮询 Clash API 直到它能应答，或超时。
   ///
   /// [isAlive] 用于提前退出：内核进程已经退出时没必要把超时等满。
-  Future<bool> waitForApi(
-    Duration timeout, {
-    bool Function()? isAlive,
-  }) async {
-    final deadline = DateTime.now().add(timeout);
+  Future<bool> waitForApi(Duration timeout, {bool Function()? isAlive}) async {
+    final started = DateTime.now();
+    final deadline = started.add(timeout);
     while (DateTime.now().isBefore(deadline)) {
       if (isAlive != null && !isAlive()) return false;
       if (await _get('/version') != null) return true;
-      await Future<void>.delayed(const Duration(milliseconds: 300));
+      await Future<void>.delayed(
+        readinessPollDelay(DateTime.now().difference(started)),
+      );
     }
     return false;
+  }
+
+  /// 等内核就绪时的轮询间隔：一开始密，随后逐步放宽。
+  ///
+  /// 起因是一次实测（本机 4 组，每组单独启动内核）：
+  ///
+  /// | 内核真实就绪 | 旧实现（固定 300ms）探测到 | 新节奏探测到 |
+  /// |---|---|---|
+  /// | 527ms | 600ms | 522ms |
+  /// | 608ms | 900ms | 535ms |
+  /// | 561ms | 600ms | 543ms |
+  /// | 520ms | 600ms | 634ms |
+  ///
+  /// （真实就绪用 5ms 密集探测测得；旧实现那一列按「探测点落在 0/300/600/900ms」
+  /// 推算，因为每个样本是独立的进程启动，逐行相减没有意义，看分布即可。）
+  ///
+  /// 结论：内核就绪在 520–610ms 之间，而旧实现的固定间隔让**每一次连接都白等
+  /// 平均约 120ms、最坏约 290ms**——这段时间与内核毫无关系，纯粹是客户端自己
+  /// 的定时器。新节奏把探测点铺到 25ms 一个，实测已基本等于真实就绪时刻。
+  ///
+  /// 一秒之后仍未就绪通常说明启动不顺利，那时密集地问也没有意义，放宽到
+  /// 100ms；三秒之后放宽到 300ms，避免在明显失败的情况下空转。
+  static Duration readinessPollDelay(Duration elapsed) {
+    if (elapsed < const Duration(seconds: 1)) {
+      return const Duration(milliseconds: 25);
+    }
+    if (elapsed < const Duration(seconds: 3)) {
+      return const Duration(milliseconds: 100);
+    }
+    return const Duration(milliseconds: 300);
   }
 }

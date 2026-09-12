@@ -2,8 +2,8 @@
 //
 //   dart run tool/check_conf.dart <配置文件>
 //
-// 协议由 VpnProtocolFactory 按内容自动识别，因此 WireGuard 的 .conf 与
-// OpenVPN 的 .ovpn 都能直接丢进来。
+// 协议由 VpnProtocolFactory 按内容自动识别，因此 WireGuard 的 .conf、
+// OpenVPN 的 .ovpn、以及 Hysteria2 的分享链接 / YAML / JSON 都能直接丢进来。
 //
 // 只输出非敏感字段：私钥、预共享密钥、内联证书一律不打印内容，
 // 仅报告是否存在。用于在用户反馈「导入失败」时快速定位问题。
@@ -43,7 +43,12 @@ void main(List<String> args) {
   stdout.writeln('服务器  : ${parsed.serverDisplay}');
   stdout.writeln('隧道地址: ${parsed.addressDisplay}');
   stdout.writeln('DNS     : ${parsed.dnsDisplay}');
-  stdout.writeln('IPv6    : ${parsed.hasIpv6 ? "隧道具备 IPv6" : "无（DNS 将收紧为仅 IPv4）"}');
+  stdout.writeln('IPv6    : ${parsed.hasIpv6 ? "隧道具备 IPv6 地址" : "隧道没有 IPv6 地址"}');
+  // DNS 策略由 needsIpv4OnlyDns 决定，而不是 hasIpv6：流式代理（Hysteria2）
+  // 没有隧道地址，解析 AAAA 并不会像 WireGuard 那样撞上「本地没有 IPv6 地址」。
+  stdout.writeln(
+    'DNS 策略: ${parsed.needsIpv4OnlyDns ? "仅解析 IPv4" : "prefer_ipv4（允许 IPv6）"}',
+  );
   stdout.writeln('需凭据  : ${parsed.requiresCredentials ? "是（auth-user-pass）" : "否"}');
   if (parsed.details.isNotEmpty) {
     stdout.writeln('补充信息:');
@@ -53,5 +58,5 @@ void main(List<String> args) {
   }
   stdout.writeln('');
   stdout.writeln('结论: 该配置可用于建立隧道；路由与 DNS 将由内置规则库接管，');
-  stdout.writeln('      文件里声明的 AllowedIPs / redirect-gateway 不会作为分流依据。');
+  stdout.writeln('      文件里声明的 AllowedIPs / redirect-gateway 等路由指令不会作为分流依据。');
 }

@@ -50,6 +50,38 @@ class SingBoxConfigBuilder {
   /// 兜底的外部 DNS。.conf 里没有声明时使用。
   static const String fallbackRemoteDns = '1.1.1.1';
 
+  // ------------------------------------------------------- 已评估的性能开关
+  //
+  // 下面两项都评估过，结论是**不采纳**。写在这里是为了不让后来者
+  // （包括未来的自己）再花一遍时间验证同样的事：
+  //
+  //  1. **DNS 缓存容量**（`dns.cache_capacity` / `dns.independent_cache`）。
+  //     用真实内核实测：同一域名连查 6 次，不下发缓存配置是
+  //     19.5 / 4.9 / 5.7 / 5.1 / 5.9 / 5.2 ms，下发 4096 容量并开启独立缓存是
+  //     15.8 / 5.8 / 4.8 / 6.1 / 4.8 / 5.2 ms——**没有可测差异**，内核自身
+  //     已经在缓存。显式下发只是多一份配置，因此不做。
+  //
+  //  2. **直连出站的 tcp_fast_open / tcp_keep_alive**。内核接受这两个字段
+  //     （已用 `sing-box check` 验证），但收益仅为「直连 TCP 少一个 RTT」，
+  //     且 TFO 在部分中间设备上会被丢弃；在无法实测对比的环境里引入这个
+  //     不确定性不划算。要做的话，先补一条可对比的时延基线。
+  //
+  //  3. **嗅探（`{action: sniff}`）的时延代价**。担心过这样一件事：嗅探要读
+  //     客户端发来的第一个包才能认出域名，而路由依赖这个结果，那么「客户端
+  //     等服务器先开口」的协议（SSH、SMTP、部分游戏）没有包可发，嗅探只能
+  //     等到超时，凭空加上几百毫秒。
+  //
+  //     实测否定：本机起内核 + 一个「一 accept 就发问候」的 TCP 服务，经 SOCKS5
+  //     连上去量首字节耗时，6 次取样——
+  //       不开嗅探     1, 1, 1, 1, 1, 3 ms
+  //       开嗅探(默认) 1, 1, 1, 1, 1, 1 ms
+  //       嗅探 50ms    1, 1, 2, 2, 3, 3 ms
+  //     三者没有差别，说明嗅探并不阻塞出站连接的建立（它是并行嗅探、认出来
+  //     之后再补上目标域名）。因此**不要**为了「提速」去调小嗅探超时——
+  //     那只会让慢一点的客户端认不出域名，从而按 IP 误判分流。
+  //
+  // 真正有据可依的速率改动是 TUN 入站的 MTU 对齐，见 [_inbound]。
+
   /// 生成 sing-box 配置对象。
   ///
   /// [ruleSetDir] 是规则集（.srs）所在目录的绝对路径；sing-box 需要真实路径，
@@ -78,9 +110,22 @@ class SingBoxConfigBuilder {
       const OutboundContext(tag: vpnTag, resolverTag: 'dns-cn'),
     );
 
+    // 片段放哪儿由适配器声明，而不是在这里按协议名分支。
+    //
+    // sing-box 1.11 起把协议分成两类：带隧道地址的（WireGuard / OpenVPN）是
+    // `endpoints`，流式代理（Hysteria2 等）是普通 `outbounds`。放错位置内核
+    // 直接拒绝启动，报 `unknown endpoint type: hysteria2`。
+    final isEndpoint = adapter.placement == FragmentPlacement.endpoint;
+
     return <String, Object?>{
+      // 日志级别由协议决定，而不是写死。
+      //
+      // WireGuard 的握手里程碑是 DEBUG 级的（`Verbosef` → `Logger.Debug`），
+      // 一旦停在 `warn` 这些行根本不会产生——界面上的「隧道握手」就会永远停在
+      // 「正在读取内核握手状态…」。因此由 [ParsedProfile.wantsDebugLogs] 声明，
+      // 两端共用同一个判断，不会出现「一端有、一端没有」。
       'log': <String, Object?>{
-        'level': 'warn',
+        'level': profile.wantsDebugLogs ? 'debug' : 'warn',
         'timestamp': true,
       },
       'dns': _dns(
@@ -89,9 +134,14 @@ class SingBoxConfigBuilder {
         ruleSetDir: ruleSetDir,
         splitMode: splitMode,
       ),
-      'endpoints': <Object?>[endpoint],
-      'inbounds': <Object?>[_inbound(inboundMode, mixedPort)],
+      if (isEndpoint) 'endpoints': <Object?>[endpoint],
+      'inbounds': <Object?>[
+        _inbound(inboundMode, mixedPort, adapter.tunMtu(profile)),
+      ],
       'outbounds': <Object?>[
+        // 代理类协议的出站排在最前，可读性更好；顺序不影响内核行为，
+        // 路由与 final 都是按 tag 引用的。
+        if (!isEndpoint) endpoint,
         // direct 出站必须带一个域解析器，否则它在 sing-box 眼里是「空出站」，
         // 国内 DNS 的 detour=direct 会被拒绝（实测报错：
         // 「detour to an empty direct outbound makes no sense」）。
@@ -113,8 +163,7 @@ class SingBoxConfigBuilder {
         'clash_api': <String, Object?>{
           'external_controller': '127.0.0.1:$clashApiPort',
         },
-        if (logSplits)
-          'cache_file': <String, Object?>{'enabled': true},
+        if (logSplits) 'cache_file': <String, Object?>{'enabled': true},
       },
     };
   }
@@ -129,24 +178,40 @@ class SingBoxConfigBuilder {
   ///   Windows 用这条路径——免管理员权限，开箱即用。
   /// * [InboundMode.tun]：由 VpnService 提供 TUN，内核接管整机流量。
   ///   安卓只能走这条（VpnService 的 TUN 必须在应用进程内创建）。
-  static Map<String, Object?> _inbound(InboundMode mode, int mixedPort) {
+  static Map<String, Object?> _inbound(
+    InboundMode mode,
+    int mixedPort,
+    int tunMtu,
+  ) {
     return switch (mode) {
       InboundMode.mixed => <String, Object?>{
-          'type': 'mixed',
-          'tag': 'mixed-in',
-          'listen': '127.0.0.1',
-          'listen_port': mixedPort,
-        },
+        'type': 'mixed',
+        'tag': 'mixed-in',
+        'listen': '127.0.0.1',
+        'listen_port': mixedPort,
+      },
       InboundMode.tun => <String, Object?>{
-          'type': 'tun',
-          'tag': 'tun-in',
-          // TUN 自身的地址段，与用户配置里的隧道地址不冲突即可。
-          'address': <String>['172.19.0.1/30'],
-          'auto_route': true,
-          // stack 用 mixed：TCP 走系统协议栈、UDP 走 gvisor。
-          // 这是 sing-box 官方安卓客户端的默认选择，兼容性最好。
-          'stack': 'mixed',
-        },
+        'type': 'tun',
+        'tag': 'tun-in',
+        // TUN 自身的地址段，与用户配置里的隧道地址不冲突即可。
+        'address': <String>['172.19.0.1/30'],
+        'auto_route': true,
+        // stack 用 mixed：TCP 走系统协议栈、UDP 走 gvisor。
+        // 这是 sing-box 官方安卓客户端的默认选择，兼容性最好。
+        //
+        // 曾试过改成 `system` 排查「TCP 走不通」，但真机证据不支持这个改动：
+        // `system` 栈不转发 UDP，而内核自身的 UDP（QUIC 等）会因此失效；换过去
+        // 之后 TCP 也没有变好。上游默认值更稳妥，因此保持 `mixed`。
+        'stack': 'mixed',
+        // MTU 必须与隧道自身的 MTU 对齐，不能沿用内核默认的 9000。
+        //
+        // 内核默认 9000 是为了摊薄每包开销，但它假定出站是一条同样大的
+        // 管道；而这里出站是 WireGuard（1420）或 OpenVPN（1500）。两者
+        // 不一致时系统栈会按 9000 组 TCP 段，进隧道后被迫在 IP 层分片，
+        // 一个大包裂成六七个 UDP 包：吞吐下降、延迟抖动，而且不报错。
+        // 取值由协议适配器给出（见 VpnProtocolAdapter.tunMtu）。
+        'mtu': tunMtu,
+      },
     };
   }
 
@@ -164,6 +229,42 @@ class SingBoxConfigBuilder {
       if (_looksLikeIp(value)) return (value, true, 'dns-remote');
     }
     return (fallbackRemoteDns, false, 'dns-remote');
+  }
+
+  /// 隧道解析器的**备选**列表。
+  ///
+  /// 为什么必须有备选：经隧道到单个公共解析器的 UDP 查询会**随机丢失**。
+  /// 实测（真实节点 + sing-box 1.14.0 的 debug 日志）：
+  ///
+  /// ```
+  /// endpoint/wireguard[vpn]: outbound packet connection to 8.8.8.8:53
+  /// dns: lookup failed for www.youtube.com: context deadline exceeded   ← 10 秒后超时
+  /// ```
+  ///
+  /// 同一时刻走**国内**解析器的域名（`vpn.example.net` → 223.5.5.5）以及走直连的
+  /// 域名都正常解析。失败的共同特征是「**首次**解析该域名」——成功过的域名进了
+  /// 缓存，之后再查就正常。
+  ///
+  /// 因此只要外部解析器是单点，一次丢包就等于一次「网站打不开」，而用户重试时
+  /// 又好了，表现为时通时断。配一组备选，单点丢失时内核会换下一个再试。
+  ///
+  /// 选择原则：只放**独立运营**的公共解析器，避免同一家挂掉时备选一起失效。
+  static const List<String> fallbackRemoteDnsServers = <String>[
+    '1.1.1.1', // Cloudflare
+    '9.9.9.9', // Quad9
+  ];
+
+  /// 组装隧道内解析器的完整列表：配置声明的那个（若有）排在最前，其余为备选。
+  /// 去重且保序——重复标签会让内核起不来。
+  static List<String> remoteDnsServers(ParsedProfile profile) {
+    final (primary, fromConfig, _) = _pickRemoteDns(profile);
+    final ordered = <String>[primary];
+    for (final candidate in fallbackRemoteDnsServers) {
+      if (!ordered.contains(candidate)) ordered.add(candidate);
+    }
+    // fromConfig 为 false 时 primary 本身就是兜底值，无需特殊处理。
+    assert(ordered.isNotEmpty && !fromConfig || ordered.first == primary);
+    return ordered;
   }
 
   static bool _looksLikeIp(String value) {
@@ -184,6 +285,7 @@ class SingBoxConfigBuilder {
     required SplitMode splitMode,
   }) {
     final (remoteAddress, _, remoteTag) = remoteDns;
+    final remoteServers = remoteDnsServers(profile);
 
     return <String, Object?>{
       'servers': <Object?>[
@@ -202,12 +304,20 @@ class SingBoxConfigBuilder {
           },
         // 其余域名走隧道内的解析器：明文 UDP 也无所谓，
         // 它整条链路都在 WireGuard 里，不会被篡改。
-        <String, Object?>{
-          'type': 'udp',
-          'tag': remoteTag,
-          'server': remoteAddress,
-          'detour': 'vpn',
-        },
+        //
+        // 第一个用配置声明的（或兜底值），后面跟备选。**备选不是锦上添花**：
+        // 经隧道到单个公共解析器的 UDP 查询会随机丢失，单点配置下一次丢包就是
+        // 一次「网站打不开」——而重试时缓存已生效又好了。见
+        // [fallbackRemoteDnsServers] 里记录的实测日志。
+        for (var i = 0; i < remoteServers.length; i++)
+          <String, Object?>{
+            'type': 'udp',
+            // 第一个沿用 remoteTag（'dns-remote'），后面的加序号后缀，
+            // 与国内解析器的命名方式保持一致。
+            'tag': i == 0 ? remoteTag : '$remoteTag-$i',
+            'server': remoteServers[i],
+            'detour': 'vpn',
+          },
       ],
       'rules': <Object?>[
         if (splitMode == SplitMode.smart)
@@ -228,7 +338,11 @@ class SingBoxConfigBuilder {
       // 本地地址，直接报「missing IPv6 local address」，表现为部分国外站点
       // 打不开而另一些正常（实测 youtube 失败、google 与 github 正常）。
       // 是否具备 IPv6 完全由用户导入的配置决定，这里自动跟随。
-      'strategy': profile.hasIpv6 ? 'prefer_ipv4' : 'ipv4_only',
+      //
+      // 例外是流式代理（Hysteria2）：它没有隧道地址，上述前提不成立，
+      // 收紧成 ipv4_only 只会让 IPv6-only 的站点白白失败。该例外由
+      // [ParsedProfile.needsIpv4OnlyDns] 表达，而不是在这里按协议名判断。
+      'strategy': profile.needsIpv4OnlyDns ? 'ipv4_only' : 'prefer_ipv4',
     };
   }
 
@@ -254,14 +368,9 @@ class SingBoxConfigBuilder {
         // 嗅探：从 TLS SNI / HTTP Host 里认出域名，
         // 这样即便流量以 IP 形式到达也能按域名规则判定。
         // 必须放在最前面：后面所有按域名判定的规则都依赖它填好目标域名。
-        <String, Object?>{
-          'action': 'sniff',
-        },
+        <String, Object?>{'action': 'sniff'},
         // 本地 DNS 代理自身的解析请求交给内置 DNS 模块处理。
-        <String, Object?>{
-          'protocol': 'dns',
-          'action': 'hijack-dns',
-        },
+        <String, Object?>{'protocol': 'dns', 'action': 'hijack-dns'},
         // 自动纠正学到的规则紧跟在嗅探之后。
         //
         // 位置很关键：它必须早于下面的 geosite-cn / geoip-cn，否则规则库会先把
@@ -272,10 +381,7 @@ class SingBoxConfigBuilder {
         //
         // 放在自动纠正之后：用户如果显式把某个内网域名指向代理（例如为了
         // 排查问题），应当尊重他的选择；但默认情况下内网地址绝不进隧道。
-        <String, Object?>{
-          'ip_is_private': true,
-          'outbound': 'direct',
-        },
+        <String, Object?>{'ip_is_private': true, 'outbound': 'direct'},
         if (splitMode == SplitMode.smart)
           <String, Object?>{
             'rule_set': <String>['geosite-cn', 'geoip-cn'],

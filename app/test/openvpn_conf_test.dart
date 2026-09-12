@@ -15,7 +15,8 @@ const _staticKey = '''-----BEGIN OpenVPN Static key V1-----
 -----END OpenVPN Static key V1-----''';
 
 /// 一份典型客户端配置：tls-auth + 内联 CA + 老式 cipher。
-const _ovpn = '''
+const _ovpn =
+    '''
 client
 dev tun
 proto udp
@@ -59,7 +60,8 @@ void main() {
     });
 
     test('proto 的各种写法归一化为 udp / tcp', () {
-      String withProto(String proto) => '''
+      String withProto(String proto) =>
+          '''
 client
 dev tun
 proto $proto
@@ -72,9 +74,13 @@ remote vpn.example.net 443
     });
 
     test('端口可写在 remote 行，也可省略（按协议取默认值）', () {
-      final noPort = OpenVpnConf.parse('client\nproto udp\nremote vpn.example.net\n');
+      final noPort = OpenVpnConf.parse(
+        'client\nproto udp\nremote vpn.example.net\n',
+      );
       expect(noPort.remotePort, 1194);
-      final tcpNoPort = OpenVpnConf.parse('client\nproto tcp\nremote vpn.example.net\n');
+      final tcpNoPort = OpenVpnConf.parse(
+        'client\nproto tcp\nremote vpn.example.net\n',
+      );
       expect(tcpNoPort.remotePort, 443);
     });
 
@@ -88,17 +94,17 @@ remote vpn.example.net 443
       expect(conf.username, 'u');
     });
 
-    test('需要凭据但没提供时给出可读的中文提示', () {
-      expect(
-        () => OpenVpnConf.parse('client\nremote vpn.example.net 1194\nauth-user-pass\n'),
-        throwsA(
-          isA<VpnConfigException>().having(
-            (VpnConfigException e) => e.message,
-            'message',
-            contains('账号密码'),
-          ),
-        ),
+    test('需要凭据但没提供时：解析仍然成功，只是标记出来等用户补填', () {
+      // 刻意不抛错。抛错会导致「凭据取不回来 → 重新解析失败 → 恢复流程跳过
+      // 这份配置」，用户看到的是配置不见了。现在的契约是：配置保留，
+      // 由上层提示补填账号密码。
+      final conf = OpenVpnConf.parse(
+        'client\nremote vpn.example.net 1194\nauth-user-pass\n',
       );
+      expect(conf.requiresCredentials, isTrue);
+      expect(conf.username, isNull);
+      expect(conf.password, isNull);
+      expect(conf.remoteHost, 'vpn.example.net', reason: '其余字段照常解析出来');
     });
 
     test('缺少 remote 时抛错', () {
@@ -137,7 +143,8 @@ $_ca
     });
 
     test('不会把 WireGuard 配置误判为 OpenVPN', () {
-      const wg = '[Interface]\nPrivateKey = k\nAddress = 10.0.0.2/32\n\n[Peer]\nPublicKey = p\nEndpoint = 1.2.3.4:51820\n';
+      const wg =
+          '[Interface]\nPrivateKey = k\nAddress = 10.0.0.2/32\n\n[Peer]\nPublicKey = p\nEndpoint = 1.2.3.4:51820\n';
       expect(adapter.canParse(wg, 'wg.conf'), isFalse);
     });
 
@@ -170,7 +177,10 @@ $_ca
     test('CA 证书放进 tls.certificate', () {
       final tls = endpoint['tls']! as Map<String, Object?>;
       expect(tls['certificate'], isA<List<Object?>>());
-      expect((tls['certificate']! as List<Object?>).first.toString(), contains('BEGIN CERTIFICATE'));
+      expect(
+        (tls['certificate']! as List<Object?>).first.toString(),
+        contains('BEGIN CERTIFICATE'),
+      );
       expect(tls['server_name'], 'ovpn.example.net');
     });
 
@@ -181,7 +191,10 @@ $_ca
       final wrap = tls['control_wrap']! as Map<String, Object?>;
       expect(wrap['type'], 'tls_auth');
       expect(wrap['direction'], 'client');
-      expect((wrap['key']! as List<Object?>).first.toString(), contains('Static key'));
+      expect(
+        (wrap['key']! as List<Object?>).first.toString(),
+        contains('Static key'),
+      );
     });
 
     test('老式 cipher 并入 data_ciphers，不使用顶层 cipher', () {
@@ -198,9 +211,16 @@ $_ca
 
   group('协议工厂', () {
     test('按内容自动分发到正确的协议', () {
-      const wg = '[Interface]\nPrivateKey = k\nAddress = 10.0.0.2/32\n\n[Peer]\nPublicKey = p\nEndpoint = 1.2.3.4:51820\n';
-      expect(VpnProtocolFactory.parse(wg, 'wg.conf').protocol, VpnProtocol.wireGuard);
-      expect(VpnProtocolFactory.parse(_ovpn, 'c.conf').protocol, VpnProtocol.openVpn);
+      const wg =
+          '[Interface]\nPrivateKey = k\nAddress = 10.0.0.2/32\n\n[Peer]\nPublicKey = p\nEndpoint = 1.2.3.4:51820\n';
+      expect(
+        VpnProtocolFactory.parse(wg, 'wg.conf').protocol,
+        VpnProtocol.wireGuard,
+      );
+      expect(
+        VpnProtocolFactory.parse(_ovpn, 'c.conf').protocol,
+        VpnProtocol.openVpn,
+      );
     });
 
     test('无法识别时给出列出支持格式的中文提示', () {
@@ -224,7 +244,9 @@ $_ca
     });
 
     test('已注册的适配器覆盖全部可导入协议', () {
-      final registered = VpnProtocolFactory.adapters.map((a) => a.protocol).toSet();
+      final registered = VpnProtocolFactory.adapters
+          .map((a) => a.protocol)
+          .toSet();
       for (final p in importableProtocols) {
         expect(registered, contains(p), reason: '${p.label} 缺少适配器');
       }

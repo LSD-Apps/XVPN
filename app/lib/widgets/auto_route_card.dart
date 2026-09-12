@@ -127,9 +127,9 @@ class _AutoRouteCardState extends State<AutoRouteCard> {
             child: Text(
               table.isEmpty
                   ? '程序会观察「判为直连却失败」的连接，连续多次失败后自动把该域名改为走隧道。'
-                      '目前还没有需要纠正的域名。'
+                        '目前还没有需要纠正的域名。'
                   : '已对 ${table.length} 个域名调整了分流。'
-                      '这些规则优先于内置规则库——规则库把被墙站点判成直连时，靠它们拉回隧道。',
+                        '这些规则优先于内置规则库——规则库把被墙站点判成直连时，靠它们拉回隧道。',
               style: XvText.caption,
             ),
           ),
@@ -137,10 +137,7 @@ class _AutoRouteCardState extends State<AutoRouteCard> {
           Divider(height: 25, thickness: 1, color: XV.line2),
           Text('手工指定', style: XvText.rowTitle),
           const SizedBox(height: 4),
-          Text(
-            '对某个域名固定走代理或直连。手工规则永远优先于程序学到的规则。',
-            style: XvText.rowDesc,
-          ),
+          Text('对某个域名固定走代理或直连。手工规则永远优先于程序学到的规则。', style: XvText.rowDesc),
           const SizedBox(height: 10),
           _buildManualInput(),
           if (_inputError != null)
@@ -277,17 +274,18 @@ class _AutoRouteCardState extends State<AutoRouteCard> {
   /// 分段控件的自然高度是 32（内容 26 + 上下各 3 的内边距），
   /// 不约束的话它比同行的按钮还矮 4px。
   Widget _buildPreferencePicker({required bool expand}) => SizedBox(
-        height: XvControlMetrics.height,
-        child: XvSegmented(
-          labels: const <String>['走代理', '直连'],
-          index: _preference == RoutePreference.forceProxy ? 0 : 1,
-          expand: expand,
-          onChanged: (int i) => setState(() {
-            _preference =
-                i == 0 ? RoutePreference.forceProxy : RoutePreference.forceDirect;
-          }),
-        ),
-      );
+    height: XvControlMetrics.height,
+    child: XvSegmented(
+      labels: const <String>['走代理', '直连'],
+      index: _preference == RoutePreference.forceProxy ? 0 : 1,
+      expand: expand,
+      onChanged: (int i) => setState(() {
+        _preference = i == 0
+            ? RoutePreference.forceProxy
+            : RoutePreference.forceDirect;
+      }),
+    ),
+  );
 
   /// 「添加」按钮。
   ///
@@ -316,7 +314,10 @@ class _AutoRouteCardState extends State<AutoRouteCard> {
                       ),
                     ),
                     const SizedBox(width: 8),
-                    if (isUser) RouteTag.green('手工') else RouteTag.kind(RouteKind.proxy),
+                    if (isUser)
+                      RouteTag.green('手工')
+                    else
+                      RouteTag.kind(RouteKind.proxy),
                   ],
                 ),
                 const SizedBox(height: 3),
@@ -342,7 +343,8 @@ class _AutoRouteCardState extends State<AutoRouteCard> {
     final parts = <String>[
       '判为直连但失败 ${entry.directFailures} 次',
       if (entry.lastFailureReason != null) entry.lastFailureReason!,
-      if (entry.proxiedBytes > 0) '已走隧道 ${(entry.proxiedBytes / 1024).round()} KB',
+      if (entry.proxiedBytes > 0)
+        '已走隧道 ${(entry.proxiedBytes / 1024).round()} KB',
     ];
     return parts.join(' · ');
   }

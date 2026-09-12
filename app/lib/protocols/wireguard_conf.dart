@@ -194,7 +194,9 @@ class WireGuardConf {
   /// 校验必须字段。缺失时抛出可读的中文说明，供界面直接展示。
   void validate() {
     if (privateKey == null || privateKey!.isEmpty) {
-      throw VpnConfigException('缺少 [Interface] PrivateKey，这不是一个完整的 WireGuard 配置');
+      throw VpnConfigException(
+        '缺少 [Interface] PrivateKey，这不是一个完整的 WireGuard 配置',
+      );
     }
     if (addresses.isEmpty) {
       throw VpnConfigException('缺少 [Interface] Address，无法确定隧道地址');
@@ -257,34 +259,53 @@ class WireGuardProfile implements ParsedProfile {
   @override
   bool get hasIpv6 => conf.addresses.any((a) => a.contains(':'));
 
+  /// 隧道里没有 IPv6 地址时收紧成 ipv4_only，理由见 [ParsedProfile.needsIpv4OnlyDns]。
+  @override
+  bool get needsIpv4OnlyDns => !hasIpv6;
+
+  /// WireGuard 需要 DEBUG 级日志：握手状态只存在于 DEBUG 级的端点日志里，
+  /// 而它是「连不上」时唯一能把「未被服务端受理」与「数据面问题」分开的证据。
+  @override
+  bool get wantsDebugLogs => true;
+
   @override
   bool get requiresCredentials => false;
 
+  /// 配置里写的原始 MTU。
+  ///
+  /// 刻意返回**原始值**而不是 [sanitizeMtu] 之后的值：调用方要判断的是
+  /// 「用户写的这个数行不行」，回退后的值永远落在合理区间里，拿它去校验等于
+  /// 永远通过。真正下发给内核的值另有其人（见 [WireGuardAdapter.buildEndpoint]）。
   @override
-  List<({String label, String value})> get details => <({String label, String value})>[
-        (label: 'DNS', value: dnsDisplay),
-        (
-          label: 'MTU',
-          // 与适配器保持一致：显式值要通过合理性校验，否则实际用的是默认值。
-          // 这里若显示那个不合理的值，界面就会与内核真实行为不符。
-          value: '${sanitizeMtu(conf.mtu) ?? WireGuardAdapter.defaultMtu}'
-              '${sanitizeMtu(conf.mtu) == null && conf.mtu != null ? '（配置里的 ${conf.mtu} 超出合理范围，已回退）' : ''}',
-        ),
-        (
-          label: '保活',
-          // 不写死 25 秒：没声明就是没有，内核也就不发保活包。
-          value: switch (conf.primaryPeer?.persistentKeepalive) {
-            final int seconds when seconds > 0 => '$seconds 秒',
-            _ => '未启用（按内核默认）',
-          },
-        ),
-        // AmneziaWG 的混淆参数内核不支持，这类配置导入后会「看着正常但连不上」。
-        // 在「配置文件」页明确说出来，比让用户对着一个连不上的隧道猜要好——
-        // 它与加密套件名、remote-cert-tls 属于同一类问题：失败现象一致，
-        // 但原因只有程序知道。
-        if (looksLikeAmnezia)
-          (label: '警告', value: '这份配置含 AmneziaWG 混淆参数，内核不支持，无法连接'),
-      ];
+  int? get declaredMtu => conf.mtu;
+
+  @override
+  List<({String label, String value})>
+  get details => <({String label, String value})>[
+    (label: 'DNS', value: dnsDisplay),
+    (
+      label: 'MTU',
+      // 与适配器保持一致：显式值要通过合理性校验，否则实际用的是默认值。
+      // 这里若显示那个不合理的值，界面就会与内核真实行为不符。
+      value:
+          '${sanitizeMtu(conf.mtu) ?? WireGuardAdapter.defaultMtu}'
+          '${sanitizeMtu(conf.mtu) == null && conf.mtu != null ? '（配置里的 ${conf.mtu} 超出合理范围，已回退）' : ''}',
+    ),
+    (
+      label: '保活',
+      // 不写死 25 秒：没声明就是没有，内核也就不发保活包。
+      value: switch (conf.primaryPeer?.persistentKeepalive) {
+        final int seconds when seconds > 0 => '$seconds 秒',
+        _ => '未启用（按内核默认）',
+      },
+    ),
+    // AmneziaWG 的混淆参数内核不支持，这类配置导入后会「看着正常但连不上」。
+    // 在「配置文件」页明确说出来，比让用户对着一个连不上的隧道猜要好——
+    // 它与加密套件名、remote-cert-tls 属于同一类问题：失败现象一致，
+    // 但原因只有程序知道。
+    if (looksLikeAmnezia)
+      (label: '警告', value: '这份配置含 AmneziaWG 混淆参数，内核不支持，无法连接'),
+  ];
 
   /// 这份配置是否用到了 AmneziaWG 的混淆参数。
   bool get looksLikeAmnezia => looksLikeAmneziaWireGuard(conf.ignoredKeys);
@@ -305,10 +326,10 @@ class _PeerBuilder {
       persistentKeepalive != null;
 
   WireGuardPeer build() => WireGuardPeer(
-        publicKey: publicKey,
-        presharedKey: presharedKey,
-        endpoint: endpoint,
-        allowedIps: List<String>.unmodifiable(allowedIps),
-        persistentKeepalive: persistentKeepalive,
-      );
+    publicKey: publicKey,
+    presharedKey: presharedKey,
+    endpoint: endpoint,
+    allowedIps: List<String>.unmodifiable(allowedIps),
+    persistentKeepalive: persistentKeepalive,
+  );
 }

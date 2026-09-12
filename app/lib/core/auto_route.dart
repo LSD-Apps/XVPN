@@ -35,7 +35,8 @@ enum RoutePreference {
 extension RoutePreferenceX on RoutePreference {
   String get label => this == RoutePreference.forceProxy ? '强制代理' : '强制直连';
 
-  String get storageKey => this == RoutePreference.forceProxy ? 'proxy' : 'direct';
+  String get storageKey =>
+      this == RoutePreference.forceProxy ? 'proxy' : 'direct';
 }
 
 /// 规则来源，决定它在表里的优先级。
@@ -45,6 +46,15 @@ enum RouteRuleSource {
 
   /// 程序从失败证据里学到的。
   learned,
+}
+
+extension RouteRuleSourceX on RouteRuleSource {
+  /// 界面展示名。
+  ///
+  /// 把「谁定的这条规则」说清楚是必要的：用户手工指定的规则不会被程序改，
+  /// 而程序学到的会随证据变化。两者在界面上长得一样的话，用户会怀疑
+  /// 「我明明指定过，怎么又变了」。
+  String get label => this == RouteRuleSource.user ? '手工指定' : '程序学到';
 }
 
 /// 一条自动纠正规则 + 支撑它的证据。
@@ -105,18 +115,18 @@ class AutoRouteEntry {
   }
 
   Map<String, Object?> toJson() => <String, Object?>{
-        'domain': domain,
-        'preference': preference.storageKey,
-        'source': source == RouteRuleSource.user ? 'user' : 'learned',
-        if (createdAt != null) 'createdAt': createdAt!.toIso8601String(),
-        if (lastHitAt != null) 'lastHitAt': lastHitAt!.toIso8601String(),
-        'directFailures': directFailures,
-        'directSuccesses': directSuccesses,
-        'consecutiveFailures': consecutiveFailures,
-        'proxiedBytes': proxiedBytes,
-        if (dnsVerdict != null) 'dnsVerdict': dnsVerdict,
-        if (lastFailureReason != null) 'lastFailureReason': lastFailureReason,
-      };
+    'domain': domain,
+    'preference': preference.storageKey,
+    'source': source == RouteRuleSource.user ? 'user' : 'learned',
+    if (createdAt != null) 'createdAt': createdAt!.toIso8601String(),
+    if (lastHitAt != null) 'lastHitAt': lastHitAt!.toIso8601String(),
+    'directFailures': directFailures,
+    'directSuccesses': directSuccesses,
+    'consecutiveFailures': consecutiveFailures,
+    'proxiedBytes': proxiedBytes,
+    if (dnsVerdict != null) 'dnsVerdict': dnsVerdict,
+    if (lastFailureReason != null) 'lastFailureReason': lastFailureReason,
+  };
 
   static AutoRouteEntry? fromJson(Object? raw) {
     if (raw is! Map) return null;
@@ -128,7 +138,9 @@ class AutoRouteEntry {
       preference: json['preference'] == 'direct'
           ? RoutePreference.forceDirect
           : RoutePreference.forceProxy,
-      source: json['source'] == 'user' ? RouteRuleSource.user : RouteRuleSource.learned,
+      source: json['source'] == 'user'
+          ? RouteRuleSource.user
+          : RouteRuleSource.learned,
       createdAt: _time(json['createdAt']),
       lastHitAt: _time(json['lastHitAt']),
       directFailures: (json['directFailures'] as num?)?.toInt() ?? 0,
@@ -209,11 +221,7 @@ class AutoRouteTable {
   AutoRouteDecision setUserRule(String domain, RoutePreference preference) {
     final normalized = normalizeDomain(domain);
     if (normalized.isEmpty) {
-      return AutoRouteDecision(
-        domain: domain,
-        added: false,
-        reason: '域名不合法',
-      );
+      return AutoRouteDecision(domain: domain, added: false, reason: '域名不合法');
     }
     final existing = _exact[normalized];
     final entry = AutoRouteEntry(
@@ -259,7 +267,8 @@ class AutoRouteTable {
     if (domain.isEmpty) {
       return AutoRouteDecision(domain: host, added: false, reason: '目标不是域名');
     }
-    final entry = _exact[domain] ??
+    final entry =
+        _exact[domain] ??
         AutoRouteEntry(domain: domain, createdAt: DateTime.now());
     entry.directFailures++;
     entry.consecutiveFailures++;
@@ -280,7 +289,8 @@ class AutoRouteTable {
     }
 
     if (entry.consecutiveFailures >= threshold && entry.directSuccesses == 0) {
-      final wasNew = !_exact.containsKey(domain) ||
+      final wasNew =
+          !_exact.containsKey(domain) ||
           entry.preference != RoutePreference.forceProxy;
       final promoted = AutoRouteEntry(
         domain: domain,
@@ -410,17 +420,20 @@ class AutoRouteTable {
   /// 容量超限时淘汰证据最弱的条目。
   void _enforceCapacity() {
     if (_exact.length <= capacity) return;
-    final learned = _exact.values
-        .where((AutoRouteEntry e) => e.source == RouteRuleSource.learned)
-        .toList(growable: false)
-      ..sort((AutoRouteEntry a, AutoRouteEntry b) {
-        // 证据越弱越先淘汰：失败次数少、代理流量少、创建时间早的排前面。
-        final byFailures = a.directFailures.compareTo(b.directFailures);
-        if (byFailures != 0) return byFailures;
-        final byBytes = a.proxiedBytes.compareTo(b.proxiedBytes);
-        if (byBytes != 0) return byBytes;
-        return (a.createdAt ?? DateTime(2000)).compareTo(b.createdAt ?? DateTime(2000));
-      });
+    final learned =
+        _exact.values
+            .where((AutoRouteEntry e) => e.source == RouteRuleSource.learned)
+            .toList(growable: false)
+          ..sort((AutoRouteEntry a, AutoRouteEntry b) {
+            // 证据越弱越先淘汰：失败次数少、代理流量少、创建时间早的排前面。
+            final byFailures = a.directFailures.compareTo(b.directFailures);
+            if (byFailures != 0) return byFailures;
+            final byBytes = a.proxiedBytes.compareTo(b.proxiedBytes);
+            if (byBytes != 0) return byBytes;
+            return (a.createdAt ?? DateTime(2000)).compareTo(
+              b.createdAt ?? DateTime(2000),
+            );
+          });
     var overflow = _exact.length - capacity;
     for (final entry in learned) {
       if (overflow <= 0) break;
@@ -455,7 +468,9 @@ class AutoRouteTable {
     }
     final key = entry.domain.substring(dot + 1);
     final bucket = _suffixBuckets.putIfAbsent(key, () => <AutoRouteEntry>[]);
-    final existing = bucket.indexWhere((AutoRouteEntry e) => e.domain == entry.domain);
+    final existing = bucket.indexWhere(
+      (AutoRouteEntry e) => e.domain == entry.domain,
+    );
     if (existing >= 0) {
       bucket[existing] = entry;
     } else {
@@ -468,8 +483,9 @@ class AutoRouteTable {
     _suffixBuckets.clear();
   }
 
-  List<Map<String, Object?>> toJson() =>
-      _exact.values.map((AutoRouteEntry e) => e.toJson()).toList(growable: false);
+  List<Map<String, Object?>> toJson() => _exact.values
+      .map((AutoRouteEntry e) => e.toJson())
+      .toList(growable: false);
 
   /// 从持久化数据恢复。单条损坏只跳过这一条。
   void loadFrom(Object? raw) {
@@ -541,8 +557,9 @@ class AutoRouteTable {
     // 精确域与后缀域各自分块，块数取两者中较大的那个。
     final exactChunks = _chunk(exact);
     final suffixChunks = _chunk(suffix);
-    final chunkCount =
-        exactChunks.length > suffixChunks.length ? exactChunks.length : suffixChunks.length;
+    final chunkCount = exactChunks.length > suffixChunks.length
+        ? exactChunks.length
+        : suffixChunks.length;
     for (var i = 0; i < chunkCount; i++) {
       rules.add(<String, Object?>{
         if (i < exactChunks.length) 'domain': exactChunks[i],
@@ -557,7 +574,9 @@ class AutoRouteTable {
     if (values.isEmpty) return const <List<String>>[];
     final chunks = <List<String>>[];
     for (var i = 0; i < values.length; i += domainsPerRule) {
-      final end = i + domainsPerRule > values.length ? values.length : i + domainsPerRule;
+      final end = i + domainsPerRule > values.length
+          ? values.length
+          : i + domainsPerRule;
       chunks.add(values.sublist(i, end));
     }
     return chunks;

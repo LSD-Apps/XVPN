@@ -28,7 +28,8 @@ Map<String, Object?> _build({SplitMode mode = SplitMode.smart}) {
 }
 
 /// 便捷取值，避免测试里到处都是强制转换。
-Map<String, Object?> _map(Object? value) => (value! as Map<Object?, Object?>).cast<String, Object?>();
+Map<String, Object?> _map(Object? value) =>
+    (value! as Map<Object?, Object?>).cast<String, Object?>();
 List<Object?> _list(Object? value) => value! as List<Object?>;
 
 void main() {
@@ -39,7 +40,10 @@ void main() {
       expect(endpoint['tag'], 'vpn');
       expect(endpoint['mtu'], 1380);
       expect(endpoint['address'], <String>['10.0.0.3/32']);
-      expect(endpoint['private_key'], 'aGVsbG8gd29ybGQgdGhpcyBpcyBhIGtleSB2YWx1ZQ=');
+      expect(
+        endpoint['private_key'],
+        'aGVsbG8gd29ybGQgdGhpcyBpcyBhIGtleSB2YWx1ZQ=',
+      );
     });
 
     test('peer 的地址与端口被拆开', () {
@@ -120,12 +124,16 @@ Address = 10.0.0.3/32
 PublicKey = p
 Endpoint = 1.2.3.4:51820
 ''');
-      final dns = _map(SingBoxConfigBuilder.build(
-        profile: WireGuardProfile(conf),
-        splitMode: SplitMode.smart,
-        ruleSetDir: '/tmp/rs',
-      )['dns']);
-      final remote = _list(dns['servers']).map(_map).firstWhere((s) => s['tag'] == 'dns-remote');
+      final dns = _map(
+        SingBoxConfigBuilder.build(
+          profile: WireGuardProfile(conf),
+          splitMode: SplitMode.smart,
+          ruleSetDir: '/tmp/rs',
+        )['dns'],
+      );
+      final remote = _list(
+        dns['servers'],
+      ).map(_map).firstWhere((s) => s['tag'] == 'dns-remote');
       expect(remote['server'], '1.1.1.1');
     });
   });
@@ -178,6 +186,53 @@ Endpoint = 1.2.3.4:51820
       final exp = _map(_build()['experimental']);
       final api = _map(exp['clash_api']);
       expect(api['external_controller'], '127.0.0.1:2081');
+    });
+  });
+
+  group('TUN 入站 MTU', () {
+    /// 取 TUN 入站的 MTU。桌面端走混合入站，因此这里显式指定 tun 模式。
+    int tunMtuOf(String confText, {SplitMode mode = SplitMode.smart}) {
+      final config = SingBoxConfigBuilder.build(
+        profile: WireGuardProfile(WireGuardConf.parse(confText)),
+        splitMode: mode,
+        ruleSetDir: '/tmp/rs',
+        inboundMode: InboundMode.tun,
+      );
+      return _map(_list(config['inbounds'])[0])['mtu']! as int;
+    }
+
+    test('TUN 的 MTU 跟随配置声明的隧道 MTU', () {
+      // 上面的 _conf 声明了 MTU = 1380。
+      //
+      // 这一条是速率问题的核心：sing-box 的 tun 入站默认 MTU 是 9000，
+      // 而隧道只能装下 1380 字节的 IP 包。两者不一致时系统栈会组出 9000 的
+      // 大包，进隧道后被迫在 IP 层分片，一个大包裂成七个 UDP 包——吞吐下降、
+      // 延迟抖动，而且内核不会报任何错，只是「慢」。
+      expect(tunMtuOf(_conf), 1380);
+    });
+
+    test('未声明 MTU 时 TUN 用 wg-quick 默认值 1420，而不是内核默认的 9000', () {
+      final noMtu = _conf.replaceAll('MTU = 1380', '');
+      expect(tunMtuOf(noMtu), 1420);
+    });
+
+    test('超出合理区间的 MTU 被回退，端点与 TUN 用同一个回退值', () {
+      final bogus = _conf.replaceAll('MTU = 1380', 'MTU = 9000');
+      final config = SingBoxConfigBuilder.build(
+        profile: WireGuardProfile(WireGuardConf.parse(bogus)),
+        splitMode: SplitMode.smart,
+        ruleSetDir: '/tmp/rs',
+        inboundMode: InboundMode.tun,
+      );
+      final endpointMtu = _map(_list(config['endpoints'])[0])['mtu'];
+      final tunMtu = _map(_list(config['inbounds'])[0])['mtu'];
+      expect(tunMtu, 1420);
+      expect(tunMtu, endpointMtu, reason: '两端不一致正是分片的来源，必须由同一个函数算出');
+    });
+
+    test('混合入站不带 mtu 字段（该字段只对 tun 有意义）', () {
+      final inbound = _map(_list(_build()['inbounds'])[0]);
+      expect(inbound.containsKey('mtu'), isFalse, reason: '给混合入站塞 mtu 是无效配置');
     });
   });
 

@@ -28,6 +28,7 @@ class DnsOutcome {
     required this.answers,
     required this.elapsed,
     this.error,
+    this.localProbeUnavailable = false,
   });
 
   /// 被查询的解析器地址。
@@ -42,6 +43,17 @@ class DnsOutcome {
 
   /// 失败原因。为 null 表示查询本身成功（即便没有记录）。
   final String? error;
+
+  /// 这次失败是不是**本机连探测套接字都建不起来**。
+  ///
+  /// 必须与「解析器不可用」区分开，否则界面会给出方向完全相反的建议：
+  ///   * 解析器坏了 → 换个解析器有用；
+  ///   * 本机不允许建套接字（企业策略、安全软件、防火墙规则）→ 换解析器
+  ///     **毫无用处**，用户会一直白折腾。
+  ///
+  /// 实测来源：受限环境下 `RawDatagramSocket.bind(127.0.0.1, 0)` 抛
+  /// `errno 1231（不能访问网络位置）`。
+  final bool localProbeUnavailable;
 
   bool get succeeded => error == null;
 
@@ -68,11 +80,25 @@ abstract class DnsResolver {
 
 /// 基于 UDP 的真实实现。
 ///
-/// 绑定到回环地址（`InternetAddress.loopbackIPv4`）而不是默认的任意地址，
-/// 因此在 Windows 上**不需要管理员权限**——这正是选择 UDP 而非原始套接字的原因。
+/// **必须绑定通配地址（`0.0.0.0`），不能绑定回环地址。** 这一条是实测出来的，
+/// 而且曾经是个真实故障：早先绑的是 `InternetAddress.loopbackIPv4`，注释里写的
+/// 理由是「免管理员权限」。这个理由不成立——绑通配地址、端口传 0（由系统分配
+/// 临时端口）同样不需要任何权限；而绑定回环会让**所有对外查询瞬间失败**：
+/// 报文带着 127.0.0.1 作源地址根本出不去，套接字立刻报错。实测对比：
+///
+/// ```
+/// bind 127.0.0.1 -> 超时（1–9ms，其实是立即出错）
+/// bind 0.0.0.0   -> 成功 rcode=0 183.2.172.177（12–13ms）
+/// ```
+///
+/// 症状之所以难查：失败是**瞬时**的而不是等满超时，界面把它记成「解析超时」并
+/// 得出「国内解析异常」的结论，于是用户照建议去换解析器——而问题根本不在解析器，
+/// 同一时刻系统自带的 nslookup 查同一个服务器完全正常。
 class UdpDnsResolver implements DnsResolver {
-  UdpDnsResolver({Random? random, this.defaultTimeout = const Duration(seconds: 3)})
-      : _random = random ?? Random();
+  UdpDnsResolver({
+    Random? random,
+    this.defaultTimeout = const Duration(seconds: 3),
+  }) : _random = random ?? Random();
 
   final Random _random;
   final Duration defaultTimeout;
@@ -99,19 +125,40 @@ class UdpDnsResolver implements DnsResolver {
           error: '解析器地址不合法',
         );
       }
-      socket = await RawDatagramSocket.bind(InternetAddress.loopbackIPv4, 0);
+      // 绑通配地址：绑回环会让报文带 127.0.0.1 作源地址，对外查询直接失败。
+      // 端口传 0 由系统分配临时端口，不需要任何特权。
+      socket = await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0);
       socket.broadcastEnabled = false;
 
       final id = _random.nextInt(0xFFFF);
       final request = buildQuery(id, name);
       final completer = Completer<Uint8List?>();
 
-      final subscription = socket.listen((RawSocketEvent event) {
-        if (event != RawSocketEvent.read) return;
-        final datagram = socket?.receive();
-        if (datagram == null) return;
-        if (!completer.isCompleted) completer.complete(datagram.data);
-      });
+      // 套接字层错误的原始信息。
+      //
+      // 要与「等超时」分开：两者都表现为拿不到响应，但处置方式完全相反。
+      // 套接字建不起来/发不出去是本机环境问题（安全软件、策略），换解析器
+      // 毫无用处；真超时才是解析器或链路的问题。此前这里把错误吞掉、统一报
+      // 「解析超时」，于是界面给出的是「去换个国内解析器」——一个修不好的方向。
+      Object? socketError;
+
+      final subscription = socket.listen(
+        (RawSocketEvent event) {
+          if (event != RawSocketEvent.read) return;
+          final datagram = socket?.receive();
+          if (datagram == null) return;
+          if (!completer.isCompleted) completer.complete(datagram.data);
+        },
+        // onError 是**必需**的，不是防御性写法。
+        //
+        // 没有它时，套接字层的错误不会走下面的 catch，而是变成一条
+        // 「Unhandled Exception」冲到 zone 顶层：应用每 45 秒的 DNS 健康探测
+        // 都会抛一次，而探测结果本身仍然是「失败」。
+        onError: (Object error, StackTrace _) {
+          socketError = error;
+          if (!completer.isCompleted) completer.complete(null);
+        },
+      );
 
       socket.send(request, serverAddress, dnsPort);
 
@@ -122,12 +169,14 @@ class UdpDnsResolver implements DnsResolver {
       await subscription.cancel();
 
       if (response == null) {
+        final localFailure = socketError;
         return DnsOutcome(
           server: server,
           name: name,
           answers: const <String>[],
           elapsed: watch.elapsed,
-          error: '解析超时',
+          error: localFailure == null ? '解析超时' : '本机无法发起 DNS 探测（$localFailure）',
+          localProbeUnavailable: localFailure is SocketException,
         );
       }
 
@@ -162,7 +211,10 @@ class UdpDnsResolver implements DnsResolver {
         name: name,
         answers: const <String>[],
         elapsed: watch.elapsed,
-        error: '查询失败：$e',
+        // 本机建不出探测套接字时给出可区分的标记，让上层不要把结论说成
+        // 「解析器不可用」——那会把用户引向一个修不好的方向。
+        localProbeUnavailable: e is SocketException,
+        error: e is SocketException ? '本机无法发起 DNS 探测（$e）' : '查询失败：$e',
       );
     } finally {
       socket?.close();
@@ -192,7 +244,10 @@ Uint8List buildQuery(int id, String name, {int type = 1}) {
       .toList(growable: false);
 
   // 头部 12 字节 + 每个标签（长度字节 + 内容）+ 结尾 0 + QTYPE 2 + QCLASS 2
-  final nameLength = labels.fold<int>(1, (int sum, String l) => sum + 1 + l.length);
+  final nameLength = labels.fold<int>(
+    1,
+    (int sum, String l) => sum + 1 + l.length,
+  );
   final buffer = Uint8List(12 + nameLength + 4);
   final view = ByteData.view(buffer.buffer);
 
@@ -341,11 +396,11 @@ Uint8List _asciiBytes(String label) {
 
 /// 响应码的简短中文说明。
 String rcodeText(int rcode) => switch (rcode) {
-      0 => '成功',
-      1 => '报文格式错误',
-      2 => '服务器故障',
-      3 => '域名不存在',
-      4 => '不支持该查询',
-      5 => '服务器拒绝',
-      _ => '响应码 $rcode',
-    };
+  0 => '成功',
+  1 => '报文格式错误',
+  2 => '服务器故障',
+  3 => '域名不存在',
+  4 => '不支持该查询',
+  5 => '服务器拒绝',
+  _ => '响应码 $rcode',
+};

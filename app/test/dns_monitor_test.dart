@@ -16,7 +16,11 @@ class _StubResolver implements DnsResolver {
   final List<String> queries = <String>[];
 
   @override
-  Future<DnsOutcome> query(String server, String name, {Duration? timeout}) async {
+  Future<DnsOutcome> query(
+    String server,
+    String name, {
+    Duration? timeout,
+  }) async {
     queries.add('$server|$name');
     final hit = _answers['$server|$name'];
     if (hit != null) return hit;
@@ -33,13 +37,17 @@ class _StubResolver implements DnsResolver {
   void close() {}
 }
 
-DnsOutcome _ok(String server, String name, List<String> answers, {int millis = 10}) =>
-    DnsOutcome(
-      server: server,
-      name: name,
-      answers: answers,
-      elapsed: Duration(milliseconds: millis),
-    );
+DnsOutcome _ok(
+  String server,
+  String name,
+  List<String> answers, {
+  int millis = 10,
+}) => DnsOutcome(
+  server: server,
+  name: name,
+  answers: answers,
+  elapsed: Duration(milliseconds: millis),
+);
 
 /// 构造一份最小的中国 IP 索引：只含 114.230.0.0/16 与 220.181.0.0/16。
 CnIpIndex _cnIndex() {
@@ -62,7 +70,11 @@ CnIpIndex _cnIndex() {
   return CnIpIndex.parse(bytes)!;
 }
 
-DnsMonitor _monitor(_StubResolver resolver, {int? tunnelDelay, CnIpIndex? index}) {
+DnsMonitor _monitor(
+  _StubResolver resolver, {
+  int? tunnelDelay,
+  CnIpIndex? index,
+}) {
   return DnsMonitor(
     config: const DnsMonitorConfig(
       domesticServers: <String>['223.5.5.5', '119.29.29.29'],
@@ -127,7 +139,11 @@ void main() {
     });
 
     test('NXDOMAIN 之类被识别成错误码', () {
-      final response = _makeResponse(id: 1, rcode: 3, answers: const <List<int>>[]);
+      final response = _makeResponse(
+        id: 1,
+        rcode: 3,
+        answers: const <List<int>>[],
+      );
       final parsed = parseResponse(response, expectedId: 1)!;
       expect(parsed.rcode, 3);
       expect(rcodeText(3), '域名不存在');
@@ -143,7 +159,10 @@ void main() {
           <int>[1, 2, 3, 4],
         ],
       );
-      expect(parseResponse(Uint8List.sublistView(full, 0, full.length - 4)), isNull);
+      expect(
+        parseResponse(Uint8List.sublistView(full, 0, full.length - 4)),
+        isNull,
+      );
     });
 
     test('IPv6 地址按 RFC 5952 压缩', () {
@@ -166,7 +185,9 @@ void main() {
           <int>[1, 1, 1, 1],
         ],
       );
-      expect(parseResponse(response, expectedId: 8)!.addresses, <String>['1.1.1.1']);
+      expect(parseResponse(response, expectedId: 8)!.addresses, <String>[
+        '1.1.1.1',
+      ]);
     });
   });
 
@@ -242,8 +263,15 @@ void main() {
   group('DNS 监测：解析器健康度', () {
     test('全部正常时统计出耗时与状态', () async {
       final resolver = _StubResolver(<String, DnsOutcome>{
-        '223.5.5.5|www.baidu.com': _ok('223.5.5.5', 'www.baidu.com', <String>['1.2.3.4'], millis: 12),
-        '119.29.29.29|www.baidu.com': _ok('119.29.29.29', 'www.baidu.com', <String>['1.2.3.4'], millis: 20),
+        '223.5.5.5|www.baidu.com': _ok('223.5.5.5', 'www.baidu.com', <String>[
+          '1.2.3.4',
+        ], millis: 12),
+        '119.29.29.29|www.baidu.com': _ok(
+          '119.29.29.29',
+          'www.baidu.com',
+          <String>['1.2.3.4'],
+          millis: 20,
+        ),
       });
       final monitor = _monitor(resolver, tunnelDelay: 80);
 
@@ -268,8 +296,9 @@ void main() {
         await monitor.runOnce();
       }
 
-      final health = monitor.report.resolvers
-          .firstWhere((ResolverHealth h) => h.server == '223.5.5.5');
+      final health = monitor.report.resolvers.firstWhere(
+        (ResolverHealth h) => h.server == '223.5.5.5',
+      );
       expect(health.consecutiveFailures, 3);
       expect(health.statusLabel, '不响应');
       expect(health.successRate, 0);
@@ -281,16 +310,21 @@ void main() {
       final monitor = _monitor(resolver, tunnelDelay: 50);
 
       await monitor.runOnce();
-      final failed = monitor.report.resolvers
-          .firstWhere((ResolverHealth h) => h.server == '223.5.5.5');
+      final failed = monitor.report.resolvers.firstWhere(
+        (ResolverHealth h) => h.server == '223.5.5.5',
+      );
       expect(failed.consecutiveFailures, 1);
 
-      answers['223.5.5.5|www.baidu.com'] =
-          _ok('223.5.5.5', 'www.baidu.com', <String>['1.2.3.4']);
+      answers['223.5.5.5|www.baidu.com'] = _ok(
+        '223.5.5.5',
+        'www.baidu.com',
+        <String>['1.2.3.4'],
+      );
       await monitor.runOnce();
 
-      final recovered = monitor.report.resolvers
-          .firstWhere((ResolverHealth h) => h.server == '223.5.5.5');
+      final recovered = monitor.report.resolvers.firstWhere(
+        (ResolverHealth h) => h.server == '223.5.5.5',
+      );
       expect(recovered.consecutiveFailures, 0);
       expect(recovered.healthy, isTrue);
       expect(recovered.successRate, greaterThan(0));
@@ -298,13 +332,16 @@ void main() {
 
     test('隧道不可达时被记成失败，而不是静默忽略', () async {
       final resolver = _StubResolver(<String, DnsOutcome>{
-        '223.5.5.5|www.baidu.com': _ok('223.5.5.5', 'www.baidu.com', <String>['1.2.3.4']),
+        '223.5.5.5|www.baidu.com': _ok('223.5.5.5', 'www.baidu.com', <String>[
+          '1.2.3.4',
+        ]),
       });
       final monitor = _monitor(resolver);
 
       final report = await monitor.runOnce();
-      final tunnelHealth = report.resolvers
-          .firstWhere((ResolverHealth h) => h.server == '隧道 DNS');
+      final tunnelHealth = report.resolvers.firstWhere(
+        (ResolverHealth h) => h.server == '隧道 DNS',
+      );
       expect(tunnelHealth.consecutiveFailures, 1);
       expect(tunnelHealth.lastSummary, contains('超时'));
     });
@@ -373,11 +410,16 @@ void main() {
   group('DNS 交叉校验结论', () {
     test('国内答案在国内、与隧道不同 → 国内外双部署', () async {
       final resolver = _StubResolver(<String, DnsOutcome>{
-        '223.5.5.5|www.example.com':
-            _ok('223.5.5.5', 'www.example.com', <String>['114.230.1.1']),
+        '223.5.5.5|www.example.com': _ok(
+          '223.5.5.5',
+          'www.example.com',
+          <String>['114.230.1.1'],
+        ),
       });
       final monitor = _monitor(resolver, tunnelDelay: 60);
-      monitor.tunnelResolveProbe = (String domain) async => <String>['104.18.0.1'];
+      monitor.tunnelResolveProbe = (String domain) async => <String>[
+        '104.18.0.1',
+      ];
 
       final check = await monitor.crossCheck('www.example.com');
 
@@ -389,11 +431,16 @@ void main() {
 
     test('国内答案不在国内且与隧道不同 → 疑似投毒', () async {
       final resolver = _StubResolver(<String, DnsOutcome>{
-        '223.5.5.5|www.blocked.com':
-            _ok('223.5.5.5', 'www.blocked.com', <String>['59.24.3.174']),
+        '223.5.5.5|www.blocked.com': _ok(
+          '223.5.5.5',
+          'www.blocked.com',
+          <String>['59.24.3.174'],
+        ),
       });
       final monitor = _monitor(resolver, tunnelDelay: 200);
-      monitor.tunnelResolveProbe = (String domain) async => <String>['142.250.72.14'];
+      monitor.tunnelResolveProbe = (String domain) async => <String>[
+        '142.250.72.14',
+      ];
 
       final check = await monitor.crossCheck('www.blocked.com');
 
@@ -403,34 +450,65 @@ void main() {
 
     test('国内答案在国内且与隧道一致 → 一致', () async {
       final resolver = _StubResolver(<String, DnsOutcome>{
-        '223.5.5.5|www.example.com':
-            _ok('223.5.5.5', 'www.example.com', <String>['114.230.1.1']),
+        '223.5.5.5|www.example.com': _ok(
+          '223.5.5.5',
+          'www.example.com',
+          <String>['114.230.1.1'],
+        ),
       });
       final monitor = _monitor(resolver, tunnelDelay: 60);
-      monitor.tunnelResolveProbe = (String domain) async => <String>['114.230.1.1'];
+      monitor.tunnelResolveProbe = (String domain) async => <String>[
+        '114.230.1.1',
+      ];
 
       final check = await monitor.crossCheck('www.example.com');
       expect(check.verdict, DnsVerdict.consistent);
       expect(check.disjoint, isFalse);
     });
 
-    test('国内解析器全失败 → 判定为国内解析异常', () async {
+    test('国内解析器单次全失败 → 不下异常结论（一次丢包不足以定性）', () async {
       final resolver = _StubResolver(const <String, DnsOutcome>{});
       final monitor = _monitor(resolver, tunnelDelay: 60);
       monitor.tunnelResolveProbe = (String domain) async => <String>['1.2.3.4'];
 
       final check = await monitor.crossCheck('www.example.com');
+      expect(
+        check.verdict,
+        DnsVerdict.consistent,
+        reason: '明文 UDP 丢一个包就会走到这条分支，而界面上它是要用户去改设置的重结论',
+      );
+    });
+
+    test('国内解析器连续两次全失败 → 判定为国内解析异常', () async {
+      final resolver = _StubResolver(const <String, DnsOutcome>{});
+      final monitor = _monitor(resolver, tunnelDelay: 60);
+      monitor.tunnelResolveProbe = (String domain) async => <String>['1.2.3.4'];
+
+      // 第一次：只累计失败次数，不下结论。
+      await monitor.crossCheck('www.example.com');
+      // 第二次：达到阈值，这时才认定解析器真的不可用。
+      // force 是必需的：同一个域名的结果有 TTL 缓存，不绕过就拿不到新结论。
+      final check = await monitor.crossCheck('www.example.com', force: true);
       expect(check.verdict, DnsVerdict.directResolverDown);
     });
 
     test('拿不到地理信息时不下「投毒」结论，宁可保守', () async {
       final resolver = _StubResolver(<String, DnsOutcome>{
-        '223.5.5.5|www.example.com':
-            _ok('223.5.5.5', 'www.example.com', <String>['59.24.3.174']),
+        '223.5.5.5|www.example.com': _ok(
+          '223.5.5.5',
+          'www.example.com',
+          <String>['59.24.3.174'],
+        ),
       });
       // 空索引 = 拿不到地理信息。
-      final monitor = _monitor(resolver, tunnelDelay: 60, index: CnIpIndex.empty);
-      monitor.tunnelResolveProbe = (String domain) async => <String>['142.250.72.14'];
+      final monitor = _monitor(
+        resolver,
+        tunnelDelay: 60,
+        index: CnIpIndex.empty,
+      );
+      monitor.tunnelResolveProbe = (String domain) async => <String>[
+        '142.250.72.14',
+      ];
 
       final check = await monitor.crossCheck('www.example.com');
       expect(
@@ -443,11 +521,17 @@ void main() {
     test('第二个国内解析器能兜住第一个的失败', () async {
       final resolver = _StubResolver(<String, DnsOutcome>{
         // 223.5.5.5 查这个域名失败
-        '119.29.29.29|www.example.com':
-            _ok('119.29.29.29', 'www.example.com', <String>['114.230.1.1'], millis: 33),
+        '119.29.29.29|www.example.com': _ok(
+          '119.29.29.29',
+          'www.example.com',
+          <String>['114.230.1.1'],
+          millis: 33,
+        ),
       });
       final monitor = _monitor(resolver, tunnelDelay: 60);
-      monitor.tunnelResolveProbe = (String domain) async => <String>['104.18.0.1'];
+      monitor.tunnelResolveProbe = (String domain) async => <String>[
+        '104.18.0.1',
+      ];
 
       final check = await monitor.crossCheck('www.example.com');
       expect(check.domesticAnswers, <String>['114.230.1.1']);
@@ -457,11 +541,16 @@ void main() {
 
     test('校验结果被缓存，短时间内不重复占用隧道往返', () async {
       final resolver = _StubResolver(<String, DnsOutcome>{
-        '223.5.5.5|www.example.com':
-            _ok('223.5.5.5', 'www.example.com', <String>['114.230.1.1']),
+        '223.5.5.5|www.example.com': _ok(
+          '223.5.5.5',
+          'www.example.com',
+          <String>['114.230.1.1'],
+        ),
       });
       final monitor = _monitor(resolver, tunnelDelay: 60);
-      monitor.tunnelResolveProbe = (String domain) async => <String>['104.18.0.1'];
+      monitor.tunnelResolveProbe = (String domain) async => <String>[
+        '104.18.0.1',
+      ];
 
       await monitor.crossCheck('www.example.com');
       final queryCount = resolver.queries.length;
@@ -475,11 +564,16 @@ void main() {
 
     test('cachedCheck 能读到缓存但不触发新探测', () async {
       final resolver = _StubResolver(<String, DnsOutcome>{
-        '223.5.5.5|www.example.com':
-            _ok('223.5.5.5', 'www.example.com', <String>['114.230.1.1']),
+        '223.5.5.5|www.example.com': _ok(
+          '223.5.5.5',
+          'www.example.com',
+          <String>['114.230.1.1'],
+        ),
       });
       final monitor = _monitor(resolver, tunnelDelay: 60);
-      monitor.tunnelResolveProbe = (String domain) async => <String>['104.18.0.1'];
+      monitor.tunnelResolveProbe = (String domain) async => <String>[
+        '104.18.0.1',
+      ];
 
       expect(monitor.cachedCheck('www.example.com'), isNull);
       await monitor.crossCheck('www.example.com');
@@ -492,8 +586,11 @@ void main() {
       final gate = Completer<void>();
       var probeCalls = 0;
       final resolver = _StubResolver(<String, DnsOutcome>{
-        '223.5.5.5|www.example.com':
-            _ok('223.5.5.5', 'www.example.com', <String>['114.230.1.1']),
+        '223.5.5.5|www.example.com': _ok(
+          '223.5.5.5',
+          'www.example.com',
+          <String>['114.230.1.1'],
+        ),
       });
       final monitor = DnsMonitor(
         config: const DnsMonitorConfig(
@@ -508,7 +605,9 @@ void main() {
         },
         cnIpIndex: _cnIndex(),
       );
-      monitor.tunnelResolveProbe = (String domain) async => <String>['104.18.0.1'];
+      monitor.tunnelResolveProbe = (String domain) async => <String>[
+        '104.18.0.1',
+      ];
 
       // 三个并发请求同一个域名。
       final futures = <Future<DnsCrossCheck>>[
@@ -530,8 +629,11 @@ void main() {
     test('探测失败后不会把失败结果永久缓存住', () async {
       // 如果异常路径忘了摘掉「进行中」的登记，这个域名之后再也不会被重新探测。
       final resolver = _StubResolver(<String, DnsOutcome>{
-        '223.5.5.5|www.example.com':
-            _ok('223.5.5.5', 'www.example.com', <String>['114.230.1.1']),
+        '223.5.5.5|www.example.com': _ok(
+          '223.5.5.5',
+          'www.example.com',
+          <String>['114.230.1.1'],
+        ),
       });
       var shouldThrow = true;
       final monitor = DnsMonitor(
@@ -546,7 +648,9 @@ void main() {
         },
         cnIpIndex: _cnIndex(),
       );
-      monitor.tunnelResolveProbe = (String domain) async => <String>['104.18.0.1'];
+      monitor.tunnelResolveProbe = (String domain) async => <String>[
+        '104.18.0.1',
+      ];
 
       await expectLater(
         monitor.crossCheck('www.example.com'),
@@ -560,7 +664,9 @@ void main() {
 
     test('reset 清空全部统计与缓存', () async {
       final resolver = _StubResolver(<String, DnsOutcome>{
-        '223.5.5.5|www.baidu.com': _ok('223.5.5.5', 'www.baidu.com', <String>['1.2.3.4']),
+        '223.5.5.5|www.baidu.com': _ok('223.5.5.5', 'www.baidu.com', <String>[
+          '1.2.3.4',
+        ]),
       });
       final monitor = _monitor(resolver, tunnelDelay: 60);
       await monitor.runOnce();

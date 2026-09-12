@@ -157,14 +157,11 @@ void main() {
   group('报告结构', () {
     test('三条探针都在，且顺序稳定', () async {
       final report = await _check(direct: 12, tunnel: 180).run();
-      expect(
-        report.probes.map((ProbeResult p) => p.name).toList(),
-        <String>[
-          StartupSelfCheck.directName,
-          StartupSelfCheck.tunnelName,
-          StartupSelfCheck.dnsName,
-        ],
-      );
+      expect(report.probes.map((ProbeResult p) => p.name).toList(), <String>[
+        StartupSelfCheck.directName,
+        StartupSelfCheck.tunnelName,
+        StartupSelfCheck.dnsName,
+      ]);
       expect(report.checkedAt.year, greaterThan(2000));
     });
 

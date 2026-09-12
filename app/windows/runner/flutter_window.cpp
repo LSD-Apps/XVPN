@@ -19,6 +19,30 @@ constexpr const wchar_t kInternetSettings[] =
 // 之后仍然能恢复——否则用户会留下一个指向已退出内核的代理设置。
 constexpr const wchar_t kProxyBackupKey[] = L"Software\\XVPN\\ProxyBackup";
 
+// 是否已经开始退出。一旦置位，**不再接受**任何新的代理接管请求。
+//
+// 存在的理由是关停过程中一个很窄但后果严重的竞争：Dart 侧的连接流程是异步的，
+// 「等待内核就绪 → 设置系统代理」可能正好卡在退出清理之后完成。那样退出时刚
+// 还原好的代理会被重新写回一个已经死掉的端口，用户看到的就是「关掉应用之后
+// 所有网站都打不开」——正是最难自查的那类故障。
+bool g_shutting_down = false;
+
+// 退出清理是否已经执行过。清理必须幂等：WM_QUERYENDSESSION 与 WM_DESTROY
+// 可能先后到达，托盘退出又可能再来一次。
+bool g_cleanup_done = false;
+
+// 内核子进程所属的作业对象。
+//
+// 为什么需要它：内核是 Dart 侧用 Process.start 拉起来的**子进程**，而 Windows
+// 不会在父进程消失时自动结束子进程。此前只在 WM_DESTROY 里枚举子进程来结束，
+// 于是「任务管理器强制结束」「应用崩溃」这两条路径都会留下一个孤儿内核——它
+// 继续占着 2080/2081，下一次启动就可能因为端口被占而起不来。
+//
+// 作业对象把这件事交给系统：把本进程放进一个带 KILL_ON_JOB_CLOSE 的作业，
+// 它派生的子进程会自动加入同一个作业；本进程无论以**任何**方式结束（包括被
+// 强杀），最后一个作业句柄关闭时系统会一并结束其中的内核。
+HANDLE g_kernel_job = nullptr;
+
 bool SetRegistryString(HKEY root, const wchar_t* subkey, const wchar_t* name,
                        const wchar_t* value) {
   HKEY key = nullptr;
@@ -120,6 +144,15 @@ bool HasProxyBackup() {
 
 // 接管系统代理：先把用户原有设置备份到我们自己的注册表键，再写入内核地址。
 bool ApplySystemProxy(const std::wstring& server) {
+  // 退出流程已经开始：拒绝接管。
+  //
+  // 调用方（Dart）是异步的，这一步可能恰好排在退出清理之后。若照常写入，就会
+  // 把清理时刚还原好的代理重新指向一个即将死掉的端口——用户看到的现象是
+  // 「关掉应用之后所有网站都打不开」。
+  if (g_shutting_down) {
+    return false;
+  }
+
   DWORD previous_enable = 0;
   const bool had_enable = ReadRegistryDword(HKEY_CURRENT_USER,
                                             kInternetSettings, L"ProxyEnable",
@@ -166,12 +199,20 @@ bool RestoreSystemProxy() {
       DeleteRegistryValue(HKEY_CURRENT_USER, kInternetSettings,
                           L"ProxyServer");
     }
-    DeleteRegistryTree(HKEY_CURRENT_USER, kProxyBackupKey);
-    // RegDeleteTree 只删掉 ProxyBackup 这一层，创建它时顺带生成的
-    // Software\XVPN 容器会留下来。虽然里面已经没有值、不会影响 HasProxyBackup，
-    // 但退出后还在用户注册表里留一个空键没有必要，一并清掉。
-    // 失败无所谓：说明这个键本来就不存在，或用户在里面放了别的东西。
-    RegDeleteKeyW(HKEY_CURRENT_USER, L"Software\\XVPN");
+    // **只有还原成功才消费备份。**
+    //
+    // 反过来（无条件删）有一个很难查的后果：万一上面写注册表失败（权限受限、
+    // 组策略锁定），备份被删掉了、代理却仍指着已经退出的内核。下次启动时
+    // HasProxyBackup() 为假，兜底恢复无从下手，用户的网络就一直坏着——而且
+    // 从注册表里看不出任何线索。留着备份，至少下次启动还能再试一次。
+    if (ok) {
+      DeleteRegistryTree(HKEY_CURRENT_USER, kProxyBackupKey);
+      // RegDeleteTree 只删掉 ProxyBackup 这一层，创建它时顺带生成的
+      // Software\XVPN 容器会留下来。虽然里面已经没有值、不会影响
+      // HasProxyBackup，但退出后还在用户注册表里留一个空键没有必要，一并清掉。
+      // 失败无所谓：说明这个键本来就不存在，或用户在里面放了别的东西。
+      RegDeleteKeyW(HKEY_CURRENT_USER, L"Software\\XVPN");
+    }
   } else {
     ok = SetRegistryDword(HKEY_CURRENT_USER, kInternetSettings, L"ProxyEnable",
                           0);
@@ -210,6 +251,55 @@ void TerminateChildProcesses() {
   CloseHandle(snapshot);
 }
 
+// 建立内核子进程的作业对象，并把自己放进去。
+//
+// 放进同一个作业之后，Dart 用 Process.start 拉起的内核会自动成为作业成员；
+// 本进程无论以什么方式结束（正常退出、崩溃、任务管理器强制结束、关机），
+// 系统都会在最后一个作业句柄关闭时结束其中的进程。这比「退出时枚举子进程」
+// 多覆盖了两条此前完全无人处理的路径。
+//
+// 刻意**不**在退出清理里 CloseHandle(g_kernel_job)：
+// 本进程也在作业里，关掉最后一个句柄会立刻终止包括自己在内的所有成员，
+// 那样就会在清理流程中途被系统打断。让它随进程结束由系统关闭即可。
+void InitializeKernelJob() {
+  HANDLE job = CreateJobObjectW(nullptr, nullptr);
+  if (job == nullptr) {
+    return;  // 建不出来就退回「退出时枚举子进程」那条路径。
+  }
+  JOBOBJECT_EXTENDED_LIMIT_INFORMATION info = {};
+  info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+  if (!SetInformationJobObject(job, JobObjectExtendedLimitInformation, &info,
+                               sizeof(info))) {
+    CloseHandle(job);
+    return;
+  }
+  if (!AssignProcessToJobObject(job, GetCurrentProcess())) {
+    // Windows 8 起支持嵌套作业；更老的系统或已被别的作业占用时会失败，
+    // 此时不该让整个应用起不来，退回到原有的枚举式清理即可。
+    CloseHandle(job);
+    return;
+  }
+  g_kernel_job = job;
+}
+
+// 退出清理：还原系统代理 + 结束内核。幂等，可被多条退出路径重复调用。
+//
+// 三条路径都会走到这里：托盘「退出」与系统关闭窗口（WM_DESTROY）、
+// 注销或关机（WM_QUERYENDSESSION / WM_ENDSESSION）。集中成一处是为了
+// 「新增一条退出路径」时不会漏掉其中某一步——漏掉的代价是用户的网络出问题。
+bool CleanupResources() {
+  // 先置位再清理：让清理期间到达的 setSystemProxy 变成空操作。
+  g_shutting_down = true;
+  if (g_cleanup_done) {
+    return true;
+  }
+  g_cleanup_done = true;
+
+  const bool proxy_restored = RestoreSystemProxy();
+  TerminateChildProcesses();
+  return proxy_restored;
+}
+
 }  // namespace
 
 FlutterWindow::FlutterWindow(const flutter::DartProject& project)
@@ -221,6 +311,10 @@ bool FlutterWindow::OnCreate() {
   if (!Win32Window::OnCreate()) {
     return false;
   }
+
+  // 尽早建立内核作业对象：在这之后 Dart 拉起的 sing-box 才会自动加入作业，
+  // 从而在本进程意外消失时被系统一并结束。
+  InitializeKernelJob();
 
   RECT frame = GetClientArea();
 
@@ -410,10 +504,37 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
 
   // 退出时必须还原系统代理并结束内核进程。否则用户关掉应用后，系统代理仍
   // 指向已经退出的内核（表现为「所有网站都打不开」），内核还会继续占着端口。
-  // （进程被强杀时收不到这条消息，由下次启动时的兜底逻辑处理。）
+  // （进程被强杀时收不到这条消息，由事后两条兜底处理：作业对象保证内核不会
+  // 变成孤儿，下次启动的 recoverIfNeeded 负责把代理还原回去。）
   if (message == WM_DESTROY) {
-    RestoreSystemProxy();
-    TerminateChildProcesses();
+    CleanupResources();
+  }
+
+  // 注销 / 关机 / 重启：必须在系统真正结束进程**之前**还原代理。
+  //
+  // 这条路径此前是漏的，而它的后果比普通退出更严重：注册表里的代理设置会跨
+  // 重启保留下来，于是机器重启后浏览器全部指向一个不存在的 127.0.0.1:2080，
+  // 表现为「重启之后整个网络都不对」，而用户根本不会把它和 VPN 联系起来。
+  //
+  // 只看 WM_ENDSESSION 且要求 wparam 非零，**不**在 WM_QUERYENDSESSION 里清理：
+  //   * WM_QUERYENDSESSION 只是「能不能关」的询问，任何一个应用都可以否决它，
+  //     关机会被取消。在那里清理会把一个仍在运行的隧道留成「界面显示已连接、
+  //     系统代理却没了」——用户以为在走隧道，实际全在直连；
+  //   * WM_ENDSESSION 带非零 wparam 才是「确定要关了」，此时清理不会有假动作。
+  //     （若关机被取消，会收到 wparam 为零的 WM_ENDSESSION，不清理。）
+  // 万一连这条消息都没走到（系统强杀），下次启动的 recoverIfNeeded 仍是兜底。
+  if (message == WM_ENDSESSION && wparam != 0) {
+    CleanupResources();
+    // 清理完就**立刻退出**，而不是等系统来结束我们。
+    //
+    // 这一步不是多余的：Dart 侧并不知道代理已经被撤掉、内核已经被结束，它的
+    // 自愈逻辑会把「Clash API 读不到」判定成内核卡死，然后在系统真正杀掉本进程
+    // 之前的几秒里**把内核实实在在地拉起来一次**。虽然在真实关机里那个内核最终
+    // 会被作业对象收走，但这段时间白起一个进程没有意义，也让「到底收干净没有」
+    // 变得难以断言。主动退出把这段窗口彻底关掉。
+    RemoveTrayIcon();
+    DestroyWindow(hwnd);
+    return 0;
   }
 
   // 关闭主窗口 = 收进托盘，而不是退出程序。
@@ -452,6 +573,21 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
         return 0;
       default:
         break;
+    }
+  }
+
+  // 最大化状态变化要**主动**告诉 Dart。
+  //
+  // 双击标题栏、Win+↑、贴边、从任务栏还原、系统快捷键……这些都由 Windows 直接
+  // 处理，Dart 侧完全不知情，于是标题栏上的按钮会停在旧图标上：窗口已经最大化
+  // 了，它还画着「最大化」的方框。用户按下去等于还原，图形与行为对不上。
+  if (message == WM_SIZE && window_channel_) {
+    const int maximized = IsZoomed(hwnd) ? 1 : 0;
+    if (maximized != last_maximized_) {
+      last_maximized_ = maximized;
+      window_channel_->InvokeMethod(
+          "maximizedChanged",
+          std::make_unique<flutter::EncodableValue>(maximized == 1));
     }
   }
 

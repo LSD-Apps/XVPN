@@ -86,14 +86,13 @@ class _XvShellState extends State<XvShell> {
           body: WindowFrame(
             child: DecoratedBox(
               decoration: WindowControls.supported
-                  ? BoxDecoration(
-                      border: Border.all(color: XV.line),
-                    )
+                  ? BoxDecoration(border: Border.all(color: XV.line))
                   : const BoxDecoration(),
               child: SafeArea(
                 child: LayoutBuilder(
                   builder: (BuildContext context, BoxConstraints constraints) {
-                    final desktop = constraints.maxWidth >= XV.desktopBreakpoint;
+                    final desktop =
+                        constraints.maxWidth >= XV.desktopBreakpoint;
                     return desktop ? _buildDesktop() : _buildMobile();
                   },
                 ),
@@ -126,16 +125,12 @@ class _XvShellState extends State<XvShell> {
                   decoration: BoxDecoration(
                     border: Border(top: BorderSide(color: XV.line)),
                   ),
-                  child: Align(
-                    alignment: Alignment.topCenter,
-                    child: ConstrainedBox(
-                      // 与原型 1180px 画布一致，避免超宽屏把卡片拉变形
-                      constraints: const BoxConstraints(maxWidth: 1180),
-                      child: Padding(
-                        padding: const EdgeInsets.fromLTRB(22, 18, 22, 16),
-                        child: _screenFor(_desktopTab, compact: false),
-                      ),
-                    ),
+                  child: Padding(
+                    // 内容自适应可用宽度：此前这里有一个 1180 的宽度上限并居中，
+                    // 在宽屏上两侧留下大片空白，而卡片里的表格、日志、失败列表
+                    // 恰恰需要宽度。去掉上限后由 Padding 只保留必要的边距。
+                    padding: const EdgeInsets.fromLTRB(22, 18, 22, 16),
+                    child: _screenFor(_desktopTab, compact: false),
                   ),
                 ),
               ),
@@ -254,9 +249,7 @@ class _XvShellState extends State<XvShell> {
           child: Row(
             children: <Widget>[
               for (var i = 0; i < _mobileTabs.length; i++)
-                Expanded(
-                  child: _buildMobileTab(i),
-                ),
+                Expanded(child: _buildMobileTab(i)),
             ],
           ),
         ),
@@ -295,7 +288,11 @@ class _XvShellState extends State<XvShell> {
       0 => ConnectScreen(state: widget.state, compact: compact),
       1 => SplitScreen(state: widget.state, compact: compact),
       2 => ProfilesScreen(state: widget.state, embedded: compact),
-      _ => SettingsScreen(state: widget.state, compact: compact, theme: widget.theme),
+      _ => SettingsScreen(
+        state: widget.state,
+        compact: compact,
+        theme: widget.theme,
+      ),
     };
   }
 }

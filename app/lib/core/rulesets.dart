@@ -20,8 +20,10 @@ class RuleSetStore {
   /// 上游走 jsDelivr 的 `rule-set` 分支——GitHub 直连在国内时通时断，
   /// 而 CDN 稳定得多（安装阶段也是从同一个地址拉取的）。
   static const Map<String, String> sources = <String, String>{
-    'geosite-cn.srs': 'https://cdn.jsdelivr.net/gh/SagerNet/sing-geosite@rule-set/geosite-cn.srs',
-    'geoip-cn.srs': 'https://cdn.jsdelivr.net/gh/SagerNet/sing-geoip@rule-set/geoip-cn.srs',
+    'geosite-cn.srs':
+        'https://cdn.jsdelivr.net/gh/SagerNet/sing-geosite@rule-set/geosite-cn.srs',
+    'geoip-cn.srs':
+        'https://cdn.jsdelivr.net/gh/SagerNet/sing-geoip@rule-set/geoip-cn.srs',
   };
 
   /// `.srs` 二进制格式的魔数。校验它就能挡住把 HTML 错误页当成规则库写盘。
@@ -29,10 +31,13 @@ class RuleSetStore {
 
   /// 可写规则库目录：`%LOCALAPPDATA%\XVPN\rulesets`。
   static Directory writableDir() {
-    final base = Platform.environment['LOCALAPPDATA'] ??
+    final base =
+        Platform.environment['LOCALAPPDATA'] ??
         Platform.environment['APPDATA'] ??
         Directory.systemTemp.path;
-    return Directory('$base${Platform.pathSeparator}XVPN${Platform.pathSeparator}rulesets');
+    return Directory(
+      '$base${Platform.pathSeparator}XVPN${Platform.pathSeparator}rulesets',
+    );
   }
 
   /// 确保可写目录里有可用的规则库，缺失时从出厂副本复制。
@@ -80,7 +85,8 @@ class RuleSetStore {
       tmp.renameSync(dest.path);
     }
 
-    final totalKb = downloaded.values.fold<int>(0, (sum, b) => sum + b.length) ~/ 1024;
+    final totalKb =
+        downloaded.values.fold<int>(0, (sum, b) => sum + b.length) ~/ 1024;
     return RuleSetUpdateOutcome.success(
       DateTime.now(),
       '规则库已更新（共 $totalKb KB）',

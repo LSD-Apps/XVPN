@@ -42,8 +42,7 @@ class CnIpIndex {
 
   /// 空表。加载失败时使用——此时所有判断都返回 false，
   /// 表现为「交叉校验拿不到结论」，而不是「把国内地址误判成境外」。
-  static final CnIpIndex empty =
-      CnIpIndex._(Uint32List(0), Uint8List(0));
+  static final CnIpIndex empty = CnIpIndex._(Uint32List(0), Uint8List(0));
 
   /// 从字节流解析。格式不对时返回 null。
   static CnIpIndex? parse(Uint8List bytes) {
@@ -139,7 +138,9 @@ class CnIpIndex {
     final length = _prefixLengths[index];
     if (length <= 0) return true;
     // 用移位而不是乘法：掩码上限 32 位，Dart 的 int 是 64 位，不会溢出。
-    final mask = length >= 32 ? 0xFFFFFFFF : ((0xFFFFFFFF << (32 - length)) & 0xFFFFFFFF);
+    final mask = length >= 32
+        ? 0xFFFFFFFF
+        : ((0xFFFFFFFF << (32 - length)) & 0xFFFFFFFF);
     return (address & mask) == network;
   }
 

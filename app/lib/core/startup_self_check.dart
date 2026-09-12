@@ -29,10 +29,10 @@ enum ProbeStatus {
 
 extension ProbeStatusX on ProbeStatus {
   String get label => switch (this) {
-        ProbeStatus.pending => '待检测',
-        ProbeStatus.passed => '正常',
-        ProbeStatus.failed => '异常',
-      };
+    ProbeStatus.pending => '待检测',
+    ProbeStatus.passed => '正常',
+    ProbeStatus.failed => '异常',
+  };
 }
 
 /// 一条探针的结果。
@@ -167,7 +167,11 @@ class StartupSelfCheck {
     try {
       final millis = await probe();
       if (millis == null) {
-        return ProbeResult(name: name, status: ProbeStatus.failed, detail: failureDetail);
+        return ProbeResult(
+          name: name,
+          status: ProbeStatus.failed,
+          detail: failureDetail,
+        );
       }
       return ProbeResult(
         name: name,
@@ -224,7 +228,8 @@ class StartupSelfCheck {
       return ProbeResult(
         name: dnsName,
         status: ProbeStatus.passed,
-        detail: '国内解析正常（${domestic.first}）；'
+        detail:
+            '国内解析正常（${domestic.first}）；'
             '内核未返回独立答案，该域名可能被判定为国内直连',
       );
     }
@@ -241,7 +246,9 @@ class StartupSelfCheck {
     final tunnel = _find(probes, tunnelName);
     final dns = _find(probes, dnsName);
 
-    if (direct?.passed == true && tunnel?.passed == true && dns?.passed == true) {
+    if (direct?.passed == true &&
+        tunnel?.passed == true &&
+        dns?.passed == true) {
       return StartupSelfCheckReport(
         checkedAt: DateTime.now(),
         probes: probes,
@@ -255,7 +262,8 @@ class StartupSelfCheck {
         checkedAt: DateTime.now(),
         probes: probes,
         conclusion: '直连这条腿不通，隧道是通的',
-        advice: '问题在本地网络或 DNS，不在节点。'
+        advice:
+            '问题在本地网络或 DNS，不在节点。'
             '请检查本机网络；若只有国内站点打不开，可先切换为「全局代理」应急。',
       );
     }
@@ -265,7 +273,8 @@ class StartupSelfCheck {
         checkedAt: DateTime.now(),
         probes: probes,
         conclusion: '隧道这条腿不通',
-        advice: '规则判定正常，问题在节点或服务器本身。'
+        advice:
+            '规则判定正常，问题在节点或服务器本身。'
             '请更换节点或导入另一份配置；调整分流规则不会有帮助。',
       );
     }
@@ -275,7 +284,8 @@ class StartupSelfCheck {
         checkedAt: DateTime.now(),
         probes: probes,
         conclusion: '两条路径都不通',
-        advice: '本机网络可能完全不可用，或配置里的服务器地址/端口不正确。'
+        advice:
+            '本机网络可能完全不可用，或配置里的服务器地址/端口不正确。'
             '请先确认这台设备本身能上网。',
       );
     }
@@ -285,7 +295,8 @@ class StartupSelfCheck {
         checkedAt: DateTime.now(),
         probes: probes,
         conclusion: 'DNS 解析异常',
-        advice: '解析环节有问题，即使隧道连通也会表现为网站打不开。'
+        advice:
+            '解析环节有问题，即使隧道连通也会表现为网站打不开。'
             '可尝试在设置里更新规则库，或检查是否被本地 DNS 劫持。',
       );
     }
@@ -307,8 +318,8 @@ class StartupSelfCheck {
 
   /// 尚未探测时的占位结果，供界面在自检跑完前显示。
   static List<ProbeResult> pendingProbes() => <ProbeResult>[
-        ProbeResult.pending(directName),
-        ProbeResult.pending(tunnelName),
-        ProbeResult.pending(dnsName),
-      ];
+    ProbeResult.pending(directName),
+    ProbeResult.pending(tunnelName),
+    ProbeResult.pending(dnsName),
+  ];
 }

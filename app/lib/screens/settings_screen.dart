@@ -150,8 +150,9 @@ class SettingsScreen extends StatelessWidget {
             isLast: true,
             control: XvSwitch(
               value: state.settings.autoConnectOnImport,
-              onChanged: (bool v) =>
-                  state.updateSettings(state.settings.copyWith(autoConnectOnImport: v)),
+              onChanged: (bool v) => state.updateSettings(
+                state.settings.copyWith(autoConnectOnImport: v),
+              ),
             ),
           ),
         ],
@@ -197,10 +198,10 @@ class SettingsScreen extends StatelessWidget {
             child: Text(
               isAndroid
                   ? '安卓只能走 TUN：VpnService 的文件描述符必须在应用进程内创建，'
-                      '系统代理那条路在这里不成立。因此没有可选项，接入即接管全部程序。'
+                        '系统代理那条路在这里不成立。因此没有可选项，接入即接管全部程序。'
                   : '暂不支持 TUN 虚拟网卡：它需要 wintun 驱动与管理员权限，'
-                      '当前版本未内置。需要接管游戏、命令行工具等不认系统代理的程序时，'
-                      '请等待后续版本。',
+                        '当前版本未内置。需要接管游戏、命令行工具等不认系统代理的程序时，'
+                        '请等待后续版本。',
               style: XvText.caption,
             ),
           ),
@@ -214,7 +215,9 @@ class SettingsScreen extends StatelessWidget {
     return XvCard(
       color: compact ? XV.panel2 : XV.panel,
       radius: compact ? 12 : XV.rCard,
-      padding: compact ? const EdgeInsets.fromLTRB(14, 13, 14, 6) : const EdgeInsets.all(16),
+      padding: compact
+          ? const EdgeInsets.fromLTRB(14, 13, 14, 6)
+          : const EdgeInsets.all(16),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: <Widget>[
@@ -222,7 +225,10 @@ class SettingsScreen extends StatelessWidget {
             Row(
               children: <Widget>[
                 Expanded(
-                  child: Text('分流', style: TextStyle(fontSize: 11, color: XV.muted2)),
+                  child: Text(
+                    '分流',
+                    style: TextStyle(fontSize: 11, color: XV.muted2),
+                  ),
                 ),
                 // 标签跟着当前模式走，写死「国内直连」在另外两种模式下是错的。
                 switch (state.settings.splitMode) {
@@ -267,10 +273,7 @@ class SettingsScreen extends StatelessWidget {
             description: compact
                 ? 'geosite-cn · geoip-cn · ${fmtDate(state.ruleSetUpdatedAt)}'
                 : '国内域名 geosite-cn · 国内 IP geoip-cn · 更新于 ${fmtDate(state.ruleSetUpdatedAt)}',
-            control: XvButton(
-              label: '检查更新',
-              onPressed: state.refreshRuleSet,
-            ),
+            control: XvButton(label: '检查更新', onPressed: state.refreshRuleSet),
           ),
           SettingRow(
             title: '记录分流日志',
@@ -280,7 +283,8 @@ class SettingsScreen extends StatelessWidget {
             isLast: true,
             control: XvSwitch(
               value: state.settings.logSplits,
-              onChanged: (bool v) => state.updateSettings(state.settings.copyWith(logSplits: v)),
+              onChanged: (bool v) =>
+                  state.updateSettings(state.settings.copyWith(logSplits: v)),
             ),
           ),
         ],
@@ -313,7 +317,7 @@ class SettingsScreen extends StatelessWidget {
                       const XvCardTitle('启动'),
                       SettingRow(
                         title: '导入后自动连接',
-                        description: '导入 .conf 后直接建立隧道',
+                        description: '导入 .conf / .ovpn / Hysteria2 节点后直接建立隧道',
                         isLast: true,
                         control: XvSwitch(
                           value: state.settings.autoConnectOnImport,

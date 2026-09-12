@@ -1,0 +1,18 @@
+# XVPN 测试用配置（示例数据，非真实服务器）
+#
+# 用途：验证 Hysteria2 分享链接的解析与「导入即用」流程。
+# 注意：这里的主机名属于 RFC 2606 保留域名（example.net），不可能连通，
+#       密码与混淆密码都是占位值，因此本文件只用于校验解析结果，
+#       不做真实连接。
+#
+# 链接各段的含义（面板导出的链接就是这些参数）：
+#   mypassword        认证凭据；写成 user:password 时是「用户 + 密码」认证
+#   :443              主端口
+#   sni=              服务端证书的 SNI；不写时用主机名兜底
+#   obfs=salamander   混淆类型，内核只支持 salamander
+#   obfs-password     混淆密码，声明了混淆就必须给
+#   mport=            端口跳跃区间，客户端在这些端口间轮换
+#   hop-interval=     端口切换间隔（秒）
+#   up= / down=       服务端上下行带宽（Mbps），声明后内核不再自动探测
+#   # 之后            备注名，不参与连接
+hysteria2://mypassword@hy2.example.net:443/?sni=hy2.example.net&obfs=salamander&obfs-password=obfspass&mport=20000-30000&hop-interval=30&up=100&down=300#%E7%A4%BA%E4%BE%8B%E8%8A%82%E7%82%B9

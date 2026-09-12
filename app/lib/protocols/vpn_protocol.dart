@@ -23,31 +23,35 @@ enum VpnProtocol {
 extension VpnProtocolInfo on VpnProtocol {
   /// 界面展示名。
   String get label => switch (this) {
-        VpnProtocol.wireGuard => 'WireGuard',
-        VpnProtocol.openVpn => 'OpenVPN',
-        VpnProtocol.shadowsocks => 'Shadowsocks',
-        VpnProtocol.vmess => 'VMess',
-        VpnProtocol.vless => 'VLESS',
-        VpnProtocol.trojan => 'Trojan',
-        VpnProtocol.hysteria2 => 'Hysteria 2',
-      };
+    VpnProtocol.wireGuard => 'WireGuard',
+    VpnProtocol.openVpn => 'OpenVPN',
+    VpnProtocol.shadowsocks => 'Shadowsocks',
+    VpnProtocol.vmess => 'VMess',
+    VpnProtocol.vless => 'VLESS',
+    VpnProtocol.trojan => 'Trojan',
+    VpnProtocol.hysteria2 => 'Hysteria 2',
+  };
 
   /// 可接受的文件扩展名（小写，不含点）。
   List<String> get fileExtensions => switch (this) {
-        VpnProtocol.wireGuard => <String>['conf'],
-        VpnProtocol.openVpn => <String>['ovpn', 'conf'],
-        VpnProtocol.shadowsocks => <String>['json', 'txt'],
-        VpnProtocol.vmess => <String>['json'],
-        VpnProtocol.vless => <String>['json'],
-        VpnProtocol.trojan => <String>['json', 'yaml', 'yml'],
-        VpnProtocol.hysteria2 => <String>['json', 'yaml', 'yml'],
-      };
+    VpnProtocol.wireGuard => <String>['conf'],
+    VpnProtocol.openVpn => <String>['ovpn', 'conf'],
+    VpnProtocol.shadowsocks => <String>['json', 'txt'],
+    VpnProtocol.vmess => <String>['json'],
+    VpnProtocol.vless => <String>['json'],
+    VpnProtocol.trojan => <String>['json', 'yaml', 'yml'],
+    // Hysteria2 的三种来源都要能进得来：面板给的分享链接（.txt）、
+    // 官方客户端配置（config.yaml）、以及 sing-box 格式的出站（.json）。
+    VpnProtocol.hysteria2 => <String>['txt', 'yaml', 'yml', 'json'],
+  };
 
   /// 是否已实现导入。未实现的协议在界面上不提供入口，避免给出无法兑现的承诺。
   bool get isImportable => switch (this) {
-        VpnProtocol.wireGuard || VpnProtocol.openVpn => true,
-        _ => false,
-      };
+    VpnProtocol.wireGuard ||
+    VpnProtocol.openVpn ||
+    VpnProtocol.hysteria2 => true,
+    _ => false,
+  };
 }
 
 /// 已实现导入的协议。

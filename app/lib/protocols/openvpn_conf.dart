@@ -83,11 +83,7 @@ class OpenVpnConf {
   /// 是否使用 tls-crypt（比 tls-auth 更强的控制通道加密）。
   bool get usesTlsCrypt => tlsCrypt != null && tlsCrypt!.isNotEmpty;
 
-  static OpenVpnConf parse(
-    String text, {
-    String? username,
-    String? password,
-  }) {
+  static OpenVpnConf parse(String text, {String? username, String? password}) {
     String? remoteHost;
     int? remotePort;
     String? remoteProto;
@@ -136,7 +132,9 @@ class OpenVpnConf {
         case 'data-ciphers':
           dataCiphers
             ..clear()
-            ..addAll(value.split(':').map((e) => e.trim()).where((e) => e.isNotEmpty));
+            ..addAll(
+              value.split(':').map((e) => e.trim()).where((e) => e.isNotEmpty),
+            );
         case 'data-ciphers-fallback':
           dataCiphersFallback = value;
         case 'auth':
@@ -219,9 +217,16 @@ class OpenVpnConf {
     if (key != null && cert == null) {
       throw VpnConfigException('配置里有客户端私钥 <key>，但缺少对应的证书 <cert>');
     }
-    if (requiresCredentials && (username == null || password == null)) {
-      throw VpnConfigException('这份配置需要账号密码（auth-user-pass），请在导入时填写');
-    }
+    // 这里**刻意不因为缺少账号密码而抛错**。
+    //
+    // 曾经是在这里抛「这份配置需要账号密码（auth-user-pass），请在导入时填写」，
+    // 但那条路径有个严重后果：凭据一旦取不回来（换了 Windows 账户、DPAPI 解不开、
+    // 用户当时跳过了填写），重新解析就会失败，而恢复流程对解析失败的处理是
+    // **跳过这份配置**——用户看到的是「我导入的配置不见了」。
+    //
+    // 现在改成：配置照常解析成功，[requiresCredentials] 为 true 而 username /
+    // password 为空，由上层负责提示用户补填（见 AppState 的连接前检查）。
+    // 这样最坏情况只是「连不上并告诉你为什么」，而不是「配置丢了」。
   }
 
   /// udp4 / udp6 / tcp4 / tcp-client 等写法统一成 udp 或 tcp。
@@ -272,11 +277,26 @@ class OpenVpnProfile implements ParsedProfile {
   @override
   bool get hasIpv6 => false;
 
+  /// 与 [hasIpv6] 一致：隧道地址未知时按最保守的方式解析，
+  /// 免得内核为 AAAA 记录去建一条本地没有地址的 IPv6 连接。
+  @override
+  bool get needsIpv4OnlyDns => true;
+
+  /// OpenVPN 没有需要从 DEBUG 日志里读的握手状态，保持 warn。
+  @override
+  bool get wantsDebugLogs => false;
+
   @override
   bool get requiresCredentials => conf.requiresCredentials;
 
+  /// OpenVPN 侧不解析 MTU 指令（`tun-mtu` / `mssfix` 都未支持），
+  /// 因此没有可校验的声明值——返回 null，界面据此不显示这项检查。
   @override
-  List<({String label, String value})> get details => <({String label, String value})>[
+  int? get declaredMtu => null;
+
+  @override
+  List<({String label, String value})> get details =>
+      <({String label, String value})>[
         (label: '传输', value: conf.network.toUpperCase()),
         if (conf.cipher != null) (label: '加密', value: conf.cipher!),
         if (conf.dataCiphers.isNotEmpty)

@@ -1,8 +1,9 @@
 # XVPN
 
-> A split-tunnel VPN client that takes a user-supplied WireGuard (`.conf`) or
-> OpenVPN (`.ovpn`) profile and applies automatic traffic splitting. Windows and
-> Android. Flutter UI, sing-box core. GPL-3.0-or-later.
+> A split-tunnel VPN client that takes a user-supplied WireGuard (`.conf`),
+> OpenVPN (`.ovpn`) or Hysteria2 (share link / YAML / sing-box JSON) profile and
+> applies automatic traffic splitting. Windows and Android. Flutter UI, sing-box
+> core. GPL-3.0-or-later.
 
 Canonical repository: https://github.com/LSD-Apps/XVPN
 Mirror: https://gitcode.com/start-ai/XVPN
@@ -74,7 +75,8 @@ diagnostics, Flutter desktop app, Flutter Android app, GPL-3.0.
 - UI: Flutter 3.44+ / Dart 3.12+, one shared state layer for both platforms
 - Windows traffic takeover: system proxy (no admin rights required)
 - Android traffic takeover: VpnService TUN (the only option there)
-- Protocols: WireGuard `.conf`, OpenVPN `.ovpn`, detected by content not extension
+- Protocols: WireGuard `.conf`, OpenVPN `.ovpn`, Hysteria2 share link / official
+  `config.yaml` / sing-box outbound JSON — all detected by content, not extension
 - Observation: sing-box Clash API on `127.0.0.1:2081`
 - Tests: `flutter analyze` clean, `flutter test` all passing; protocol assertions
   correspond to real `sing-box check` results

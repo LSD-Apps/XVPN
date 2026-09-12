@@ -31,6 +31,19 @@ android {
             // Signing with the debug keys for now, so `flutter run --release` works.
             signingConfig = signingConfigs.getByName("debug")
         }
+        debug {
+            // 开发版换个包名，**与正式安装并存**。
+            //
+            // 不这样做的话，装一个开发版就会覆盖用户手机上已经装好的正式版：
+            // 两者签名不同（正式版用发行者的密钥，开发版用本机 debug 密钥），
+            // Android 只允许「先卸载再安装」，而卸载会连配置、账号密码、
+            // 学到分流规则一起删掉——这些数据在 Android 11+ 上也没法完整备份。
+            //
+            // 加个后缀之后，`flutter run` / `flutter install` 装的是另一个应用，
+            // 手机上的正式版与它的数据都不受影响。
+            applicationIdSuffix = ".dev"
+            versionNameSuffix = "-dev"
+        }
     }
 }
 

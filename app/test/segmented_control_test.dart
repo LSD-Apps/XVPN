@@ -69,7 +69,8 @@ void main() {
     await tester.pumpAndSettle();
   }
 
-  Future<void> pumpPalette(WidgetTester tester, XvPalette palette) => pumpSegmented(
+  Future<void> pumpPalette(WidgetTester tester, XvPalette palette) =>
+      pumpSegmented(
         tester,
         labels: const <String>['走代理', '直连'],
         index: 0,
@@ -107,7 +108,8 @@ void main() {
       expect(
         ratio,
         greaterThan(1.1),
-        reason: '亮色下滑块对比度仅 ${ratio.toStringAsFixed(2)}，'
+        reason:
+            '亮色下滑块对比度仅 ${ratio.toStringAsFixed(2)}，'
             '原实现是 #ECECF2 对 #F1F1F6（比轨道还暗），选中项几乎是隐形的',
       );
     });
@@ -132,11 +134,7 @@ void main() {
     testWidgets('只存在一个滑块背景，而不是每段各一个', (WidgetTester tester) async {
       await pumpPalette(tester, XvPalette.dark);
 
-      expect(
-        thumb,
-        findsOneWidget,
-        reason: '必须是单一滑块；每段各画背景就会在中间态叠出「串在一起」的观感',
-      );
+      expect(thumb, findsOneWidget, reason: '必须是单一滑块；每段各画背景就会在中间态叠出「串在一起」的观感');
     });
 
     testWidgets('滑块贴合被选中那一段的文字', (WidgetTester tester) async {
@@ -151,7 +149,11 @@ void main() {
       expect(first.left, lessThanOrEqualTo(firstLabel.left));
       expect(first.right, greaterThanOrEqualTo(firstLabel.right));
 
-      await pumpSegmented(tester, labels: const <String>['走代理', '直连'], index: 1);
+      await pumpSegmented(
+        tester,
+        labels: const <String>['走代理', '直连'],
+        index: 1,
+      );
       final second = tester.getRect(thumb);
       expect(second.left, greaterThan(first.left), reason: '选中第 1 段时应右移');
       final secondLabel = tester.getRect(find.text('直连'));
@@ -210,11 +212,7 @@ void main() {
       await tester.pump(const Duration(milliseconds: 60));
       final mid = tester.getRect(thumb);
       expect(mid.left, greaterThan(before.left), reason: '已经开始向右移动');
-      expect(
-        mid.right,
-        lessThan(track.right - 4),
-        reason: '尚未到达终点，说明是位移而不是跳变',
-      );
+      expect(mid.right, lessThan(track.right - 4), reason: '尚未到达终点，说明是位移而不是跳变');
 
       await tester.pumpAndSettle();
       final after = tester.getRect(thumb);
@@ -252,7 +250,11 @@ void main() {
 
   group('索引越界', () {
     testWidgets('index 超出范围时收敛到合法位置，不跑到轨道外', (WidgetTester tester) async {
-      await pumpSegmented(tester, labels: const <String>['走代理', '直连'], index: 5);
+      await pumpSegmented(
+        tester,
+        labels: const <String>['走代理', '直连'],
+        index: 5,
+      );
       final track = tester.getRect(find.byType(XvSegmented));
       final box = tester.getRect(thumb);
       expect(box.right, closeTo(track.right - 4, 2), reason: '越界应收敛到最后一段');
@@ -262,9 +264,7 @@ void main() {
     testWidgets('空标签列表不抛异常', (WidgetTester tester) async {
       await tester.pumpWidget(
         const MaterialApp(
-          home: Center(
-            child: XvSegmented(labels: <String>[], index: 0),
-          ),
+          home: Center(child: XvSegmented(labels: <String>[], index: 0)),
         ),
       );
       await tester.pumpAndSettle();

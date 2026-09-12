@@ -1,4 +1,5 @@
-// 开发/验证工具：把 WireGuard .conf 生成 sing-box 配置并写盘。
+// 开发/验证工具：把任一已支持协议的配置生成 sing-box 配置并写盘。
+// 协议由 VpnProtocolFactory 按内容识别（WireGuard / OpenVPN / Hysteria2）。
 //
 //   dart run tool/build_singbox_config.dart <conf> [out.json] [--mode=smart|proxy|direct]
 //

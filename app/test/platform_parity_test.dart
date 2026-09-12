@@ -43,8 +43,8 @@ PersistentKeepalive = 25
 
   /// 造一个带真实内核的状态：自动纠正表与 DNS/自检入口都需要它。
   AppState stateWithRealCore() => AppState(
-        coreFactory: (VpnCoreListener l) => SingBoxRunner(l, probesEnabled: false),
-      );
+    coreFactory: (VpnCoreListener l) => SingBoxRunner(l, probesEnabled: false),
+  );
 
   /// 渲染并回到指定平台。
   ///
@@ -70,6 +70,17 @@ PersistentKeepalive = 25
       ),
     );
     await tester.pumpAndSettle();
+  }
+
+  /// 让界面稳定下来，但**允许存在不会停的动画**。
+  ///
+  /// 预热态的流转弧是无限循环的，`pumpAndSettle` 会一直等它静止从而超时。
+  /// 这不是缺陷（那圈弧本来就该一直转到连上为止），所以这类用例用固定次数的
+  /// `pump` 代替等待静止。
+  Future<void> settleWithAnimation(WidgetTester tester) async {
+    for (var i = 0; i < 4; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
   }
 
   /// 复位平台覆盖。每个用例结束前必须调用。
@@ -112,18 +123,30 @@ PersistentKeepalive = 25
   }
 
   group('两端都有的能力', () {
-    testWidgets('两端设置页都含 外观 / 启动 / 流量接管方式 / 分流 四块', (WidgetTester tester) async {
+    testWidgets('两端设置页都含 外观 / 启动 / 流量接管方式 / 分流 四块', (
+      WidgetTester tester,
+    ) async {
       // 「配置」块在桌面端是独立页面、在移动端并入设置页，因此不在这条断言里，
       // 由下面的「配置入口」用例按各自的位置分别检查。
       for (final target in <String>['外观', '启动', '流量接管方式', '分流']) {
         final desktop = stateWithRealCore();
-        await pumpOn(tester, desktop, TargetPlatform.windows, size: const Size(1400, 1200));
+        await pumpOn(
+          tester,
+          desktop,
+          TargetPlatform.windows,
+          size: const Size(1400, 1200),
+        );
         await openAndReveal(tester, '设置', target);
         expect(find.text(target), findsWidgets, reason: '桌面设置页应包含「$target」');
         await stop(tester, desktop);
 
         final mobile = stateWithRealCore();
-        await pumpOn(tester, mobile, TargetPlatform.android, size: const Size(390, 900));
+        await pumpOn(
+          tester,
+          mobile,
+          TargetPlatform.android,
+          size: const Size(390, 900),
+        );
         await openAndReveal(tester, '设置', target);
         expect(
           find.text(target),
@@ -139,20 +162,30 @@ PersistentKeepalive = 25
       // 位置不同是设计决定（移动端标签栏只有三项），但两块内容必须都在：
       // 配置列表与两条导入路径。
       const fileTitle = '选择配置文件';
-      const pasteTitle = '粘贴配置文本';
+      const manualTitle = '手动填写';
 
       final desktop = stateWithRealCore();
-      await pumpOn(tester, desktop, TargetPlatform.windows, size: const Size(1400, 1200));
+      await pumpOn(
+        tester,
+        desktop,
+        TargetPlatform.windows,
+        size: const Size(1400, 1200),
+      );
       await openAndReveal(tester, '配置文件', fileTitle);
       expect(find.text(fileTitle), findsOneWidget);
-      expect(find.text(pasteTitle), findsOneWidget);
+      expect(find.text(manualTitle), findsOneWidget);
       await stop(tester, desktop);
 
       final mobile = stateWithRealCore();
-      await pumpOn(tester, mobile, TargetPlatform.android, size: const Size(390, 900));
+      await pumpOn(
+        tester,
+        mobile,
+        TargetPlatform.android,
+        size: const Size(390, 900),
+      );
       await openAndReveal(tester, '设置', fileTitle);
       expect(find.text(fileTitle), findsOneWidget, reason: '移动端也要能选文件导入');
-      expect(find.text(pasteTitle), findsOneWidget, reason: '移动端也要能粘贴导入');
+      expect(find.text(manualTitle), findsOneWidget, reason: '移动端也要能手填导入');
       await stop(tester, mobile);
       resetPlatform();
     });
@@ -161,14 +194,24 @@ PersistentKeepalive = 25
       // 能力不同（桌面系统代理 / 安卓 TUN），但「用什么接管、有什么限制」
       // 这件事两端都要讲清楚。
       final desktop = stateWithRealCore();
-      await pumpOn(tester, desktop, TargetPlatform.windows, size: const Size(1400, 1200));
+      await pumpOn(
+        tester,
+        desktop,
+        TargetPlatform.windows,
+        size: const Size(1400, 1200),
+      );
       await openAndReveal(tester, '设置', '流量接管方式');
       expect(find.text('系统代理'), findsOneWidget);
       expect(find.text('TUN 虚拟网卡'), findsNothing, reason: '桌面不提供无法兑现的选项');
       await stop(tester, desktop);
 
       final mobile = stateWithRealCore();
-      await pumpOn(tester, mobile, TargetPlatform.android, size: const Size(390, 900));
+      await pumpOn(
+        tester,
+        mobile,
+        TargetPlatform.android,
+        size: const Size(390, 900),
+      );
       await openAndReveal(tester, '设置', '流量接管方式');
       expect(find.text('TUN 虚拟网卡'), findsOneWidget);
       expect(find.text('系统代理'), findsNothing);
@@ -178,7 +221,10 @@ PersistentKeepalive = 25
 
     testWidgets('分流记录页：筛选叫法两端一致', (WidgetTester tester) async {
       // 曾经移动端写「代理」、桌面写「走代理」，同一个筛选器两种叫法。
-      for (final platform in <TargetPlatform>[TargetPlatform.windows, TargetPlatform.android]) {
+      for (final platform in <TargetPlatform>[
+        TargetPlatform.windows,
+        TargetPlatform.android,
+      ]) {
         final state = AppState();
         await pumpOn(
           tester,
@@ -188,7 +234,9 @@ PersistentKeepalive = 25
               ? const Size(1400, 900)
               : const Size(390, 900),
         );
-        await tester.tap(find.text(platform == TargetPlatform.windows ? '分流记录' : '分流').first);
+        await tester.tap(
+          find.text(platform == TargetPlatform.windows ? '分流记录' : '分流').first,
+        );
         await tester.pumpAndSettle();
 
         for (final label in <String>['全部', '走代理', '直连']) {
@@ -208,7 +256,10 @@ PersistentKeepalive = 25
     testWidgets('DNS 与自检结论两端都能手动重测', (WidgetTester tester) async {
       // 这是本轮补上的缺口：结论两端都能看，但重测入口此前**两端都没有**——
       // AppState.refreshDns / runSelfCheck 写了却没有任何界面调用它们。
-      for (final platform in <TargetPlatform>[TargetPlatform.windows, TargetPlatform.android]) {
+      for (final platform in <TargetPlatform>[
+        TargetPlatform.windows,
+        TargetPlatform.android,
+      ]) {
         final state = stateWithRealCore();
         await pumpOn(
           tester,
@@ -244,7 +295,12 @@ PersistentKeepalive = 25
     testWidgets('移动端也能删除配置', (WidgetTester tester) async {
       // 曾经移动端只能增不能删。
       final state = AppState();
-      await pumpOn(tester, state, TargetPlatform.android, size: const Size(390, 900));
+      await pumpOn(
+        tester,
+        state,
+        TargetPlatform.android,
+        size: const Size(390, 900),
+      );
       state.importConf(text: conf, fileName: 'wg.conf');
       await tester.pump();
       await tester.pump(const Duration(seconds: 1));
@@ -257,7 +313,10 @@ PersistentKeepalive = 25
     });
 
     testWidgets('两端都能手工指定域名走向', (WidgetTester tester) async {
-      for (final platform in <TargetPlatform>[TargetPlatform.windows, TargetPlatform.android]) {
+      for (final platform in <TargetPlatform>[
+        TargetPlatform.windows,
+        TargetPlatform.android,
+      ]) {
         final state = stateWithRealCore();
         await pumpOn(
           tester,
@@ -268,12 +327,189 @@ PersistentKeepalive = 25
               : const Size(390, 900),
         );
         await openAndReveal(tester, '设置', '手工指定');
-        expect(
-          find.text('手工指定'),
-          findsOneWidget,
-          reason: '$platform 应有手工指定入口',
-        );
+        expect(find.text('手工指定'), findsOneWidget, reason: '$platform 应有手工指定入口');
         expect(find.byType(AutoRouteCard), findsOneWidget);
+        await stop(tester, state);
+        resetPlatform();
+      }
+    });
+  });
+
+  group('连接过程的状态两端都要讲清楚', () {
+    /// 造一个「正在建立隧道」的状态。
+    ///
+    /// 用真实内核才能在导入后从内核拿到握手状态——预热与握手都是**内核侧**的
+    /// 事实，用演示内核测等于自己骗自己。
+    AppState warmingState() => AppState(
+      coreFactory: (VpnCoreListener l) =>
+          SingBoxRunner(l, probesEnabled: false),
+    );
+
+    testWidgets('预热态两端都由圆环说明「正在建立隧道」，不能显示成已连接', (WidgetTester tester) async {
+      // 这一条锁定的是本轮改动要消掉的那种误导：内核就绪但隧道还不能载流量，
+      // 界面若显示「已连接」，用户就会认为软件坏了。两端必须都改口。
+      //
+      // 断言的是**圆环里的文案**：页头的状态标签已按设计移除（它只是把圆环
+      // 已经说清楚的事重复一遍），因此状态表达的唯一出口就是圆环本身——
+      // 两端共用同一个组件，这里的一致性是由结构保证的，不是靠巧合。
+      for (final platform in <TargetPlatform>[
+        TargetPlatform.windows,
+        TargetPlatform.android,
+      ]) {
+        final state = warmingState();
+        await pumpOn(
+          tester,
+          state,
+          platform,
+          size: platform == TargetPlatform.windows
+              ? const Size(1400, 1400)
+              : const Size(390, 900),
+        );
+        state.importConf(text: conf, fileName: 'wg.conf');
+        await tester.pump();
+        await tester.pump(const Duration(seconds: 1));
+        await tester.pump(const Duration(seconds: 1));
+
+        state.onStatusChanged(VpnStatus.warmingUp);
+        await settleWithAnimation(tester);
+
+        expect(
+          find.text('正在建立隧道…'),
+          // 至少一处：圆环里一定有；桌面端按钮在预热时也用它当标签
+          // （按钮此时不可点，标签必须说明为什么），因此不能要求「恰好一处」。
+          findsWidgets,
+          reason: '$platform 的圆环应说明隧道仍在建立，而不是笼统的「连接中」或「已连接」',
+        );
+        expect(
+          find.text('已连接'),
+          findsNothing,
+          reason: '$platform 在隧道还不能载流量时不能显示「已连接」',
+        );
+        await stop(tester, state);
+        resetPlatform();
+      }
+    });
+
+    testWidgets('握手状态：桌面显示并给出结论', (WidgetTester tester) async {
+      // 握手是「连不上」时唯一能区分病因的证据（未被服务端受理 vs 数据面问题），
+      // 桌面端必须看得到。
+      const initiating =
+          '+0800 2026-09-11 22:18:03 DEBUG endpoint/wireguard[vpn]: '
+          'peer(Qk9y…7tZa) - sending handshake initiation';
+      const retrying =
+          '+0800 2026-09-11 22:18:08 DEBUG endpoint/wireguard[vpn]: '
+          'peer(Qk9y…7tZa) - handshake did not complete after 5 seconds, retrying (try 3)';
+
+      final state = warmingState();
+      await pumpOn(
+        tester,
+        state,
+        TargetPlatform.windows,
+        size: const Size(1400, 1400),
+      );
+      state.importConf(text: conf, fileName: 'wg.conf');
+      await tester.pump();
+      await tester.pump(const Duration(seconds: 1));
+      await tester.pump(const Duration(seconds: 1));
+
+      state.onStatusChanged(VpnStatus.warmingUp);
+      await settleWithAnimation(tester);
+
+      for (final text in <String>['隧道握手', '正在读取内核握手状态…']) {
+        expect(find.text(text), findsOneWidget, reason: '桌面端应有「$text」');
+      }
+
+      (state.core as SingBoxRunner).handleCoreLog(initiating);
+      (state.core as SingBoxRunner).handleCoreLog(retrying);
+      await settleWithAnimation(tester);
+
+      expect(
+        find.textContaining('无应答'),
+        findsWidgets,
+        reason: '桌面端应显示握手无应答——这是「未被服务端受理」的唯一线索',
+      );
+      await stop(tester, state);
+      resetPlatform();
+    });
+
+    testWidgets('握手状态：平台不上报时整行不显示，而不是永远「正在读取」', (WidgetTester tester) async {
+      // 这一条锁定的是「能力标志为 false 时不要留下占位」这条分支本身。
+      // 之所以用**覆盖值**而不是真平台：能力标志定义在内核侧，而 widget 测试
+      // 注入的替身内核无法在两个平台实现之间切换；覆盖值就是为这条分支准备的
+      // 注入点（真按平台算，两端现在都是 true，因为这个分支在真机上几乎不可能
+      // 被走到，只能靠注入来锁定）。
+      //
+      final state = warmingState();
+      state.debugSupportsHandshakeOverride = false;
+      await pumpOn(
+        tester,
+        state,
+        TargetPlatform.android,
+        size: const Size(390, 900),
+      );
+      state.importConf(text: conf, fileName: 'wg.conf');
+      await tester.pump();
+      await tester.pump(const Duration(seconds: 1));
+      await tester.pump(const Duration(seconds: 1));
+
+      state.onStatusChanged(VpnStatus.warmingUp);
+      await settleWithAnimation(tester);
+
+      expect(find.text('隧道握手'), findsNothing, reason: '平台不上报握手状态时，这一行必须整行消失');
+      expect(
+        find.textContaining('正在读取内核握手状态'),
+        findsNothing,
+        reason: '留下一个永远「正在读取」的占位，比不显示更糟',
+      );
+      await stop(tester, state);
+      resetPlatform();
+    });
+  });
+
+  group('MTU 校验两端都有，能力按平台写明', () {
+    testWidgets('桌面端能校验并给结论，移动端说明由内核处理', (WidgetTester tester) async {
+      // 这一条锁定的是「能力可以不同，但呈现结构必须一致」：MTU 这一项两端都
+      // 显示，只是内容按平台给。若哪天移动端整行消失，这条会失败。
+      for (final platform in <TargetPlatform>[
+        TargetPlatform.windows,
+        TargetPlatform.android,
+      ]) {
+        final state = AppState();
+        await pumpOn(
+          tester,
+          state,
+          platform,
+          size: platform == TargetPlatform.windows
+              ? const Size(1400, 1400)
+              : const Size(390, 900),
+        );
+        state.importConf(text: conf, fileName: 'wg.conf');
+        await tester.pump();
+        await tester.pump(const Duration(seconds: 1));
+        await tester.pump(const Duration(seconds: 1));
+
+        await openAndReveal(
+          tester,
+          platform == TargetPlatform.windows ? '连接' : '连接',
+          'MTU 校验',
+        );
+
+        if (platform == TargetPlatform.windows) {
+          expect(
+            find.text('MTU 校验'),
+            findsWidgets,
+            reason: '桌面端应能校验配置里声明的 MTU',
+          );
+        } else {
+          // 安卓走 TUN、没有本地混合入站端口，因此没有可校验的入口——
+          // 但这一行必须在，并把原因说出来。
+          expect(
+            find.text('MTU'),
+            findsWidgets,
+            reason: '移动端也要有这一行，说明 MTU 由谁处理',
+          );
+          expect(find.textContaining('内核自行处理'), findsWidgets);
+        }
         await stop(tester, state);
         resetPlatform();
       }
@@ -284,7 +520,10 @@ PersistentKeepalive = 25
     testWidgets('两端都不出现内核术语', (WidgetTester tester) async {
       // 内核的 rule 字段是「条件 => 动作」的描述文本，任何一端把它原样显示
       // 都是把内部实现泄漏给了用户。
-      for (final platform in <TargetPlatform>[TargetPlatform.windows, TargetPlatform.android]) {
+      for (final platform in <TargetPlatform>[
+        TargetPlatform.windows,
+        TargetPlatform.android,
+      ]) {
         final state = AppState();
         await pumpOn(
           tester,
@@ -294,13 +533,15 @@ PersistentKeepalive = 25
               ? const Size(1400, 900)
               : const Size(390, 900),
         );
-        state.onSplitRecord(SplitRecord(
-          time: DateTime(2026, 2, 14),
-          target: 'www.baidu.com',
-          kind: RouteKind.direct,
-          rule: 'geosite-cn + geoip-cn',
-          outbound: 'direct',
-        ));
+        state.onSplitRecord(
+          SplitRecord(
+            time: DateTime(2026, 2, 14),
+            target: 'www.baidu.com',
+            kind: RouteKind.direct,
+            rule: 'geosite-cn + geoip-cn',
+            outbound: 'direct',
+          ),
+        );
         await tester.pump();
         expect(
           find.textContaining('rule_set='),
@@ -315,16 +556,16 @@ PersistentKeepalive = 25
 }
 
 DnsReport _sampleDnsReport() => DnsReport(
-      checkedAt: DateTime(2026, 2, 14),
-      resolvers: const <ResolverHealth>[],
-      direct: LatencyWindow(capacity: 4)..add(12),
-      tunnel: LatencyWindow(capacity: 4)..add(96),
-      verdict: DnsVerdict.consistent,
-    );
+  checkedAt: DateTime(2026, 2, 14),
+  resolvers: const <ResolverHealth>[],
+  direct: LatencyWindow(capacity: 4)..add(12),
+  tunnel: LatencyWindow(capacity: 4)..add(96),
+  verdict: DnsVerdict.consistent,
+);
 
 StartupSelfCheckReport _sampleSelfCheck() => StartupSelfCheckReport(
-      checkedAt: DateTime(2026, 2, 14),
-      probes: const <ProbeResult>[],
-      conclusion: '两条路径都正常',
-      advice: '可以正常使用',
-    );
+  checkedAt: DateTime(2026, 2, 14),
+  probes: const <ProbeResult>[],
+  conclusion: '两条路径都正常',
+  advice: '可以正常使用',
+);

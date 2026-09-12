@@ -13,7 +13,9 @@ lib/protocols/
 ├── wireguard_conf.dart      WireGuard .conf 解析器 + WireGuardProfile
 ├── wireguard_adapter.dart   WireGuard 适配器
 ├── openvpn_conf.dart        OpenVPN .ovpn 解析器 + OpenVpnProfile
-└── openvpn_adapter.dart     OpenVPN 适配器
+├── openvpn_adapter.dart     OpenVPN 适配器
+├── hysteria2_conf.dart      Hysteria2 解析器（链接 / YAML / JSON）+ Hysteria2Profile
+└── hysteria2_adapter.dart   Hysteria2 适配器
 ```
 
 设计要点：
@@ -21,6 +23,10 @@ lib/protocols/
 * **界面与内核配置生成都不认识具体协议**。前者只读 `ParsedProfile` 的展示
   字段（`serverDisplay` / `addressDisplay` / `details`），后者只调用
   `VpnProtocolAdapter.buildEndpoint()`。因此新增协议不会牵动 UI 与分流逻辑。
+* **片段该进 `endpoints` 还是 `outbounds`，由适配器自己声明**。sing-box 1.11
+  起把协议分成两类：自带隧道地址的（WireGuard / OpenVPN）是 `endpoints`，
+  流式代理（Hysteria2）是普通 `outbounds`。放错位置内核直接拒绝启动，
+  因此这件事由 `VpnProtocolAdapter.placement` 表达，配置生成器不按协议名分支。
 * **按内容识别协议，不靠扩展名**。`.conf` 既可能是 WireGuard 也可能是
   OpenVPN，所以每个适配器都要用指令特征（`[Interface]` + `PrivateKey`、
   内联证书块、`remote` 等）判断，而不是看后缀。
@@ -35,7 +41,9 @@ lib/protocols/
 1. 在 `vpn_protocol.dart` 的 `VpnProtocol` 加一个枚举值，补上 `label`、
    `fileExtensions`，并把 `isImportable` 改为 `true`。
 2. 新建 `<协议>_conf.dart`（纯文本解析，可单测）与 `<协议>_adapter.dart`
-   （实现 `canParse` / `parse` / `buildEndpoint`）。
+   （实现 `canParse` / `parse` / `buildEndpoint` / `placement` / `tunMtu`）。
+   `placement` 决定片段进 `endpoints` 还是 `outbounds`；`tunMtu` 决定安卓端
+   TUN 入站的 MTU——两者都必须显式给出，不能沿用内核默认值。
 3. 把适配器注册进 `VpnProtocolFactory.adapters`。
 
 完成后：
@@ -48,6 +56,7 @@ lib/protocols/
 | --- | --- | --- | --- |
 | WireGuard | `wg-quick` 的 `.conf` | `endpoints[].type = wireguard` | ✅ 已用真实服务器验证 |
 | OpenVPN | 客户端 `.ovpn`（含内联证书） | `endpoints[].type = openvpn-client` | ✅ 已通过官方 `sing-box check` |
+| Hysteria2 | 分享链接 / 官方 `config.yaml` / sing-box 出站 JSON | `outbounds[].type = hysteria2` | ✅ 已通过官方 `sing-box check`（两种入站） |
 
 ### OpenVPN 实现中踩到的坑（供后续参考）
 
@@ -130,6 +139,82 @@ AmneziaWG 是 WireGuard 的非标准分支，靠 `Jc` / `Jmin` / `Jmax` / `S1` /
 因此这类配置导入后会「看着正常但连不上」。现在识别出来并明确提示，
 而不是让用户对着一个连不上的隧道猜。
 
+### 3.5.7 Hysteria2：字段名与取值全部由内核实测定下
+
+Hysteria2 的字段名变动频繁，而内核的 JSON 解码是**严格**的——多一个不认识的
+字段就直接 FATAL，用户看到的是「连不上」。下表每一条都对应一次真实的
+`sing-box check` 拒绝，用例锁在 `test/hysteria2_conf_test.dart` 与
+`test/singbox_config_binary_test.dart`：
+
+| 写法 | 内核原文 | 处置 |
+| --- | --- | --- |
+| 把出站片段放进 `endpoints` | `unknown endpoint type: hysteria2` | 适配器声明 `placement = outbound` |
+| 完全不下发 `tls` | `TLS required` | 始终下发 `tls.enabled = true` |
+| `tls` 里既无 `server_name` 也无 `insecure` | `missing server_name or insecure=true` | 未声明 SNI 时用服务器名兜底 |
+| `server_ports` 写单端口 `"443"` | `bad port range: 443` | 归一化成区间 `"443:443"` |
+| `hop_interval` 写 `30` | `missing unit in duration "30"` | 统一写成 `"30s"` |
+| `obfs.type` 写了别的值 | `unknown obfs type: ...` | 只放行 `salamander` |
+| 声明了混淆却没给密码 | `missing obfs password` | 导入阶段就报错 |
+| 字段名写成 `obfs_password` | `json: unknown field "obfs_password"` | 解析阶段映射成内核字段名 |
+
+另有两条与「安全降级」有关，处置方向与 OpenVPN 的加密套件**相反**：
+
+* **证书指纹 `pinSHA256` 不合法时报错，而不是悄悄丢掉**。丢掉等于放弃用户
+  显式要求的证书固定；报错只让他改一次链接。OpenVPN 的加密套件名可以剔除，
+  是因为那只会让协商范围变小——两者的取舍不同。
+* **声明了混淆却没有密码时报错**，不能默默把这一层伪装去掉。
+
+`up_mbps` / `down_mbps` 值得单独说一句：声明后内核不再自动探测带宽，拥塞控制
+直接按这个值跑。跨境丢包链路上自动探测经常估不准，手写这两个值往往就是
+「能连但很慢」与「跑得动」的差别，因此解析器会读出来并在详情里展示。
+
+`testdata/hysteria2-node.txt` 与 `testdata/hysteria2-config.yaml` 是两种入口
+的示例（用 RFC 2606 保留域名，不可连通），复核方式：
+
+```powershell
+cd app
+dart run tool/build_singbox_config.dart ..\testdata\hysteria2-node.txt build\hy2.json
+assets/bin/sing-box.exe check -c build\hy2.json
+```
+
+### 3.5.8 实测：为什么值得引入 Hysteria2
+
+引入第二个协议的直接起因是 WireGuard 在实际链路上丢包严重、海外站点很卡。为了
+确认这不是主观感受，在同一台服务器、同一条链路上做过一次对照实测。
+
+**方法**（要点是消除网络本身的时间漂移，否则测出来的是「当时网好不好」）：
+
+* 两个内核**同时**运行在不同端口，逐条**交替**采样；每轮交换先后顺序；
+* 先做一次预热，把握手与冷启动代价排除在统计之外；
+* 记录每一次的完整耗时，看 p50 / p90 / max 与失败率——丢包的特征正是
+  「均值尚可、长尾极差」，只看均值会把它掩盖掉。
+
+**结果**（同一台自建服务器实测，WireGuard 与 Hysteria2 各 20 次内核自身端到端探测）：
+
+| 指标 | WireGuard | Hysteria2 |
+| --- | --- | --- |
+| 探测成功率 | **5 / 20（75% 失败）** | 20 / 20 |
+| 成功样本 p50 | 1.35 s | **0.375 s** |
+| 成功样本 p90 | 2.03 s | 0.520 s |
+
+外层再叠加一组真实站点请求（`youtube.com`，各 10 次）与吞吐（10 MB 下载，各
+5 次）：
+
+| 指标 | WireGuard | Hysteria2 |
+| --- | --- | --- |
+| youtube p50 / p90 | 7.34 s / 12.16 s | **2.07 s / 3.78 s** |
+| youtube max | 20.0 s | 8.65 s |
+| 10 MB 下载 p50 | 1.01 MB/s | 1.11 MB/s |
+
+**结论**：差别**不在吞吐**（两者相当），而在**可靠性**——WireGuard 在这条跨境
+UDP 链路上大量探测直接失败、成功的那部分延迟也高一个量级；Hysteria2 几乎没有
+失败样本，延迟低且集中。这与「QUIC 自带拥塞控制与前向纠错、而 WireGuard 的
+握手/数据包在丢包链路上缺乏韧性」的预期相符。
+
+一条可复现的办法同时留在这里：用 `PersistentKeepalive` 触发握手（无需真实流量），
+配合不同 `log.level` 观察内核实际写了什么，见
+`test/wireguard_handshake_e2e_test.dart`。
+
 ## 四、后续协议
 
 ### 4.1 Shadowsocks（优先级最高，成本最低）
@@ -153,15 +238,7 @@ AmneziaWG 是 WireGuard 的非标准分支，靠 `Jc` / `Jmin` / `Jmax` / `S1` /
   `transport`（ws / grpc / httpupgrade）子对象。
 * 难点：传输层与 TLS 参数组合较多，建议先用真实节点做参数穷举测试。
 
-### 4.3 Hysteria 2
-
-* 入口格式：`hysteria2://password@host:port?sni=&insecure=1#name`，或客户端
-  YAML。
-* 内核映射：`outbounds[] = { type: "hysteria2", server, server_port,
-  password, tls: {...}, obfs: {...} }`。
-* 难点：QUIC 系协议对 UDP 支持有要求；`insecure` 与 `pinSHA256` 需要正确映射。
-
-### 4.4 订阅链接（影响面最大的一项）
+### 4.3 订阅链接（影响面最大的一项）
 
 现实中绝大多数用户拿到的是**一条订阅地址**，而不是配置文件。这需要：
 
@@ -171,9 +248,9 @@ AmneziaWG 是 WireGuard 的非标准分支，靠 `Jc` / `Jmin` / `Jmax` / `S1` /
 4. 支持定时更新与多节点选择——此时 `VpnProfile` 需要从「单节点」扩展为
    「节点集合 + 当前选中项」。
 
-建议在完成 4.1～4.3 中的任意两个之后再动这一项，因为它会引入配置模型的变化。
+建议在完成 4.1～4.2 中的任意两个之后再动这一项，因为它会引入配置模型的变化。
 
-### 4.5 Clash / sing-box 原生配置
+### 4.4 Clash / sing-box 原生配置
 
 * Clash YAML：需要引入 YAML 解析（`yaml` 包），并把 `proxies` 映射到内核出站。
 * sing-box JSON：可以直接透传 `outbounds`，但要剥离与本 App 冲突的

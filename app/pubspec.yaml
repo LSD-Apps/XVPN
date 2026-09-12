@@ -37,6 +37,9 @@ dependencies:
   file_selector: ^1.1.0
   desktop_drop: ^0.8.4
   http: ^1.6.0
+  # 用于 Windows DPAPI：把配置里的账号密码用当前 Windows 账户的密钥加密后再落盘。
+  # 它本来就是 flutter_test 的传递依赖，这里显式声明是因为源码里直接 import 它。
+  ffi: ^2.2.0
 
 dev_dependencies:
   flutter_test:

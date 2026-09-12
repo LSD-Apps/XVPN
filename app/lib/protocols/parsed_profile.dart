@@ -35,9 +35,38 @@ abstract class ParsedProfile {
   /// 隧道里没有 IPv6 时仍然解析 AAAA，会让部分网站打不开。
   bool get hasIpv6;
 
+  /// DNS 策略是否要收紧成 `ipv4_only`。
+  ///
+  /// 默认跟随 [hasIpv6]，因为「隧道没有 IPv6 本地地址却解析出 AAAA」会让内核
+  /// 直接报 `missing IPv6 local address`（实测：youtube 打不开而 google 正常）。
+  ///
+  /// 但这个推理只对**自带隧道地址**的协议成立。Hysteria2 这类「流式代理」没有
+  /// 隧道地址：目标域名由服务端去连接，客户端侧不存在 IPv6 本地地址的问题。
+  /// 此时收紧成 ipv4_only 反而会让 IPv6-only 的站点直接失败，因此它覆写为 false。
+  bool get needsIpv4OnlyDns => !hasIpv6;
+
+  /// 生成内核配置时是否要打开 DEBUG 级日志。
+  ///
+  /// 内核的 WireGuard 握手里程碑走的是 DEBUG 级（`Verbosef` → `Logger.Debug`，
+  /// 见 sing-box 的 `transport/wireguard`），因此**日志级别就是握手状态唯一的
+  /// 开关**：停在默认的 `warn`，那几行里程碑根本不会产生，解析器再正确也永远
+  /// 拿不到数据。只有需要读握手状态的协议在这里返回 true；其余协议保持 `warn`，
+  /// 免得把日志缓冲刷成噪声——内核日志是排查问题的原材料，噪声会把它淹掉。
+  ///
+  /// 这是「按需」而不是全局调成 debug：两端共用同一个配置生成器，因此这个值
+  /// 决定了 PC 与移动端完全一致的行为。
+  bool get wantsDebugLogs => false;
+
   /// 协议特有的补充信息，用于「配置文件」页展示。
   List<({String label, String value})> get details;
 
   /// 是否需要用户额外提供用户名/密码（例如 OpenVPN 的 auth-user-pass）。
   bool get requiresCredentials;
+
+  /// 配置里声明的隧道 MTU；没声明或该协议没有这个概念时为 null。
+  ///
+  /// 单独提出来（而不是只放在 [details] 里给人看）是因为它要参与判断：
+  /// MTU 配得比实际路径大，现象是「小请求正常、一传大东西就卡死」——极难自证，
+  /// 而配置里就有这个数字，值得拿它做一次校验。
+  int? get declaredMtu;
 }

@@ -10,7 +10,12 @@ import '../theme.dart';
 /// 桌面端出现在自绘标题栏左侧，移动端出现在每页头部左侧。两端共用同一个
 /// widget，尺寸与回退逻辑才不会各写一套、慢慢跑偏。
 class XvBrandMark extends StatelessWidget {
-  const XvBrandMark({super.key, this.label = 'XVPN', this.size = 24, this.fontSize = 14});
+  const XvBrandMark({
+    super.key,
+    this.label = 'XVPN',
+    this.size = 24,
+    this.fontSize = 14,
+  });
 
   /// 为 null 时只画图标（移动端头部已有页面标题，不必重复品牌名）。
   final String? label;
@@ -28,7 +33,8 @@ class XvBrandMark extends StatelessWidget {
           height: size,
           filterQuality: FilterQuality.high,
           // 资源缺失时退回图标，界面不至于出现空洞。
-          errorBuilder: (_, _, _) => Icon(Icons.vpn_lock_outlined, size: size - 2, color: XV.green),
+          errorBuilder: (_, _, _) =>
+              Icon(Icons.vpn_lock_outlined, size: size - 2, color: XV.green),
         ),
         if (label != null) ...<Widget>[
           const SizedBox(width: 10),
@@ -160,10 +166,19 @@ class XvScrollableColumn extends StatefulWidget {
   const XvScrollableColumn({
     super.key,
     required this.children,
+    this.header,
     this.crossAxisAlignment = CrossAxisAlignment.stretch,
   });
 
   final List<Widget> children;
+
+  /// 固定在滚动区**之外**的内容，通常是卡片标题。
+  ///
+  /// 为什么需要它：此前标题被放在 [children] 的第一个，于是卡片内部一滚动，
+  /// 标题就跟着滚出视野——用户滚下去看内容时，卡片顶部只剩半截文字，看不出
+  /// 这一块在讲什么。标题属于「这块卡片的身份」，不该随内容移动。
+  final Widget? header;
+
   final CrossAxisAlignment crossAxisAlignment;
 
   @override
@@ -181,16 +196,38 @@ class _XvScrollableColumnState extends State<XvScrollableColumn> {
 
   @override
   Widget build(BuildContext context) {
-    return Scrollbar(
+    final scrollable = Scrollbar(
       controller: _controller,
       thumbVisibility: true,
       child: SingleChildScrollView(
         controller: _controller,
-        child: Column(
-          crossAxisAlignment: widget.crossAxisAlignment,
-          children: widget.children,
+        child: Padding(
+          // 右侧让出滚动条的宽度。
+          //
+          // Flutter 桌面端的滚动条是**浮在内容之上**的、不占布局宽度，因此内容
+          // 会顶到卡片右边缘、被滚动条压住（看起来就是「滚动条与内容重叠」）。
+          // 留出 10px 之后两者互不遮挡；而内容本身本来就有自己的右边距。
+          padding: const EdgeInsets.only(right: 10),
+          child: Column(
+            crossAxisAlignment: widget.crossAxisAlignment,
+            children: widget.children,
+          ),
         ),
       ),
+    );
+
+    final header = widget.header;
+    if (header == null) return scrollable;
+    // Flexible 是必需的，不是可选优化：SingleChildScrollView 在 Column 里会按
+    // 子内容的**自然高度**参与布局，加上表头之后总高超出卡片可用高度，直接抛
+    // 「RenderFlex overflowed」。Flexible 让它收缩到剩余空间，滚动才真正生效。
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: widget.crossAxisAlignment,
+      children: <Widget>[
+        header,
+        Flexible(child: scrollable),
+      ],
     );
   }
 }
@@ -211,7 +248,10 @@ class XvCardTitle extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.only(bottom: 12),
       child: Row(
-        children: <Widget>[Expanded(child: label), trailing!],
+        children: <Widget>[
+          Expanded(child: label),
+          trailing!,
+        ],
       ),
     );
   }
@@ -466,7 +506,8 @@ class _SlidingThumb extends StatefulWidget {
 
 class _SlidingThumbState extends State<_SlidingThumb> {
   /// 每段的左边界与宽度。
-  List<({double left, double width})> _segments = const <({double left, double width})>[];
+  List<({double left, double width})> _segments =
+      const <({double left, double width})>[];
 
   /// 上一次测量时的可用尺寸。尺寸没变就不重复测量。
   Size? _measuredFor;
@@ -511,7 +552,10 @@ class _SlidingThumbState extends State<_SlidingThumb> {
       final slot = available / count;
       for (var i = 0; i < count; i++) {
         final left = slot * i;
-        segments.add((left: left, width: i == count - 1 ? available - left : slot));
+        segments.add((
+          left: left,
+          width: i == count - 1 ? available - left : slot,
+        ));
       }
       return segments;
     }
@@ -542,7 +586,9 @@ class _SlidingThumbState extends State<_SlidingThumb> {
         return Stack(
           children: <Widget>[
             AnimatedPositioned(
-              duration: widget.animate ? XvSegmented.slideDuration : Duration.zero,
+              duration: widget.animate
+                  ? XvSegmented.slideDuration
+                  : Duration.zero,
               curve: XvSegmented.slideCurve,
               left: target.left,
               top: 0,
@@ -607,26 +653,40 @@ class RouteTag extends StatelessWidget {
   });
 
   RouteTag.kind(RouteKind kind, {super.key, String? label})
-      : label = label ?? kind.label,
-        foreground = kind == RouteKind.proxy ? XV.violetSoft : XV.blueSoft,
-        background = (kind == RouteKind.proxy ? XV.violet : XV.blue).withValues(alpha: 0.13),
-        border = (kind == RouteKind.proxy ? XV.violet : XV.blue).withValues(alpha: 0.28);
+    : label = label ?? kind.label,
+      foreground = kind == RouteKind.proxy ? XV.violetSoft : XV.blueSoft,
+      background = (kind == RouteKind.proxy ? XV.violet : XV.blue).withValues(
+        alpha: 0.13,
+      ),
+      border = (kind == RouteKind.proxy ? XV.violet : XV.blue).withValues(
+        alpha: 0.28,
+      );
 
   RouteTag.warn(this.label, {super.key})
-      : foreground = XV.amberSoft,
-        background = XV.amber.withValues(alpha: 0.12),
-        border = XV.amber.withValues(alpha: 0.28);
+    : foreground = XV.amberSoft,
+      background = XV.amber.withValues(alpha: 0.12),
+      border = XV.amber.withValues(alpha: 0.28);
 
   /// 直连标签，对应原型中的 .tag.direct。
   RouteTag.direct(this.label, {super.key})
-      : foreground = XV.blueSoft,
-        background = XV.blue.withValues(alpha: 0.12),
-        border = XV.blue.withValues(alpha: 0.28);
+    : foreground = XV.blueSoft,
+      background = XV.blue.withValues(alpha: 0.12),
+      border = XV.blue.withValues(alpha: 0.28);
 
   RouteTag.green(this.label, {super.key})
-      : foreground = XV.greenSoft,
-        background = XV.green.withValues(alpha: 0.1),
-        border = XV.green.withValues(alpha: 0.25);
+    : foreground = XV.greenSoft,
+      background = XV.green.withValues(alpha: 0.1),
+      border = XV.green.withValues(alpha: 0.25);
+
+  /// 危险标签：问题在外部、用户改不了（例如走了隧道仍然失败）。
+  ///
+  /// 与 [RouteTag.warn] 的区别是「能不能自己解决」：琥珀色用于「我们能改」的
+  /// 情况（疑似规则未覆盖），红色用于「只能换节点」的情况。两者混用会让用户
+  /// 对着一个自己无能为力的问题反复折腾规则。
+  RouteTag.danger(this.label, {super.key})
+    : foreground = XV.redSoft,
+      background = XV.red.withValues(alpha: 0.12),
+      border = XV.red.withValues(alpha: 0.28);
 
   final String label;
   final Color foreground;
@@ -642,17 +702,19 @@ class RouteTag extends StatelessWidget {
         border: Border.all(color: border),
         borderRadius: BorderRadius.circular(6),
       ),
-      child: Text(
-        label,
-        style: XvText.tag.copyWith(color: foreground),
-      ),
+      child: Text(label, style: XvText.tag.copyWith(color: foreground)),
     );
   }
 }
 
 /// 迷你柱状图：原型中的 .spark
 class Sparkline extends StatelessWidget {
-  const Sparkline({super.key, required this.values, this.color, this.height = 22});
+  const Sparkline({
+    super.key,
+    required this.values,
+    this.color,
+    this.height = 22,
+  });
 
   final List<double> values;
   final Color? color;
@@ -666,7 +728,9 @@ class Sparkline extends StatelessWidget {
     for (var i = 0; i < AppSparkPoints.count; i++) {
       // 采样点不足 12 个时，最左端补最矮的柱子，保证骨架宽度不跳动。
       final sourceIndex = values.length - (AppSparkPoints.count - i);
-      final v = (sourceIndex >= 0 && sourceIndex < values.length) ? values[sourceIndex] : 0.0;
+      final v = (sourceIndex >= 0 && sourceIndex < values.length)
+          ? values[sourceIndex]
+          : 0.0;
       final factor = peak <= 0 ? 0.08 : (v / peak).clamp(0.08, 1.0);
       bars.add(
         Expanded(
@@ -680,7 +744,10 @@ class Sparkline extends StatelessWidget {
                   gradient: LinearGradient(
                     begin: Alignment.topCenter,
                     end: Alignment.bottomCenter,
-                    colors: <Color>[lineColor, lineColor.withValues(alpha: 0.25)],
+                    colors: <Color>[
+                      lineColor,
+                      lineColor.withValues(alpha: 0.25),
+                    ],
                   ),
                 ),
               ),
@@ -768,12 +835,15 @@ class CheckRow extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: <Widget>[
-              Text(title, style: XvText.bodyMuted.copyWith(color: XV.text, fontWeight: FontWeight.w600)),
-              const SizedBox(height: 3),
               Text(
-                detail,
-                style: mono ? XvText.monoSmall : XvText.caption,
+                title,
+                style: XvText.bodyMuted.copyWith(
+                  color: XV.text,
+                  fontWeight: FontWeight.w600,
+                ),
               ),
+              const SizedBox(height: 3),
+              Text(detail, style: mono ? XvText.monoSmall : XvText.caption),
             ],
           ),
         ),
@@ -810,7 +880,9 @@ class DashedBox extends StatelessWidget {
       ),
       child: DecoratedBox(
         decoration: BoxDecoration(
-          color: highlighted ? XV.green.withValues(alpha: 0.04) : XV.panel.withValues(alpha: 0.5),
+          color: highlighted
+              ? XV.green.withValues(alpha: 0.04)
+              : XV.panel.withValues(alpha: 0.5),
           borderRadius: BorderRadius.circular(radius),
         ),
         child: child,
@@ -820,7 +892,11 @@ class DashedBox extends StatelessWidget {
 }
 
 class _DashedBorderPainter extends CustomPainter {
-  _DashedBorderPainter({required this.color, required this.radius, this.strokeWidth = 1.5});
+  _DashedBorderPainter({
+    required this.color,
+    required this.radius,
+    this.strokeWidth = 1.5,
+  });
 
   final Color color;
   final double radius;
@@ -835,7 +911,12 @@ class _DashedBorderPainter extends CustomPainter {
     final path = Path()
       ..addRRect(
         RRect.fromRectAndRadius(
-          Rect.fromLTWH(strokeWidth / 2, strokeWidth / 2, size.width - strokeWidth, size.height - strokeWidth),
+          Rect.fromLTWH(
+            strokeWidth / 2,
+            strokeWidth / 2,
+            size.width - strokeWidth,
+            size.height - strokeWidth,
+          ),
           Radius.circular(radius),
         ),
       );
@@ -853,7 +934,9 @@ class _DashedBorderPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(_DashedBorderPainter old) =>
-      old.color != color || old.radius != radius || old.strokeWidth != strokeWidth;
+      old.color != color ||
+      old.radius != radius ||
+      old.strokeWidth != strokeWidth;
 }
 
 /// 按钮变体。全应用只有这三种，避免样式发散。
@@ -913,17 +996,22 @@ class _XvButtonState extends State<XvButton> {
       XvButtonKind.primary => (XV.green, XV.onAccent, Colors.transparent),
       XvButtonKind.secondary => (XV.panel3, XV.text, XV.line),
       XvButtonKind.danger => (
-          XV.red.withValues(alpha: 0.10),
-          XV.redSoft,
-          XV.red.withValues(alpha: 0.28),
-        ),
+        XV.red.withValues(alpha: 0.10),
+        XV.redSoft,
+        XV.red.withValues(alpha: 0.28),
+      ),
     };
 
     // 三态：hover 叠一层极淡的前景，按下再叠一层；次要按钮的描边同时提亮。
     var effectiveBg = bg;
-    if (enabled && _hover) effectiveBg = Color.alphaBlend(XV.hoverOverlay, effectiveBg);
-    if (enabled && _pressed) effectiveBg = Color.alphaBlend(XV.hoverOverlay, effectiveBg);
-    final effectiveBorder = (enabled && _hover && widget.kind == XvButtonKind.secondary)
+    if (enabled && _hover) {
+      effectiveBg = Color.alphaBlend(XV.hoverOverlay, effectiveBg);
+    }
+    if (enabled && _pressed) {
+      effectiveBg = Color.alphaBlend(XV.hoverOverlay, effectiveBg);
+    }
+    final effectiveBorder =
+        (enabled && _hover && widget.kind == XvButtonKind.secondary)
         ? Color.alphaBlend(XV.hoverOverlay, border)
         : border;
 
@@ -934,7 +1022,9 @@ class _XvButtonState extends State<XvButton> {
       padding: const EdgeInsets.symmetric(horizontal: 16),
       decoration: BoxDecoration(
         color: enabled ? effectiveBg : effectiveBg.withValues(alpha: 0.5),
-        border: Border.all(color: enabled ? effectiveBorder : border.withValues(alpha: 0.6)),
+        border: Border.all(
+          color: enabled ? effectiveBorder : border.withValues(alpha: 0.6),
+        ),
         borderRadius: BorderRadius.circular(XV.rCtl),
       ),
       child: Row(
@@ -942,7 +1032,11 @@ class _XvButtonState extends State<XvButton> {
         mainAxisAlignment: MainAxisAlignment.center,
         children: <Widget>[
           if (widget.icon != null) ...<Widget>[
-            Icon(widget.icon, size: 15, color: enabled ? fg : fg.withValues(alpha: 0.4)),
+            Icon(
+              widget.icon,
+              size: 15,
+              color: enabled ? fg : fg.withValues(alpha: 0.4),
+            ),
             const SizedBox(width: 7),
           ],
           Flexible(
@@ -964,7 +1058,9 @@ class _XvButtonState extends State<XvButton> {
     );
 
     final sized = ConstrainedBox(
-      constraints: BoxConstraints(minWidth: widget.expand ? 0 : widget.minWidth),
+      constraints: BoxConstraints(
+        minWidth: widget.expand ? 0 : widget.minWidth,
+      ),
       child: content,
     );
 
@@ -985,7 +1081,9 @@ class _XvButtonState extends State<XvButton> {
           duration: const Duration(milliseconds: 120),
           curve: Curves.easeOut,
           scale: _pressed ? 0.975 : 1,
-          child: widget.expand ? SizedBox(width: double.infinity, child: sized) : sized,
+          child: widget.expand
+              ? SizedBox(width: double.infinity, child: sized)
+              : sized,
         ),
       ),
     );
@@ -1031,7 +1129,9 @@ class _NavItemState extends State<NavItem> {
           decoration: BoxDecoration(
             color: active
                 ? XV.panel3
-                : (_hover ? XV.panel3.withValues(alpha: 0.45) : Colors.transparent),
+                : (_hover
+                      ? XV.panel3.withValues(alpha: 0.45)
+                      : Colors.transparent),
             borderRadius: BorderRadius.circular(XV.rCtl),
           ),
           child: Stack(
@@ -1057,9 +1157,16 @@ class _NavItemState extends State<NavItem> {
               ),
               Row(
                 children: <Widget>[
-                  Icon(widget.icon, size: 16, color: active ? XV.green : XV.muted),
+                  Icon(
+                    widget.icon,
+                    size: 16,
+                    color: active ? XV.green : XV.muted,
+                  ),
                   const SizedBox(width: 11),
-                  Text(widget.label, style: active ? XvText.navLabelActive : XvText.navLabel),
+                  Text(
+                    widget.label,
+                    style: active ? XvText.navLabelActive : XvText.navLabel,
+                  ),
                 ],
               ),
             ],
@@ -1084,8 +1191,12 @@ class StatusPill extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 4),
       decoration: BoxDecoration(
-        color: active ? XV.green.withValues(alpha: 0.09) : XV.muted.withValues(alpha: 0.08),
-        border: Border.all(color: active ? XV.green.withValues(alpha: 0.22) : XV.line),
+        color: active
+            ? XV.green.withValues(alpha: 0.09)
+            : XV.muted.withValues(alpha: 0.08),
+        border: Border.all(
+          color: active ? XV.green.withValues(alpha: 0.22) : XV.line,
+        ),
         borderRadius: BorderRadius.circular(XV.rPill),
       ),
       child: Row(
@@ -1098,7 +1209,9 @@ class StatusPill extends StatelessWidget {
               color: dot,
               shape: BoxShape.circle,
               boxShadow: active
-                  ? <BoxShadow>[BoxShadow(color: dot, blurRadius: 8, spreadRadius: 0)]
+                  ? <BoxShadow>[
+                      BoxShadow(color: dot, blurRadius: 8, spreadRadius: 0),
+                    ]
                   : null,
             ),
           ),
@@ -1112,7 +1225,12 @@ class StatusPill extends StatelessWidget {
 
 /// 移动端页头：原型中的 .m-head（标题 + 状态）
 class MobileHeader extends StatelessWidget {
-  const MobileHeader({super.key, required this.title, this.statusLabel, this.statusActive = false});
+  const MobileHeader({
+    super.key,
+    required this.title,
+    this.statusLabel,
+    this.statusActive = false,
+  });
 
   final String title;
 
@@ -1183,7 +1301,11 @@ class TimerChip extends StatelessWidget {
       ),
       child: Text(
         text,
-        style: TextStyle(fontSize: 13, color: XV.muted, fontFamilyFallback: XV.monoFallback),
+        style: TextStyle(
+          fontSize: 13,
+          color: XV.muted,
+          fontFamilyFallback: XV.monoFallback,
+        ),
       ),
     );
   }
@@ -1240,7 +1362,9 @@ class XvControlBox extends StatelessWidget {
         padding: padding,
         decoration: BoxDecoration(
           color: XV.field,
-          border: Border.all(color: highlighted ? XV.green.withValues(alpha: 0.45) : XV.line),
+          border: Border.all(
+            color: highlighted ? XV.green.withValues(alpha: 0.45) : XV.line,
+          ),
           borderRadius: BorderRadius.circular(XV.rCtl),
         ),
         // 纵向居中：高度被定死之后，不同的内容高度不会让它们在框内上下偏移。
@@ -1298,8 +1422,7 @@ class XvSearchField extends StatelessWidget {
               ),
             ),
           ),
-          if (onClear != null)
-            TapAction(label: '清除', onTap: onClear!),
+          if (onClear != null) TapAction(label: '清除', onTap: onClear!),
         ],
       ),
     );
@@ -1434,7 +1557,10 @@ class SettingRow extends StatelessWidget {
           ),
           const SizedBox(width: 16),
           if (controlWidth != null)
-            SizedBox(width: controlWidth, child: Align(alignment: Alignment.centerRight, child: control))
+            SizedBox(
+              width: controlWidth,
+              child: Align(alignment: Alignment.centerRight, child: control),
+            )
           else
             control,
         ],
@@ -1491,10 +1617,16 @@ class _HoverRowState extends State<HoverRow> {
         onTap: widget.onTap,
         child: DecoratedBox(
           decoration: BoxDecoration(
-            color: _hover ? XV.panel3.withValues(alpha: 0.55) : Colors.transparent,
+            color: _hover
+                ? XV.panel3.withValues(alpha: 0.55)
+                : Colors.transparent,
             borderRadius: BorderRadius.circular(widget.radius),
             border: widget.showDivider
-                ? Border(bottom: BorderSide(color: _hover ? Colors.transparent : XV.line2))
+                ? Border(
+                    bottom: BorderSide(
+                      color: _hover ? Colors.transparent : XV.line2,
+                    ),
+                  )
                 : null,
           ),
           child: AnimatedContainer(
@@ -1549,7 +1681,13 @@ class OptionCard extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: <Widget>[
-                    Text(title, style: XvText.body.copyWith(fontSize: 12.5, fontWeight: FontWeight.w600)),
+                    Text(
+                      title,
+                      style: XvText.body.copyWith(
+                        fontSize: 12.5,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
                     const SizedBox(height: 4),
                     Text(description, style: XvText.rowDesc),
                   ],

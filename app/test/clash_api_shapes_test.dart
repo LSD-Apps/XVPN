@@ -65,7 +65,9 @@ void main() {
       // 改造前：界面上「命中规则」这一列会原样显示
       // 「rule_set=[geosite-cn geoip-cn] => route」。
       expect(
-        ClashConnection.ruleDisplayName('rule_set=[geosite-cn geoip-cn] => route'),
+        ClashConnection.ruleDisplayName(
+          'rule_set=[geosite-cn geoip-cn] => route',
+        ),
         'geosite-cn + geoip-cn',
       );
       expect(
@@ -139,7 +141,12 @@ void main() {
       expect(ipOnly.target, '1.2.3.4:8443');
 
       final ipv6 = ClashConnection.fromJson(
-        _connection(id: 'c', host: '', destinationIp: '2400:cb00::1', port: 443),
+        _connection(
+          id: 'c',
+          host: '',
+          destinationIp: '2400:cb00::1',
+          port: 443,
+        ),
       )!;
       expect(ipv6.target, '[2400:cb00::1]:443');
 
@@ -174,20 +181,24 @@ void main() {
     test('只上报本次新出现的连接', () {
       final seen = BoundedIdSet(100);
       final first = ClashSnapshot.pullNew(
-        _snapshot(connections: <Map<String, Object?>>[
-          _connection(id: 'a'),
-          _connection(id: 'b'),
-        ]),
+        _snapshot(
+          connections: <Map<String, Object?>>[
+            _connection(id: 'a'),
+            _connection(id: 'b'),
+          ],
+        ),
         seen,
       );
       expect(first.map((ClashConnection c) => c.id), <String>['a', 'b']);
 
       // 同一批再来一次：一条都不该重复上报。
       final again = ClashSnapshot.pullNew(
-        _snapshot(connections: <Map<String, Object?>>[
-          _connection(id: 'a'),
-          _connection(id: 'b'),
-        ]),
+        _snapshot(
+          connections: <Map<String, Object?>>[
+            _connection(id: 'a'),
+            _connection(id: 'b'),
+          ],
+        ),
         seen,
       );
       expect(again, isEmpty);
@@ -198,21 +209,31 @@ void main() {
       final batch = <Map<String, Object?>>[
         for (var i = 0; i < 50; i++) _connection(id: 'id-$i'),
       ];
-      final pulled = ClashSnapshot.pullNew(_snapshot(connections: batch), seen, limit: 8);
+      final pulled = ClashSnapshot.pullNew(
+        _snapshot(connections: batch),
+        seen,
+        limit: 8,
+      );
       expect(pulled, hasLength(8));
 
       // 被限制掉的那些没有进 seen，下一轮会补上。
-      final second = ClashSnapshot.pullNew(_snapshot(connections: batch), seen, limit: 8);
+      final second = ClashSnapshot.pullNew(
+        _snapshot(connections: batch),
+        seen,
+        limit: 8,
+      );
       expect(second.first.id, 'id-8');
     });
 
     test('id 为空的连接不占用名额', () {
       final seen = BoundedIdSet(100);
       final pulled = ClashSnapshot.pullNew(
-        _snapshot(connections: <Map<String, Object?>>[
-          <String, Object?>{'id': ''},
-          _connection(id: 'good'),
-        ]),
+        _snapshot(
+          connections: <Map<String, Object?>>[
+            <String, Object?>{'id': ''},
+            _connection(id: 'good'),
+          ],
+        ),
         seen,
         limit: 1,
       );
@@ -268,7 +289,11 @@ void main() {
         for (var i = 0; i < 200; i++) _connection(id: 'live-$i'),
       ];
 
-      final first = ClashSnapshot.pullNew(_snapshot(connections: live), seen, limit: 5000);
+      final first = ClashSnapshot.pullNew(
+        _snapshot(connections: live),
+        seen,
+        limit: 5000,
+      );
       expect(first, hasLength(200), reason: '首次全部是新连接');
       expect(seen.capacity, greaterThanOrEqualTo(200), reason: '容量应跟着实际规模增长');
 
@@ -320,12 +345,14 @@ void main() {
   group('快照整体解析', () {
     test('累计流量与内存用量', () {
       final snapshot = ClashSnapshot.parse(
-        jsonEncode(_snapshot(
-          connections: <Map<String, Object?>>[_connection(id: 'a')],
-          downloadTotal: 2048,
-          uploadTotal: 512,
-          memory: 123456,
-        )),
+        jsonEncode(
+          _snapshot(
+            connections: <Map<String, Object?>>[_connection(id: 'a')],
+            downloadTotal: 2048,
+            uploadTotal: 512,
+            memory: 123456,
+          ),
+        ),
       )!;
       expect(snapshot.totalBytes, 2560);
       expect(snapshot.memory, 123456);
@@ -370,7 +397,11 @@ void main() {
       final rate = RateCalculator();
       final t0 = DateTime(2026, 1, 1, 0, 0, 0);
       rate.sample(t0, 0, 0);
-      final sample = rate.sample(t0.add(const Duration(seconds: 2)), 4096, 2048)!;
+      final sample = rate.sample(
+        t0.add(const Duration(seconds: 2)),
+        4096,
+        2048,
+      )!;
       expect(sample.downBps, closeTo(2048, 0.001));
       expect(sample.upBps, closeTo(1024, 0.001));
       expect(sample.totalBytes, 6144);
@@ -453,7 +484,10 @@ void main() {
       // 计时只是为了防止出现「每次都全量构造」的回归；阈值放得很宽，
       // 避免在慢速 CI 上变成偶发失败。
       final watch = Stopwatch()..start();
-      final pulled = ClashSnapshot.pullNew(_snapshot(connections: withNew), seen);
+      final pulled = ClashSnapshot.pullNew(
+        _snapshot(connections: withNew),
+        seen,
+      );
       watch.stop();
 
       expect(pulled.map((ClashConnection c) => c.id), <String>['brand-new']);
@@ -497,9 +531,9 @@ void main() {
     });
 
     test('空 connections 数组不会出错', () {
-      final snapshot = ClashSnapshot.fromJson(
-        <String, Object?>{'connections': <Object?>[]},
-      );
+      final snapshot = ClashSnapshot.fromJson(<String, Object?>{
+        'connections': <Object?>[],
+      });
       expect(snapshot.connections, isEmpty);
     });
   });

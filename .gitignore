@@ -25,6 +25,12 @@ app/android/app/release/
 .cache/
 .build/
 
+# 内核运行期缓存（配置里的 cache_file）。
+# 内核把这份文件写在**它自己的工作目录**里（桌面端是 %LOCALAPPDATA%\XVPN\runtime），
+# 仓库里曾经出现过一份 app/cache.db：32 KB 二进制、每次运行都会变、
+# 没有任何代码或脚本引用它，只是让 diff 充满噪声。加进忽略表防止再被带进来。
+cache.db
+
 # ---------------------------------------------------------------- 编辑器
 .vscode/
 .idea/

@@ -18,6 +18,18 @@
 /// 冒号之后是失败原因。解析器只做纯文本处理，因此可以完整单元测试。
 library;
 
+/// 从 `主机:端口` 形式的串里取出主机部分。
+///
+/// 分流记录、失败记录的目标都是这个形式，因此抽成一个共用函数：
+/// 两处各写一遍，迟早会在某个边界（例如带端口的 IPv6）上走偏。
+String hostOfTarget(String target) {
+  final idx = target.lastIndexOf(':');
+  if (idx <= 0) return target;
+  final maybePort = target.substring(idx + 1);
+  if (int.tryParse(maybePort) == null) return target;
+  return target.substring(0, idx);
+}
+
 /// 一条连接失败。
 class ConnectionFailure {
   const ConnectionFailure({
@@ -45,13 +57,7 @@ class ConnectionFailure {
   bool get wasProxied => !wasDirect;
 
   /// 目标的主机名部分（去掉端口）。IP 目标也会原样返回。
-  String get host {
-    final idx = target.lastIndexOf(':');
-    if (idx <= 0) return target;
-    final maybePort = target.substring(idx + 1);
-    if (int.tryParse(maybePort) == null) return target;
-    return target.substring(0, idx);
-  }
+  String get host => hostOfTarget(target);
 
   /// 是否看起来是 IP 目标（而不是域名）。
   bool get isIpTarget {
@@ -72,7 +78,9 @@ class ConnectionFailure {
     if (r.contains('i/o timeout')) return '连接超时';
     if (r.contains('context deadline exceeded')) return '解析或握手超时';
     if (r.contains('connection refused')) return '连接被拒绝';
-    if (r.contains('no such host') || r.contains('lookup failed')) return '域名解析失败';
+    if (r.contains('no such host') || r.contains('lookup failed')) {
+      return '域名解析失败';
+    }
     if (r.contains('missing ipv6 local address')) return '隧道缺少 IPv6 地址';
     if (r.contains('no known endpoint')) return '隧道端点不可达';
     if (r.contains('reset by peer')) return '连接被重置';
@@ -194,4 +202,100 @@ FailureDigest digestFailures(List<ConnectionFailure> failures) {
     proxiedFailures: proxied,
     suspectedMissingRules: List<String>.unmodifiable(suspected),
   );
+}
+
+/// 同一个目标的失败聚成一组。
+///
+/// 分组的键是「目标 + 走的是哪条路」，而不是只按目标：同一个域名
+/// 「被判直连而失败」和「走隧道而失败」是两个截然不同的问题，处置方式相反
+/// （前者可能该改规则，后者只能换节点）。把它们混成一组，恰恰把最有用的
+/// 那个区别抹掉了。
+class FailureGroup {
+  const FailureGroup({
+    required this.host,
+    required this.proxied,
+    required this.failures,
+  });
+
+  /// 主机名（去掉端口）。IP 目标原样保留。
+  final String host;
+
+  /// 这一组是否都走了隧道。
+  final bool proxied;
+
+  /// 该组的原始失败记录，最近的在前。
+  final List<ConnectionFailure> failures;
+
+  int get count => failures.length;
+
+  /// 最近一次失败。
+  ConnectionFailure get latest => failures.first;
+
+  /// 最近一次失败的归类。
+  String get lastSummary => latest.reasonSummary;
+
+  bool get isIpTarget => latest.isIpTarget;
+
+  /// 这一组里是否有「疑似规则库没覆盖」的证据。
+  bool get suggestsMissingRule =>
+      failures.any((ConnectionFailure f) => f.suggestsMissingRule);
+
+  /// 界面上的方向标签。
+  String get directionLabel => proxied ? '走隧道' : '直连';
+}
+
+/// 把失败列表按目标聚合。
+///
+/// 组与组之间、每组内部都保持**最近的在前**：输入本身就是「最新的在前」，
+/// 因此只要按首次出现的顺序建组即可，不需要再排序。用户打开这个列表，
+/// 想知道的是「现在什么坏了」，而不是「历史上什么坏得最多」。
+List<FailureGroup> groupFailures(List<ConnectionFailure> failures) {
+  final order = <String>[];
+  final buckets = <String, List<ConnectionFailure>>{};
+  for (final failure in failures) {
+    // IP 与域名分开成组：对 IP 谈「规则没覆盖」没有意义。
+    final key = '${failure.host}\u0000${failure.wasDirect}';
+    final bucket = buckets[key];
+    if (bucket == null) {
+      order.add(key);
+      buckets[key] = <ConnectionFailure>[failure];
+    } else {
+      bucket.add(failure);
+    }
+  }
+  return <FailureGroup>[
+    for (final key in order)
+      FailureGroup(
+        host: buckets[key]!.first.host,
+        proxied: !buckets[key]!.first.wasDirect,
+        failures: List<ConnectionFailure>.unmodifiable(buckets[key]!),
+      ),
+  ];
+}
+
+/// 把失败记录整理成一段可直接粘贴出去的文本。
+///
+/// 用户要反馈问题时，界面上的列表没法复制，而逐条手抄域名和原因不现实。
+/// 这里给出的格式刻意把「疑似规则未覆盖」单列一行——那是接手排查的人
+/// 最先要看的信息。
+String failureReport(List<ConnectionFailure> failures, {DateTime? now}) {
+  if (failures.isEmpty) return '暂无失败记录。';
+  final digest = digestFailures(failures);
+  final buffer = StringBuffer()
+    ..writeln('XVPN 连接失败记录')
+    ..writeln(
+      '共计 ${digest.total} 条：直连 ${digest.directFailures} / 隧道 ${digest.proxiedFailures}',
+    );
+  if (digest.suspectedMissingRules.isNotEmpty) {
+    buffer.writeln('疑似规则未覆盖：${digest.suspectedMissingRules.join('、')}');
+  }
+  buffer.writeln(digest.advice);
+  buffer.writeln();
+  for (final group in groupFailures(failures)) {
+    buffer.writeln(
+      '${group.host} · ${group.count} 次 · ${group.directionLabel} · ${group.lastSummary}',
+    );
+    buffer.writeln('    最后原因：${group.latest.reason}');
+  }
+  return buffer.toString().trimRight();
 }

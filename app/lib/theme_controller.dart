@@ -13,14 +13,14 @@ class ThemeController extends ValueNotifier<ThemeMode> {
   }
 
   String get label => switch (value) {
-        ThemeMode.system => '跟随系统',
-        ThemeMode.light => '亮色',
-        ThemeMode.dark => '深色',
-      };
+    ThemeMode.system => '跟随系统',
+    ThemeMode.light => '亮色',
+    ThemeMode.dark => '深色',
+  };
 
   IconData get icon => switch (value) {
-        ThemeMode.system => Icons.brightness_auto_outlined,
-        ThemeMode.light => Icons.light_mode_outlined,
-        ThemeMode.dark => Icons.dark_mode_outlined,
-      };
+    ThemeMode.system => Icons.brightness_auto_outlined,
+    ThemeMode.light => Icons.light_mode_outlined,
+    ThemeMode.dark => Icons.dark_mode_outlined,
+  };
 }

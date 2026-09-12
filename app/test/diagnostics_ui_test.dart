@@ -73,18 +73,19 @@ Future<void> _connect(WidgetTester tester, AppState state) async {
 /// 用真实的 [SingBoxRunner] 而不是演示内核，是为了让自动纠正表真的存在——
 /// 那正是「手工指定」表单渲染的前提；主动探测关掉，测试里不真的连网络。
 AppState stateWithRealCore() => AppState(
-      coreFactory: (VpnCoreListener listener) =>
-          SingBoxRunner(listener, probesEnabled: false),
-    );
+  coreFactory: (VpnCoreListener listener) =>
+      SingBoxRunner(listener, probesEnabled: false),
+);
 
 /// 造一条可以手动触发的分流记录。
-SplitRecord _record(String target, RouteKind kind, {DateTime? at}) => SplitRecord(
-  time: at ?? DateTime(2026, 2, 14, 10, 20, 30),
-  target: target,
-  kind: kind,
-  rule: kind == RouteKind.proxy ? '默认规则' : 'geosite-cn + geoip-cn',
-  outbound: kind == RouteKind.proxy ? 'vpn' : 'direct',
-);
+SplitRecord _record(String target, RouteKind kind, {DateTime? at}) =>
+    SplitRecord(
+      time: at ?? DateTime(2026, 2, 14, 10, 20, 30),
+      target: target,
+      kind: kind,
+      rule: kind == RouteKind.proxy ? '默认规则' : 'geosite-cn + geoip-cn',
+      outbound: kind == RouteKind.proxy ? 'vpn' : 'direct',
+    );
 
 void main() {
   group('分流记录页：大数据量', () {
@@ -108,11 +109,18 @@ void main() {
       watch.stop();
 
       expect(state.records.length, AppState.recordLimit);
-      expect(watch.elapsedMilliseconds, lessThan(2000), reason: '插入 3000 条不该出现二次方级别的开销');
+      expect(
+        watch.elapsedMilliseconds,
+        lessThan(2000),
+        reason: '插入 3000 条不该出现二次方级别的开销',
+      );
 
       await tester.tap(find.text('分流记录'));
       await tester.pumpAndSettle();
-      expect(find.text('命中规则'), findsOneWidget);
+      // 表头改为「流量 / 失败 / 延迟」：规则名对用户是次要信息，
+      // 而「这个目标跑了多少、有没有失败」才是要看的（规则移到行的第二行）。
+      expect(find.text('流量 ↓/↑'), findsOneWidget);
+      expect(find.text('失败'), findsOneWidget);
 
       await _stop(tester, state);
     });
@@ -135,7 +143,10 @@ void main() {
 
       // 筛选结果受上限约束，并且界面要把这件事说出来，
       // 而不是悄悄截断让用户以为记录丢了。
-      expect(state.filteredRecords(RouteFilter.all, 'common-').length, AppState.searchResultLimit);
+      expect(
+        state.filteredRecords(RouteFilter.all, 'common-').length,
+        AppState.searchResultLimit,
+      );
       expect(state.isFilterTruncated(RouteFilter.all, 'common-'), isTrue);
 
       // 列表是懒构建的，脚注在 300 条之后，必须先滚到底才会被创建。
@@ -199,7 +210,11 @@ void main() {
 
       final first = state.filteredRecords(RouteFilter.all, '');
       final second = state.filteredRecords(RouteFilter.all, '');
-      expect(identical(first, second), isTrue, reason: '界面每帧都会调用它；不缓存就等于每秒全量重算一遍');
+      expect(
+        identical(first, second),
+        isTrue,
+        reason: '界面每帧都会调用它；不缓存就等于每秒全量重算一遍',
+      );
     });
 
     test('新增记录后缓存失效', () {
@@ -266,7 +281,10 @@ void main() {
       // 演示内核连接成功后会持续上报流量，其中带有按路径拆分的字节数。
       expect(state.isConnected, isTrue);
       expect(state.proxiedBytes + state.directBytes, greaterThan(0));
-      expect(find.textContaining('流量分布'), findsWidgets);
+      // 面板文案在改口径时变过：以前是「当前活连接：N% 走隧道」，取自活连接快照，
+      // 而短连接在 1 秒轮询里基本抓不到，数字常年停在 0%。现在用的是状态层累加
+      // 出来的会话累计值。
+      expect(find.textContaining('本次分流'), findsWidgets);
       expect(find.textContaining('走隧道'), findsWidgets);
 
       // 演示内核不做 DNS 探测与自检，先确认占位文案在，
@@ -274,13 +292,15 @@ void main() {
       expect(find.textContaining('正在自检'), findsOneWidget);
       expect(find.textContaining('正在探测 DNS'), findsOneWidget);
 
-      state.onDnsReport(DnsReport(
-        checkedAt: DateTime(2026, 2, 14),
-        resolvers: const <ResolverHealth>[],
-        direct: LatencyWindow(capacity: 4)..add(12),
-        tunnel: LatencyWindow(capacity: 4)..add(96),
-        verdict: DnsVerdict.consistent,
-      ));
+      state.onDnsReport(
+        DnsReport(
+          checkedAt: DateTime(2026, 2, 14),
+          resolvers: const <ResolverHealth>[],
+          direct: LatencyWindow(capacity: 4)..add(12),
+          tunnel: LatencyWindow(capacity: 4)..add(96),
+          verdict: DnsVerdict.consistent,
+        ),
+      );
       await tester.pump();
       expect(find.textContaining('DNS · 一致'), findsOneWidget);
       expect(find.textContaining('直连解析 12ms'), findsWidgets);
@@ -477,12 +497,15 @@ void main() {
     /// 必须量容器而不是内部的 TextField：后者还要减去容器左右各 12px 内边距
     /// 与 14px 搜索图标，比容器窄约 48px，量错了会得到一个偏小且难以解释的数。
     Finder inputBox() => find.ancestor(
-          of: find.widgetWithText(TextField, '例如 example.com'),
-          matching: find.byType(XvSearchField),
-        );
+      of: find.widgetWithText(TextField, '例如 example.com'),
+      matching: find.byType(XvSearchField),
+    );
 
     /// 用真实内核渲染桌面设置页，并把手工指定滚进视口。
-    Future<void> renderDesktopWithCore(WidgetTester tester, AppState state) async {
+    Future<void> renderDesktopWithCore(
+      WidgetTester tester,
+      AppState state,
+    ) async {
       await _pump(tester, state, size: const Size(1500, 1400));
       await tester.tap(find.text('设置'));
       await tester.pumpAndSettle();
@@ -542,8 +565,11 @@ void main() {
       );
       // 宽屏走一行排布：输入框与选择器在同一水平线上。
       final segmentedY = tester.getCenter(find.text('走代理')).dy;
-      expect((tester.getCenter(inputBox()).dy - segmentedY).abs(), lessThan(4),
-          reason: '宽屏应为一行排布');
+      expect(
+        (tester.getCenter(inputBox()).dy - segmentedY).abs(),
+        lessThan(4),
+        reason: '宽屏应为一行排布',
+      );
 
       await _stop(tester, state);
     });
@@ -585,13 +611,17 @@ void main() {
 
       const expected = XvControlMetrics.height;
       final fieldHeight = tester.getSize(inputBox()).height;
-      final buttonHeight = tester.getSize(find.widgetWithText(XvButton, '添加')).height;
-      final pickerHeight = tester.getSize(
-        find.descendant(
-          of: find.byType(AutoRouteCard),
-          matching: find.byType(XvSegmented),
-        ),
-      ).height;
+      final buttonHeight = tester
+          .getSize(find.widgetWithText(XvButton, '添加'))
+          .height;
+      final pickerHeight = tester
+          .getSize(
+            find.descendant(
+              of: find.byType(AutoRouteCard),
+              matching: find.byType(XvSegmented),
+            ),
+          )
+          .height;
 
       expect(fieldHeight, expected, reason: '输入框高度应为标准控件高度');
       expect(buttonHeight, expected, reason: '按钮高度应为标准控件高度');
@@ -599,7 +629,9 @@ void main() {
 
       // 顶边也要对齐：等高但错位一样难看。
       final fieldTop = tester.getTopLeft(inputBox()).dy;
-      final buttonTop = tester.getTopLeft(find.widgetWithText(XvButton, '添加')).dy;
+      final buttonTop = tester
+          .getTopLeft(find.widgetWithText(XvButton, '添加'))
+          .dy;
       expect(buttonTop, closeTo(fieldTop, 1), reason: '同一行控件顶边应对齐');
 
       await _stop(tester, state);
@@ -698,7 +730,7 @@ void main() {
       await tester.tap(find.text(pasteTitle));
       await tester.pumpAndSettle();
 
-      expect(find.text('粘贴 WireGuard 配置'), findsOneWidget);
+      expect(find.text('粘贴 VPN 配置'), findsOneWidget);
 
       await tester.tap(find.widgetWithText(XvButton, '取消'));
       await tester.pumpAndSettle();
@@ -735,7 +767,10 @@ void main() {
         'connections': <Object?>[
           <String, Object?>{
             'id': 'vpn-1',
-            'metadata': <String, Object?>{'host': 'www.google.com', 'destinationPort': '443'},
+            'metadata': <String, Object?>{
+              'host': 'www.google.com',
+              'destinationPort': '443',
+            },
             'chains': <String>['vpn'],
             'rule': 'final',
             'upload': 1000,
@@ -743,7 +778,10 @@ void main() {
           },
           <String, Object?>{
             'id': 'direct-1',
-            'metadata': <String, Object?>{'host': 'www.baidu.com', 'destinationPort': '443'},
+            'metadata': <String, Object?>{
+              'host': 'www.baidu.com',
+              'destinationPort': '443',
+            },
             'chains': <String>['direct'],
             'rule': 'rule_set=[geosite-cn geoip-cn] => route',
             'upload': 500,
@@ -764,7 +802,12 @@ void main() {
       addTearDown(monitor.dispose);
 
       // 第一次采样只建立速率基准，因此要先跑两次。
+      //
+      // 两次之间必须真的隔开一点时间：速率是「两次累计值之差 ÷ 时间差」，
+      // 而这里的假 HTTP 客户端是瞬时返回的，同一毫秒内连着采两次的时间差为 0，
+      // 计算器会（正确地）返回 null——不隔开的话这条用例会变成一个偶发失败。
       await monitor.tick();
+      await Future<void>.delayed(const Duration(milliseconds: 5));
       await monitor.tick();
 
       final traffic = listener.lastTraffic;
@@ -776,10 +819,14 @@ void main() {
       expect(traffic.totalBytes, 12000);
 
       // 分流记录：两条新连接，规则名已归一化。
-      expect(listener.records.map((SplitRecord r) => r.target).toSet(),
-          <String>{'www.google.com', 'www.baidu.com'});
       expect(
-        listener.records.firstWhere((SplitRecord r) => r.target == 'www.baidu.com').rule,
+        listener.records.map((SplitRecord r) => r.target).toSet(),
+        <String>{'www.google.com', 'www.baidu.com'},
+      );
+      expect(
+        listener.records
+            .firstWhere((SplitRecord r) => r.target == 'www.baidu.com')
+            .rule,
         'geosite-cn + geoip-cn',
         reason: '内核给的是整句描述，界面必须拿到归一化后的名字',
       );

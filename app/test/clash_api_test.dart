@@ -76,13 +76,17 @@ void main() {
 
     test('区分代理与直连，并把命中规则还原成人话', () {
       final snapshot = ClashSnapshot.parse(_snapshot)!;
-      final google = snapshot.connections.firstWhere((c) => c.target == 'www.google.com');
+      final google = snapshot.connections.firstWhere(
+        (c) => c.target == 'www.google.com',
+      );
       expect(google.proxied, isTrue);
       expect(google.outbound, 'vpn');
       // final 规则展示为「默认规则」，而不是把内核术语丢给用户。
       expect(google.rule, '默认规则');
 
-      final baidu = snapshot.connections.firstWhere((c) => c.target == 'www.baidu.com');
+      final baidu = snapshot.connections.firstWhere(
+        (c) => c.target == 'www.baidu.com',
+      );
       expect(baidu.proxied, isFalse);
       expect(baidu.outbound, 'direct');
       expect(
@@ -94,7 +98,9 @@ void main() {
 
     test('没有域名时用 IP:端口 作为目标，并识别局域网规则', () {
       final snapshot = ClashSnapshot.parse(_snapshot)!;
-      final local = snapshot.connections.firstWhere((c) => c.target.startsWith('192.168'));
+      final local = snapshot.connections.firstWhere(
+        (c) => c.target.startsWith('192.168'),
+      );
       expect(local.target, '192.168.1.1:53');
       expect(local.rule, '局域网地址');
       expect(local.network, 'udp');
@@ -102,7 +108,9 @@ void main() {
 
     test('按连接统计字节数，这是分流占比的数据来源', () {
       final snapshot = ClashSnapshot.parse(_snapshot)!;
-      final google = snapshot.connections.firstWhere((c) => c.target == 'www.google.com');
+      final google = snapshot.connections.firstWhere(
+        (c) => c.target == 'www.google.com',
+      );
       expect(google.upload, 9004);
       expect(google.download, 90000);
       expect(google.totalBytes, 99004);
@@ -119,7 +127,9 @@ void main() {
     });
 
     test('缺少 id 的连接被跳过', () {
-      final snapshot = ClashSnapshot.parse('{"connections":[{"metadata":{"host":"a.com"}}]}')!;
+      final snapshot = ClashSnapshot.parse(
+        '{"connections":[{"metadata":{"host":"a.com"}}]}',
+      )!;
       expect(snapshot.connections, isEmpty);
     });
 
@@ -159,7 +169,11 @@ void main() {
     test('提取新连接并把它们登记进集合', () {
       final seen = BoundedIdSet(16);
       final first = ClashSnapshot.pullNew(raw(), seen);
-      expect(first.map((ClashConnection c) => c.id), <String>['abc-1', 'abc-2', 'abc-3']);
+      expect(first.map((ClashConnection c) => c.id), <String>[
+        'abc-1',
+        'abc-2',
+        'abc-3',
+      ]);
       expect(seen.length, 3);
 
       // 再来一轮：一条都不该重复。
@@ -170,7 +184,10 @@ void main() {
     test('limit 之外的连接留给下一轮，不会丢失', () {
       final seen = BoundedIdSet(16);
       final first = ClashSnapshot.pullNew(raw(), seen, limit: 2);
-      expect(first.map((ClashConnection c) => c.id), <String>['abc-1', 'abc-2']);
+      expect(first.map((ClashConnection c) => c.id), <String>[
+        'abc-1',
+        'abc-2',
+      ]);
       final second = ClashSnapshot.pullNew(raw(), seen, limit: 2);
       expect(second.map((ClashConnection c) => c.id), <String>['abc-3']);
     });
@@ -187,7 +204,11 @@ void main() {
       final t0 = DateTime(2026, 1, 1, 0, 0, 0);
       rate.sample(t0, 1000, 500);
       // 2 秒后下行多了 4096 字节、上行多了 1024 字节
-      final sample = rate.sample(t0.add(const Duration(seconds: 2)), 5096, 1524)!;
+      final sample = rate.sample(
+        t0.add(const Duration(seconds: 2)),
+        5096,
+        1524,
+      )!;
       expect(sample.downBps, closeTo(2048, 0.01));
       expect(sample.upBps, closeTo(512, 0.01));
       expect(sample.totalBytes, 6620);
@@ -208,7 +229,10 @@ void main() {
       rate.sample(t0, 1000, 500);
       rate.sample(t0.add(const Duration(seconds: 1)), 2000, 1000);
       rate.reset();
-      expect(rate.sample(t0.add(const Duration(seconds: 2)), 3000, 1500), isNull);
+      expect(
+        rate.sample(t0.add(const Duration(seconds: 2)), 3000, 1500),
+        isNull,
+      );
     });
   });
 }

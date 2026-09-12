@@ -27,8 +27,7 @@ class AppStore {
   /// 版本号。将来结构变化时用它决定要不要迁移，而不是靠猜字段。
   static const int schemaVersion = 1;
 
-  File get file =>
-      File('${directory.path}${Platform.pathSeparator}$fileName');
+  File get file => File('${directory.path}${Platform.pathSeparator}$fileName');
 
   /// 读取。文件不存在或内容损坏时返回空表——
   /// 配置读不出来不应该让应用起不来，最坏情况就是回到「重新导入」。
@@ -40,7 +39,9 @@ class AppStore {
       final decoded = jsonDecode(raw);
       if (decoded is! Map<String, Object?>) return <String, Object?>{};
       final version = decoded['version'];
-      if (version is! int || version > schemaVersion) return <String, Object?>{};
+      if (version is! int || version > schemaVersion) {
+        return <String, Object?>{};
+      }
       return decoded;
     } on Object {
       return <String, Object?>{};
@@ -75,7 +76,8 @@ class AppStore {
 
   /// 桌面端的默认目录：`%LOCALAPPDATA%\XVPN`，与规则库同一处。
   static Directory defaultDesktopDir() {
-    final base = Platform.environment['LOCALAPPDATA'] ??
+    final base =
+        Platform.environment['LOCALAPPDATA'] ??
         Platform.environment['APPDATA'] ??
         Directory.systemTemp.path;
     return Directory('$base${Platform.pathSeparator}XVPN');

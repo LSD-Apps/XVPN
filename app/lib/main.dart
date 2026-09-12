@@ -11,8 +11,9 @@ import 'core/singbox_runner.dart';
 import 'core/store.dart';
 import 'core/system_proxy.dart';
 import 'core/vpn_core.dart';
-import 'protocols/parsed_profile.dart';
+import 'core/window_controls.dart';
 import 'protocols/vpn_protocol.dart';
+import 'screens/import_conf.dart';
 import 'screens/shell.dart';
 import 'theme.dart';
 import 'theme_controller.dart';
@@ -24,6 +25,9 @@ import 'theme_controller.dart';
 /// 而配置必须在第一帧之前恢复好，否则界面会先闪一下空状态。
 Future<void> main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
+  // 接住原生推来的窗口最大化状态：标题栏的「最大化 / 还原」图标据此切换，
+  // 而双击标题栏、Win+↑、贴边这些由系统直接处理的最大化，Dart 侧只有靠它才知道。
+  await WindowControls.listen();
   final store = await _resolveStore();
   runApp(XvpnApp(launchConfPath: _confPathFromArgs(args), store: store));
 }
@@ -86,15 +90,22 @@ class _XvpnAppState extends State<XvpnApp> {
   /// 差别只在「内核怎么跑」和「流量怎么接管」。
   static VpnCore Function(VpnCoreListener listener) get _coreFactory {
     return switch (defaultTargetPlatform) {
-      TargetPlatform.windows => (VpnCoreListener listener) => SingBoxRunner(listener),
-      TargetPlatform.android => (VpnCoreListener listener) => AndroidVpnCore(listener),
+      TargetPlatform.windows => (VpnCoreListener listener) => SingBoxRunner(
+        listener,
+      ),
+      TargetPlatform.android => (VpnCoreListener listener) => AndroidVpnCore(
+        listener,
+      ),
       // 其它平台尚未接入内核，先用演示内核驱动界面，
       // 避免出现「看起来能连、其实没连」的假象。
       _ => (VpnCoreListener listener) => DemoVpnCore(listener),
     };
   }
 
-  late final AppState _state = AppState(coreFactory: _coreFactory, store: widget.store);
+  late final AppState _state = AppState(
+    coreFactory: _coreFactory,
+    store: widget.store,
+  );
 
   final ThemeController _theme = ThemeController();
 
@@ -102,21 +113,18 @@ class _XvpnAppState extends State<XvpnApp> {
   void initState() {
     super.initState();
     // 上次若被强杀，系统代理可能还指着已经退出的内核，先恢复回去。
-    unawaited(SystemProxy.recoverIfNeeded());
+    unawaited(const SystemProxy().recoverIfNeeded());
     _listenSharedConfig();
 
     // 启动参数里的配置优先导入（「双击配置文件打开」的场景）。
     final path = widget.launchConfPath;
     if (path != null) {
-      try {
-        _state.importConf(text: File(path).readAsStringSync(), fileName: _basename(path));
-      } on VpnConfigException catch (e) {
-        // 解析器抛出的已经是面向用户的中文说明，直接用。
-        _state.reportError('无法导入 $path：${e.message}');
-      } on Object catch (e) {
-        // 读文件失败等其它情况，不能影响界面可用性，只提示原因。
-        _state.reportError('无法导入 $path：$e');
-      }
+      // 延后到第一帧之后：导入过程可能弹出「填写账号密码」表单，而补填表单
+      // 需要 Navigator，initState 阶段还没有。
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        unawaited(_importFromLaunchPath(path));
+      });
       return;
     }
 
@@ -142,16 +150,40 @@ class _XvpnAppState extends State<XvpnApp> {
 
   Future<void> _consumeSharedConfig() async {
     try {
-      final shared =
-          await _androidChannel.invokeMethod<Map<Object?, Object?>>('takeSharedConfig');
+      final shared = await _androidChannel.invokeMethod<Map<Object?, Object?>>(
+        'takeSharedConfig',
+      );
       if (shared == null) return;
       final name = shared['name'] as String? ?? 'shared.conf';
       final text = shared['text'] as String?;
       if (text == null || text.isEmpty) return;
-      _state.importConf(text: text, fileName: name);
+      if (!mounted) return;
+      // 走与界面导入相同的收口点：需要账号密码时同样会弹表单。
+      await importConfWithPrompt(context, _state, text: text, fileName: name);
     } on Object catch (e) {
       _state.reportError('导入分享的配置失败：$e');
     }
+  }
+
+  /// 导入启动参数指定的配置文件。
+  ///
+  /// 先单独读文件：读不到时的提示要带上路径，用户才知道双击的那份文件怎么了；
+  /// 而解析类的错误由统一的导入路径给出，消息本身已经足够清楚。
+  Future<void> _importFromLaunchPath(String path) async {
+    final String text;
+    try {
+      text = File(path).readAsStringSync();
+    } on Object catch (e) {
+      _state.reportError('无法读取 $path：$e');
+      return;
+    }
+    if (!mounted) return;
+    await importConfWithPrompt(
+      context,
+      _state,
+      text: text,
+      fileName: _basename(path),
+    );
   }
 
   @override
@@ -176,12 +208,15 @@ class _XvpnAppState extends State<XvpnApp> {
           // 用 builder 而不是直接给 home 传实例：每次重建都生成新的 widget，
           // 保证切换主题时下层界面一定会重新读取调色板。
           home: _PaletteSync(
-            builder: (BuildContext inner) => XvShell(state: _state, theme: _theme),
+            builder: (BuildContext inner) =>
+                XvShell(state: _state, theme: _theme),
           ),
           builder: (BuildContext context, Widget? child) {
             // 只锁定文字缩放，保证两端排版与设计稿一致；亮度交由主题系统决定。
             return MediaQuery(
-              data: MediaQuery.of(context).copyWith(textScaler: TextScaler.noScaling),
+              data: MediaQuery.of(
+                context,
+              ).copyWith(textScaler: TextScaler.noScaling),
               child: child ?? const SizedBox.shrink(),
             );
           },
@@ -203,7 +238,9 @@ class _PaletteSync extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     applyPalette(
-      Theme.of(context).brightness == Brightness.dark ? XvPalette.dark : XvPalette.light,
+      Theme.of(context).brightness == Brightness.dark
+          ? XvPalette.dark
+          : XvPalette.light,
     );
     return builder(context);
   }

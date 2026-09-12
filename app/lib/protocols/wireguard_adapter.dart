@@ -9,6 +9,10 @@ class WireGuardAdapter implements VpnProtocolAdapter {
   @override
   VpnProtocol get protocol => VpnProtocol.wireGuard;
 
+  /// WireGuard 自带隧道地址，属于 sing-box 的 endpoint 类协议。
+  @override
+  FragmentPlacement get placement => FragmentPlacement.endpoint;
+
   /// 按内容识别：只要有 `[Interface]` + `PrivateKey`，就是 WireGuard。
   /// 不能只看扩展名——`.conf` 同样可能是 OpenVPN 配置。
   @override
@@ -18,7 +22,9 @@ class WireGuardAdapter implements VpnProtocolAdapter {
       return true;
     }
     // 极简配置可能省略段名大小写或顺序，这里再用 Peer 字段兜底。
-    return lower.contains('[peer]') && lower.contains('publickey') && lower.contains('endpoint');
+    return lower.contains('[peer]') &&
+        lower.contains('publickey') &&
+        lower.contains('endpoint');
   }
 
   @override
@@ -33,7 +39,10 @@ class WireGuardAdapter implements VpnProtocolAdapter {
   }
 
   @override
-  Map<String, Object?> buildEndpoint(ParsedProfile profile, OutboundContext context) {
+  Map<String, Object?> buildEndpoint(
+    ParsedProfile profile,
+    OutboundContext context,
+  ) {
     if (profile is! WireGuardProfile) {
       throw VpnConfigException('内部错误：配置与协议不匹配');
     }
@@ -45,7 +54,7 @@ class WireGuardAdapter implements VpnProtocolAdapter {
     // 超出 1280–1500 的值几乎必然是配置写错了（低于 1280 违反 IPv6 的最小
     // MTU 要求，高于 1500 超出以太网帧），把它原样交给内核只会让隧道
     // 时通时断，而且完全看不出原因。这种情况下回退到默认值更安全。
-    final mtu = sanitizeMtu(conf.mtu) ?? defaultMtu;
+    final mtu = resolveMtu(conf);
 
     return <String, Object?>{
       'type': 'wireguard',
@@ -91,4 +100,19 @@ class WireGuardAdapter implements VpnProtocolAdapter {
   /// 1420 是 wg-quick 的默认值，也是 WireGuard 社区长期验证过的、
   /// 在 1500 字节以太网上不会分片的保守取值（1500 − 20 IPv4 − 8 UDP − 32 WG 头）。
   static const int defaultMtu = 1420;
+
+  /// 这条隧道内可承载的 IP 包大小。
+  ///
+  /// 端点与 TUN 入站**必须**用同一个值。抽成一个函数是为了防止两处各自
+  /// 计算而漂移：一旦 Tunnel MTU 比 TUN MTU 小，系统栈就会组出装不下的包，
+  /// 表现为「能连上但很慢」，排查成本极高。
+  static int resolveMtu(WireGuardConf conf) =>
+      sanitizeMtu(conf.mtu) ?? defaultMtu;
+
+  /// TUN 入站的 MTU 与端点保持一致。
+  @override
+  int tunMtu(ParsedProfile profile) {
+    if (profile is! WireGuardProfile) return defaultMtu;
+    return resolveMtu(profile.conf);
+  }
 }

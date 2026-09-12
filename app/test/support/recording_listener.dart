@@ -1,7 +1,9 @@
 import 'package:xvpn/core/auto_route.dart';
 import 'package:xvpn/core/core_log.dart';
 import 'package:xvpn/core/dns_monitor.dart';
+import 'package:xvpn/core/mtu_probe.dart';
 import 'package:xvpn/core/startup_self_check.dart';
+import 'package:xvpn/core/tunnel_health.dart';
 import 'package:xvpn/core/vpn_core.dart';
 import 'package:xvpn/models.dart';
 
@@ -27,7 +29,8 @@ class RecordingListener implements VpnCoreListener {
     int proxiedBytes,
     int connectionCount,
     int kernelMemory,
-  })? lastTraffic;
+  })?
+  lastTraffic;
 
   List<int?> latencies = <int?>[];
 
@@ -61,8 +64,16 @@ class RecordingListener implements VpnCoreListener {
   @override
   void onSplitRecord(SplitRecord record) => records.add(record);
 
+  /// 流量增量。分流记录按目标合并后，行上的流量来自这里，因此要留痕以便断言。
+  final List<ConnectionTraffic> trafficUpdates = <ConnectionTraffic>[];
+
   @override
-  void onConnectionFailure(ConnectionFailure failure) => logFailures.add(failure.target);
+  void onConnectionTraffic(ConnectionTraffic traffic) =>
+      trafficUpdates.add(traffic);
+
+  @override
+  void onConnectionFailure(ConnectionFailure failure) =>
+      logFailures.add(failure.target);
 
   @override
   void onError(String message) => errors.add(message);
@@ -78,4 +89,24 @@ class RecordingListener implements VpnCoreListener {
 
   @override
   void onAutoRouteChanged(AutoRouteTable table) {}
+
+  /// 隧道健康结论。断线自愈的判定依据，因此要留痕以便断言。
+  final List<TunnelHealth> healthReports = <TunnelHealth>[];
+
+  @override
+  void onTunnelHealth(TunnelHealth health) => healthReports.add(health);
+
+  /// MTU 校验结论。界面据此显示「配置的 MTU 能不能用」，因此要留痕以便断言。
+  final List<MtuCheck> mtuChecks = <MtuCheck>[];
+
+  @override
+  void onMtuCheck(MtuCheck check) => mtuChecks.add(check);
+
+  /// 内核日志到达的次数。
+  ///
+  /// 记次数而不是内容：内容是内核写的，测试关心的是「通知有没有发出去」。
+  int kernelLogNotifications = 0;
+
+  @override
+  void onKernelLog() => kernelLogNotifications++;
 }
