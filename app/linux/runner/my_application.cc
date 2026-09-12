@@ -57,7 +57,17 @@ static gboolean pointer_root_position(GtkWindow* window, gint* x, gint* y) {
   if (pointer == nullptr) {
     return FALSE;
   }
-  return gdk_device_get_position(pointer, nullptr, x, y);
+  // GTK3 的 gdk_device_get_position 返回 void（坐标由出参带出），因此不能直接
+  // return 它的返回值——写成 `return gdk_device_get_position(...)` 会报
+  // “cannot initialize return object of type 'gboolean' with an rvalue of type 'void'”。
+  //
+  // 该 API 自 GTK 3.22 起弃用，而 GTK3 并未提供替代品（官方的下一步是 GTK4），
+  // 因此这里按 GLib 提供的方式就地屏蔽弃用告警：本工程开了 -Werror，
+  // 不屏蔽会直接构建失败。
+  G_GNUC_BEGIN_IGNORE_DEPRECATIONS
+  gdk_device_get_position(pointer, nullptr, x, y);
+  G_GNUC_END_IGNORE_DEPRECATIONS
+  return TRUE;
 }
 
 // 边名到 GdkWindowEdge。名字与 Dart 侧 WindowEdge.wireName 一一对应，
@@ -127,7 +137,9 @@ static void window_method_call_cb(FlMethodChannel* channel,
       if (time == 0) {
         time = GDK_CURRENT_TIME;
       }
-      gtk_window_begin_move_drag(window, GDK_BUTTON1, x, y, time);
+      // 这里要的是**按键编号**（1 = 左键），不是 GDK_BUTTON1_MASK 那类事件掩码；
+      // 且 GTK3 里没有 GDK_BUTTON1 这个标识符（那是 GTK4 的写法）。
+      gtk_window_begin_move_drag(window, 1, x, y, time);
     }
     response = FL_METHOD_RESPONSE(fl_method_success_response_new(nullptr));
   } else if (g_strcmp0(method, "startResize") == 0) {
@@ -147,7 +159,8 @@ static void window_method_call_cb(FlMethodChannel* channel,
         if (time == 0) {
           time = GDK_CURRENT_TIME;
         }
-        gtk_window_begin_resize_drag(window, edge, GDK_BUTTON1, x, y, time);
+        // 同上：这里要的是按键编号，不是掩码。
+        gtk_window_begin_resize_drag(window, edge, 1, x, y, time);
       }
       response = FL_METHOD_RESPONSE(fl_method_success_response_new(nullptr));
     }
