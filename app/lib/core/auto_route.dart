@@ -34,66 +34,25 @@ library;
 
 import 'app_presets.dart';
 import 'outbound_tags.dart';
+import 'route_learning.dart';
 
+/// 把本模块的词汇一并转出：`RoutePreference` / `RouteRuleSource` 是分流规则与
+/// 学习策略**共用**的词汇，调用方（界面、内核配置生成、各测试）一直从本文件
+/// 引入它们。转出而不是让每个调用方多一行 import，是为了让这次拆分对它们是
+/// 透明的。
+export 'route_learning.dart'
+    show
+        DirectOutcome,
+        EvidenceKind,
+        LearningPolicy,
+        OutcomeThrottle,
+        RoutePreference,
+        RoutePreferenceX,
+        RouteRuleSource,
+        RouteRuleSourceX,
+        judgeSetback,
+        shouldRevokeLearnedProxy;
 
-/// 分流倾向。
-enum RoutePreference {
-  /// 强制走隧道。
-  forceProxy,
-
-  /// 强制直连。
-  ///
-  /// 目前只在用户手工指定时产生：程序能可靠观察到的是「直连失败」，
-  /// 而「走隧道其实很慢、本该直连」缺少同等强度的证据，自动改判风险太高。
-  forceDirect,
-}
-
-extension RoutePreferenceX on RoutePreference {
-  String get label => this == RoutePreference.forceProxy ? '强制代理' : '强制直连';
-
-  String get storageKey =>
-      this == RoutePreference.forceProxy ? 'proxy' : 'direct';
-}
-
-/// 规则来源，决定它在表里的优先级。
-enum RouteRuleSource {
-  /// 用户手工指定。永远最高优先级，且不会被程序覆盖。
-  user,
-
-  /// 程序从证据里学到的（两个方向：直连失败→走隧道，国内解析→直连）。
-  learned,
-
-  /// 由「直连白名单」预置安装进来的域名（见 `app_presets.dart`）。
-  ///
-  /// 优先级**最低**：它是一份静态清单，而 [learned] 是运行中观察到的证据、
-  /// [user] 是用户的明确决定，两者都应当能推翻它。这一点必须落在代码里
-  /// （见 [AutoRouteTable.installPreset]），否则重启时重新安装预置会把学到的
-  /// 纠正悄悄抹掉。
-  preset,
-}
-
-extension RouteRuleSourceX on RouteRuleSource {
-  /// 界面展示名。
-  ///
-  /// 把「谁定的这条规则」说清楚是必要的：用户手工指定的规则不会被程序改，
-  /// 而程序学到的会随证据变化。两者在界面上长得一样的话，用户会怀疑
-  /// 「我明明指定过，怎么又变了」。
-  String get label => switch (this) {
-    RouteRuleSource.user => '手工指定',
-    RouteRuleSource.learned => '程序学到',
-    RouteRuleSource.preset => '内置白名单',
-  };
-
-  /// 优先级序号，**越小越优先**。
-  ///
-  /// 用它排序而不是在生成规则时靠书写顺序表达，是因为后者一被重排就是静默的
-  /// 行为变更。这里定死：用户 > 学到 > 预置。
-  int get rank => switch (this) {
-    RouteRuleSource.user => 0,
-    RouteRuleSource.learned => 1,
-    RouteRuleSource.preset => 2,
-  };
-}
 
 /// 一条尚未定性的「直连没有交付」证据。
 ///
@@ -304,39 +263,39 @@ class AutoRouteDecision {
 /// 索引按「去掉最后一级标签」归档，因此对 `a.b.example.com` 最多只需要看
 /// 4 个桶，与表的大小无关。
 class AutoRouteTable {
+  /// [policy] 是所有学习策略参数（阈值、判据、限流）的唯一来源，见
+  /// `route_learning.dart`。三个具名参数是**测试与嵌入方的便捷覆盖**：它们会
+  /// 覆盖策略里的对应字段，而不是另开一份事实来源。
   AutoRouteTable({
-    this.capacity = 400,
-    this.promotionThreshold = 3,
-    this.domesticPromotionThreshold = 2,
-    this.revokeSuccessThreshold = 3,
-    this.decayAfter = const Duration(days: 14),
-  }) : assert(capacity > 0);
+    LearningPolicy policy = const LearningPolicy(),
+    int? capacity,
+    int? promotionThreshold,
+    int? domesticPromotionThreshold,
+    int? revokeSuccessThreshold,
+    Duration? decayAfter,
+  }) : policy = LearningPolicy(
+         promotionThreshold: promotionThreshold ?? policy.promotionThreshold,
+         domesticPromotionThreshold:
+             domesticPromotionThreshold ?? policy.domesticPromotionThreshold,
+         revokeSuccessThreshold:
+             revokeSuccessThreshold ?? policy.revokeSuccessThreshold,
+         substantiveByteFloor: policy.substantiveByteFloor,
+         stallFloor: policy.stallFloor,
+         outcomeWindow: policy.outcomeWindow,
+         capacity: capacity ?? policy.capacity,
+         decayAfter: decayAfter ?? policy.decayAfter,
+         maxPendingEvidence: policy.maxPendingEvidence,
+         maxOutcomeLog: policy.maxOutcomeLog,
+       );
 
-  /// 表容量上限。超出时淘汰证据最弱的条目。
-  final int capacity;
+  /// 学习策略。阈值与判据都从它读，本类不再自带一份。
+  final LearningPolicy policy;
 
-  /// 连续失败多少次才自动纠正。
-  ///
-  /// 取 3 而不是 1：单次失败可能只是网络抖动或对端临时故障，
-  /// 一次抖动就把域名永久推进隧道，会让用户觉得「分流时好时坏」。
-  final int promotionThreshold;
+  /// 表容量上限。便捷读取，等价于 `policy.capacity`。
+  int get capacity => policy.capacity;
 
-  /// 多久没有任何新证据就淘汰。避免老规则一直留着。
-  final Duration decayAfter;
-
-  /// 直连解析连续多少次落在国内网段，才把走隧道的域名改成直连。
-  ///
-  /// 取 2 而不是 1：这是**推断**而不是事实——「解析到国内地址」是事实，
-  /// 「所以该直连」是推断（该地址可能并不可达，比如服务由规则集范围内的 CDN
-  /// 承载却走不通）。也不需要 3：那会让一个明显在国内的站点白走两轮隧道。
-  final int domesticPromotionThreshold;
-
-  /// 学到的强制代理规则需要**连续**多少次「确实交付」才撤销。
-  ///
-  /// 取 3 与 [promotionThreshold] 对称：改判与撤销都要连续三次，因此交替出现的
-  /// 成败（实测 github.com 在坏时段就是这种分布）永远攒不满任何一边的阈值，
-  /// 规则稳定；而网络真的恢复时连续成功会很快攒够，撤销照样及时。
-  final int revokeSuccessThreshold;
+  /// 多久没有任何新证据就淘汰。便捷读取，等价于 `policy.decayAfter`。
+  Duration get decayAfter => policy.decayAfter;
 
   /// 精确域名 → 条目。
   final Map<String, AutoRouteEntry> _exact = <String, AutoRouteEntry>{};
@@ -516,7 +475,10 @@ class AutoRouteTable {
   /// 失败与挂死的共同处理。
   ///
   /// 两者对决策的影响完全一致（都说明直连没有交付），差异只在记到哪个计数、
-  /// 以及界面上的说法。因此共用一条路径，避免两处各写一份阈值判断而漂移。
+  /// 以及界面上的说法。因此共用一条路径。
+  ///
+  /// **判断本身不在这里**：阈值与「累计到多少才改判」由 `route_learning.dart` 的
+  /// [judgeSetback] 给出（纯函数），本方法只负责把结论落到表上。
   AutoRouteDecision _recordDirectSetback(
     String host, {
     String? reason,
@@ -530,12 +492,10 @@ class AutoRouteTable {
     // 反证优先：一次「没有交付」就把「直连解析落在国内」的连续计数清零。
     //
     // 不做这一步会来回翻转——被改成 forceProxy 之后，残留的计数会让下一次正面
-    // 解析立刻又把它改回 forceDirect，用户看到的是分流「时好时坏」，
-    // 而这正是本文件开头说要避免的。
+    // 解析立刻又把它改回 forceDirect，用户看到的是分流「时好时坏」。
     _domesticStreak.remove(domain);
 
     final poisoned = dnsVerdict == 'suspectPoisoning';
-    final threshold = poisoned ? 1 : promotionThreshold;
     final existing = _exact[domain];
 
     if (existing != null) {
@@ -562,42 +522,43 @@ class AutoRouteTable {
         );
       }
 
-      // 已有一条**直连**规则（反方向学到的）被连续证伪 → 改成走隧道。
-      // 已经是 forceProxy 的不再重复改判，只继续记账。
-      if (existing.consecutiveFailures >= threshold &&
-          existing.preference != RoutePreference.forceProxy) {
-        final promoted = AutoRouteEntry(
-          domain: domain,
-          preference: RoutePreference.forceProxy,
-          source: RouteRuleSource.learned,
-          createdAt: existing.createdAt ?? DateTime.now(),
-          lastHitAt: DateTime.now(),
-          directFailures: existing.directFailures,
-          directSuccesses: existing.directSuccesses,
-          stalls: existing.stalls,
-          consecutiveFailures: existing.consecutiveFailures,
-          consecutiveSuccesses: 0,
-          proxiedBytes: existing.proxiedBytes,
-          dnsVerdict: existing.dnsVerdict,
-          lastFailureReason: existing.lastFailureReason,
-        );
-        _install(promoted);
+      final verdict = judgeSetback(
+        policy: policy,
+        consecutiveFailures: existing.consecutiveFailures,
+        currentPreference: existing.preference,
+        stalled: stalled,
+        poisoned: poisoned,
+      );
+      if (!verdict.promote) {
+        _install(existing);
         return AutoRouteDecision(
           domain: domain,
-          added: true,
-          reason: poisoned
-              ? '解析结果不一致，已自动改为走隧道'
-              : _promotionReason(stalled, existing.consecutiveFailures),
-          entry: promoted,
+          added: false,
+          reason: verdict.reason,
+          entry: existing,
         );
       }
-
-      _install(existing);
+      final promoted = AutoRouteEntry(
+        domain: domain,
+        preference: RoutePreference.forceProxy,
+        source: RouteRuleSource.learned,
+        createdAt: existing.createdAt ?? DateTime.now(),
+        lastHitAt: DateTime.now(),
+        directFailures: existing.directFailures,
+        directSuccesses: existing.directSuccesses,
+        stalls: existing.stalls,
+        consecutiveFailures: existing.consecutiveFailures,
+        consecutiveSuccesses: 0,
+        proxiedBytes: existing.proxiedBytes,
+        dnsVerdict: existing.dnsVerdict,
+        lastFailureReason: existing.lastFailureReason,
+      );
+      _install(promoted);
       return AutoRouteDecision(
         domain: domain,
-        added: false,
-        reason: _observationReason(stalled, existing.consecutiveFailures, threshold),
-        entry: existing,
+        added: true,
+        reason: verdict.reason,
+        entry: promoted,
       );
     }
 
@@ -615,12 +576,19 @@ class AutoRouteTable {
     if (reason != null) pending.reason = reason;
     if (dnsVerdict != null) pending.dnsVerdict = dnsVerdict;
 
-    if (pending.consecutive < threshold) {
+    final verdict = judgeSetback(
+      policy: policy,
+      consecutiveFailures: pending.consecutive,
+      currentPreference: null,
+      stalled: stalled,
+      poisoned: poisoned,
+    );
+    if (!verdict.promote) {
       _enforcePendingCapacity();
       return AutoRouteDecision(
         domain: domain,
         added: false,
-        reason: _observationReason(stalled, pending.consecutive, threshold),
+        reason: verdict.reason,
       );
     }
 
@@ -641,25 +609,14 @@ class AutoRouteTable {
     return AutoRouteDecision(
       domain: domain,
       added: true,
-      reason: poisoned
-          ? '解析结果不一致，已自动改为走隧道'
-          : _promotionReason(stalled, pending.consecutive),
+      reason: verdict.reason,
       entry: promoted,
     );
   }
 
-  static String _promotionReason(bool stalled, int consecutive) => stalled
-      ? '连续 $consecutive 次直连握手成功但没有数据，已自动改为走隧道'
-      : '连续 $consecutive 次判为直连但失败，已自动改为走隧道';
-
-  static String _observationReason(bool stalled, int consecutive, int threshold) =>
-      stalled
-      ? '直连握手成功但没有数据 $consecutive/$threshold 次，继续观察'
-      : '失败 $consecutive/$threshold 次，继续观察';
-
   /// 未定性证据超限时整表清空，避免它随会话无限增长。
   void _enforcePendingCapacity() {
-    if (_pendingSetbacks.length > maxPendingSetbacks) {
+    if (_pendingSetbacks.length > policy.maxPendingEvidence) {
       _pendingSetbacks.clear();
     }
   }
@@ -689,14 +646,14 @@ class AutoRouteTable {
     entry.directSuccesses++;
     entry.consecutiveSuccesses++;
     entry.consecutiveFailures = 0;
-    // 学到的强制代理规则如果被连续证明能直连，就撤销它；
-    // 用户指定的规则不动。
-    //
-    // 用**连续**成功而不是累计成功：实测的坏时段里失败成簇、成功偶尔插进来，
-    // 累计计数会让两次侥幸成功就推翻刚学到的规则，规则因此反复横跳。
-    if (entry.source == RouteRuleSource.learned &&
-        entry.preference == RoutePreference.forceProxy &&
-        entry.consecutiveSuccesses >= revokeSuccessThreshold) {
+    // 学到的强制代理规则如果被连续证明能直连，就撤销它；用户指定的规则不动。
+    // 判断本身在 `route_learning.dart` 的 [shouldRevokeLearnedProxy] 里。
+    if (shouldRevokeLearnedProxy(
+      policy: policy,
+      consecutiveSuccesses: entry.consecutiveSuccesses,
+      source: entry.source,
+      preference: entry.preference,
+    )) {
       _uninstall(domain);
     }
     return true;
@@ -751,7 +708,7 @@ class AutoRouteTable {
     }
 
     final streak = (_domesticStreak[domain] ?? 0) + 1;
-    if (streak < domesticPromotionThreshold) {
+    if (streak < policy.domesticPromotionThreshold) {
       // **不建表项**。这一点很关键：一条 preference 为 forceProxy 的新条目
       // 会变成一条「强制走隧道」的规则并注入到规则库之前，而本方法的证据方向
       // 恰好相反——它说明这个域名**可能**该直连。单次证据不足以改路由，
@@ -760,7 +717,8 @@ class AutoRouteTable {
       return AutoRouteDecision(
         domain: domain,
         added: false,
-        reason: '直连解析落在国内网段 $streak/$domesticPromotionThreshold 次，继续观察',
+        reason:
+            '直连解析落在国内网段 $streak/${policy.domesticPromotionThreshold} 次，继续观察',
       );
     }
 

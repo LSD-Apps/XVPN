@@ -28,11 +28,15 @@ import 'support/recording_listener.dart';
 ///   * 同一时段 github.com 10 次里成功 4 次，失败成簇
 void main() {
   group('判据：一条已关闭直连连接的质量', () {
+    // 判据现在住在 route_learning.dart 的策略对象上，因此这一组不需要构造
+    // 路由表、也不需要伪造网络——这正是把它抽成独立模块的收益之一。
+    const policy = LearningPolicy();
+
     test('字节够多 → 确实交付', () {
       expect(
-        CoreMonitor.classifyClosedDirectConnection(
+        policy.classifyDirectConnection(
           direct: true,
-          bytes: CoreMonitor.substantiveByteFloor,
+          bytes: policy.substantiveByteFloor,
           alive: const Duration(milliseconds: 800),
         ),
         DirectOutcome.delivered,
@@ -41,7 +45,7 @@ void main() {
 
     test('存活久但没字节 → 挂死（这是原先完全看不见的那一类）', () {
       expect(
-        CoreMonitor.classifyClosedDirectConnection(
+        policy.classifyDirectConnection(
           direct: true,
           bytes: 0,
           alive: const Duration(seconds: 10),
@@ -53,7 +57,7 @@ void main() {
     test('存活久但字节在门槛之下 → 挂死，而不是成功', () {
       // 这是缺陷①的核心：零星字节（例如只读了响应头就卡住）不算交付。
       expect(
-        CoreMonitor.classifyClosedDirectConnection(
+        policy.classifyDirectConnection(
           direct: true,
           bytes: 270,
           alive: const Duration(seconds: 9),
@@ -66,7 +70,7 @@ void main() {
       // 实测里有一次 total=12.0s 却交付 448 KB 的「慢但成功」。
       // 只看时长会把它误判成挂死，因此必须联合字节数判断。
       expect(
-        CoreMonitor.classifyClosedDirectConnection(
+        policy.classifyDirectConnection(
           direct: true,
           bytes: 448401,
           alive: const Duration(seconds: 12),
@@ -79,7 +83,7 @@ void main() {
       // 可能是一个正常的小响应（实测 raw 的 270 字节就是完整文件），
       // 也可能是一次快速失败——后者由内核日志的 ERROR 行归因，不在这里重复计。
       expect(
-        CoreMonitor.classifyClosedDirectConnection(
+        policy.classifyDirectConnection(
           direct: true,
           bytes: 270,
           alive: const Duration(milliseconds: 400),
@@ -90,7 +94,7 @@ void main() {
 
     test('拿不到存活时长时不下「挂死」结论', () {
       expect(
-        CoreMonitor.classifyClosedDirectConnection(
+        policy.classifyDirectConnection(
           direct: true,
           bytes: 0,
           alive: null,
@@ -102,7 +106,7 @@ void main() {
 
     test('走隧道的连接不参与这套判定', () {
       expect(
-        CoreMonitor.classifyClosedDirectConnection(
+        policy.classifyDirectConnection(
           direct: false,
           bytes: 0,
           alive: const Duration(seconds: 30),

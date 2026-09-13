@@ -39,25 +39,6 @@ import 'tunnel_health.dart';
 import 'vpn_core.dart';
 import 'wireguard_handshake.dart';
 
-/// 一条**已关闭**直连连接的质量判定结果。
-///
-/// 三态而不是布尔：拿不准时不下结论，比下错结论安全——与 DNS 交叉校验
-/// 「拿不到地理信息就不下结论」是同一条原则。
-enum DirectOutcome {
-  /// 不是直连连接，不参与这套判定。
-  notApplicable,
-
-  /// 确实交付了内容（字节数达到下限）：可信的正向证据。
-  delivered,
-
-  /// 握手成功但没有数据：存活够久却几乎没交付。对分流而言是一次失败。
-  stalled,
-
-  /// 证据不足（存活短且字节少）：可能是一个正常的小响应，也可能是一次快速
-  /// 失败——后者由内核日志的 `ERROR` 行负责归因，不需要在这里重复计。
-  pending,
-}
-
 /// 一条连接在本机侧留下的最后状态。
 ///
 /// 存在的理由：内核只给「当前活着的连接」，连接一关闭就从快照里消失。而判定
@@ -98,6 +79,7 @@ class CoreMonitorHooks {
     required this.listener,
     required this.clashApiPort,
     this.autoRoute,
+    LearningPolicy? learningPolicy,
     CnIpIndex? cnIpIndex,
     this.dnsResolver,
     this.probesEnabled = true,
@@ -110,7 +92,11 @@ class CoreMonitorHooks {
     this.warmupSince,
     this.mixedPort,
     this.declaredMtu,
-  }) : cnIpIndex = cnIpIndex ?? CnIpIndex.empty;
+  }) : cnIpIndex = cnIpIndex ?? CnIpIndex.empty,
+       // 默认跟随自动纠正表的策略：那样「整套阈值只有一处」是自动成立的，
+       // 不需要调用方记得让观测层与表保持一致。
+       learningPolicy =
+           learningPolicy ?? autoRoute?.policy ?? const LearningPolicy();
 
   final VpnCoreListener listener;
 
@@ -123,6 +109,13 @@ class CoreMonitorHooks {
 
   /// 自动纠正表。为 null 时不做学习，行为与改造前一致。
   final AutoRouteTable? autoRoute;
+
+  /// 学习策略（阈值、判据、限流窗口）。
+  ///
+  /// 由外部注入而不是让观测层自带一份：策略属于学习机制，而观测层只负责把
+  /// 一条连接的最终状态翻译成证据。默认取表的策略——那样「一套阈值」这件事
+  /// 是自动成立的，不需要调用方记得让两处一致。
+  final LearningPolicy learningPolicy;
 
   /// 中国 IP 索引，用于 DNS 交叉校验的地理判定。
   ///
@@ -227,49 +220,15 @@ class CoreMonitor {
 
   final RateCalculator _rate = RateCalculator();
 
-  /// 记录「确实交付」与「挂死」的最近时刻，用于**时间窗限流**。
-  ///
-  /// 为什么不是「一次会话只记一次」（原先的做法）：那样一个域名最多只能贡献
-  /// 1 次观测，而晋升需要连续 3 次、撤销也需要连续 3 次，于是**两条阈值都永远
-  /// 攒不满**——挂死推不动晋升，成功也撤销不了规则。这是把「够不够」交给
-  /// 「记几次」来管，而它们本来该由阈值来管。
-  ///
-  /// 也不是「每条连接都记」：一次页面加载会开出几十条连接，同一个故障会被
-  /// 重复计成几十次，阈值同样失去意义。
-  ///
-  /// 因此用时间窗：同一个域名在 [directOutcomeWindow] 内只记一次。一次故障里的
-  /// 多条连接被折成一次观测，而持续存在几分钟的问题会稳定累积——这正是
-  /// 「这个域名现在是不是有问题」想问的东西。
-  ///
-  /// 两个 kind 各记一份：同一个域名完全可能既挂死过、也正常交付过，
-  /// 那正是「不稳定」这件事本身，合并会丢掉其中一半的事实。
-  final Map<String, DateTime> _lastDeliveredAt = <String, DateTime>{};
-  final Map<String, DateTime> _lastStallAt = <String, DateTime>{};
+  /// 学习策略。所有权重的阈值与判据都在 `route_learning.dart`，本层只负责
+  /// **观测**——把一条连接的最终状态翻译成「该记哪种证据」。
+  LearningPolicy get policy => hooks.learningPolicy;
 
-  /// 同一个域名的同类观测之间的最小间隔。
+  /// 同类观测的时间窗限流。见 [OutcomeThrottle]。
   ///
-  /// 取 15 秒的依据：轮询周期是 1 秒，而一次页面加载/一次重试风暴都在几秒内
-  /// 完成；15 秒既能把它们折叠成一次，又能让持续存在的问题在大约 45 秒内
-  /// 攒满「连续 3 次」。更长会让纠正变迟钝，更短则挡不住突发。
-  static const Duration directOutcomeWindow = Duration(seconds: 15);
-
-  /// 限流表的容量上限。超出即整体清空：它只影响「再数几次」的成本。
-  static const int maxDirectOutcomeLog = 2000;
-
-  /// 该域名是否在时间窗内已经记过同类观测。
-  static bool _recentlyRecorded(
-    Map<String, DateTime> log,
-    String domain,
-    DateTime now,
-  ) {
-    final last = log[domain];
-    return last != null && now.difference(last) < directOutcomeWindow;
-  }
-
-  static void _stamp(Map<String, DateTime> log, String domain, DateTime now) {
-    log[domain] = now;
-    if (log.length > maxDirectOutcomeLog) log.clear();
-  }
+  /// 放在本层而不是策略模块：限流要回答的是「这段时间里这个域名记过几次」，
+  /// 而那是观测层的知识——策略只规定窗口有多长。
+  late final OutcomeThrottle _throttle = OutcomeThrottle(policy: policy);
 
   /// 待探测「是否本该直连」的隧道目标。
   ///
@@ -379,8 +338,7 @@ class CoreMonitor {
   /// 紧接着一次探测失败又会报「隧道不通」。
   void start({DateTime? since}) {
     _seen.clear();
-    _lastDeliveredAt.clear();
-    _lastStallAt.clear();
+    _throttle.clear();
     // 连接轨迹必须清掉：上一次会话的连接 id 不会重现，留着会让第一次
     // 质量判定把「上一轮的旧轨迹」当成一条刚关闭的连接。
     _connTraces.clear();
@@ -694,8 +652,8 @@ class CoreMonitor {
   /// 新连接 → 分流记录，并顺带把走隧道的流量按域名累计。
   ///
   /// 注意这里**不再**判定「直连成功」。原因见
-  /// [classifyClosedDirectConnection]：一条连接刚出现时它的字节数还没有意义
-  /// （新连接往往只有几百字节的首包），当时就下结论会把「握手成功、随后挂住」
+  /// [LearningPolicy.classifyDirectConnection]：一条连接刚出现时它的字节数还没有
+  /// 意义（新连接往往只有几百字节的首包），当时就下结论会把「握手成功、随后挂住」
   /// 误判成成功。现在改为在该连接**消失之后**按它的最终字节数与存活时长判定。
   void _emitNewConnections(Map<String, Object?> json) {
     final fresh = ClashSnapshot.pullNew(json, _seen);
@@ -725,51 +683,6 @@ class CoreMonitor {
 
   // ------------------------------------------------- 直连连接的质量判定
 
-  /// 判定「交付了内容」的字节下限。
-  ///
-  /// 实测校准（2026-09-13，中国大陆·深圳，**直连** measured with `curl --noproxy '*'`）：
-  ///
-  /// ```
-  /// 成功的请求  交付 577,137 字节（一次慢的：448,401 字节 / 12.0s）
-  /// 挂死的请求  交付 0 字节（存活 8–10 秒）
-  /// ```
-  ///
-  /// 两者相差**三个数量级**，因此这个下限取得宽松也不会误判。取 8 KB：远低于
-  /// 任何真实页面或下载对象，又远高于「隐约漏出几个字节」的情形。
-  ///
-  /// 为什么不能沿用「跑出过任何字节就算成功」：实测里最常见的失败形态恰恰是
-  /// 「TLS 握手几百毫秒就成功、随后只漏出零星字节就挂住」，用 `> 0` 会把这一类
-  /// 记成成功，进而把连续失败计数清零。
-  static const int substantiveByteFloor = 8 * 1024;
-
-  /// 判定「握手成功但没有交付」的存活时长下限。
-  ///
-  /// 实测：挂死连接的存活时长为 8–10 秒（受客户端超时限制，真实值只会更长），
-  /// 而成功的连接为 0.8–4.6 秒。**但只看时长不够**——同一批实测里有一次
-  /// 存活 12.0 秒却交付了 448 KB 的「慢但成功」。因此必须与字节数联合判断，
-  /// 这正是 [classifyClosedDirectConnection] 的写法。
-  static const Duration stallFloor = Duration(seconds: 6);
-
-  /// 一条**已关闭**直连连接的质量判定结果。
-  ///
-  /// 三态而不是布尔：拿不准时不下结论，比下错结论安全——这与 DNS 交叉校验
-  /// 「拿不到地理信息就不下结论」是同一条原则。
-  @visibleForTesting
-  static DirectOutcome classifyClosedDirectConnection({
-    required bool direct,
-    required int bytes,
-    required Duration? alive,
-  }) {
-    if (!direct) return DirectOutcome.notApplicable;
-    // 交付够多 → 这条直连确实把内容送出来了，是可信的正向证据。
-    if (bytes >= substantiveByteFloor) return DirectOutcome.delivered;
-    // 存活够久却几乎没交付 → 挂死。这是实测中最常见、而原先完全看不见的一类。
-    if (alive != null && alive >= stallFloor) return DirectOutcome.stalled;
-    // 其余（短命且字节少）不下结论：可能是一个正常的小响应，也可能是一次
-    // 快速失败——后者由内核日志的 ERROR 行负责归因，不需要这里重复计。
-    return DirectOutcome.pending;
-  }
-
   /// 逐轮记录每条连接的最后状态，用于在它**消失之后**做质量判定。
   ///
   /// 键是连接 id。连接关闭时从内核列表里消失，那一刻本机手里留着它最后已知的
@@ -793,7 +706,7 @@ class CoreMonitor {
       _connTraces.remove(entry.key);
       if (table == null) continue;
       final trace = entry.value;
-      final outcome = classifyClosedDirectConnection(
+      final outcome = policy.classifyDirectConnection(
         direct: trace.direct,
         bytes: trace.bytes,
         alive: trace.alive,
@@ -802,17 +715,16 @@ class CoreMonitor {
       if (domain.isEmpty) continue;
       switch (outcome) {
         case DirectOutcome.delivered:
-          if (_recentlyRecorded(_lastDeliveredAt, domain, now)) continue;
-          if (table.recordDirectSuccess(trace.host)) {
-            _stamp(_lastDeliveredAt, domain, now);
-          }
+          // 限流：一次页面加载会开出几十条连接，同一个域名的同类观测在时间窗内
+          // 只记一次，否则阈值会被突发刷满。
+          if (!_throttle.tryRecord(EvidenceKind.delivery, domain, now)) continue;
+          table.recordDirectSuccess(trace.host);
         case DirectOutcome.stalled:
-          if (_recentlyRecorded(_lastStallAt, domain, now)) continue;
+          if (!_throttle.tryRecord(EvidenceKind.stall, domain, now)) continue;
           final decision = table.recordDirectStall(
             trace.host,
             reason: '握手成功但 ${trace.bytes} 字节后无数据',
           );
-          _stamp(_lastStallAt, domain, now);
           if (decision.added) hooks.listener.onAutoRouteLearned(decision);
         case DirectOutcome.notApplicable:
         case DirectOutcome.pending:
