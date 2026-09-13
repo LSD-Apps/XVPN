@@ -210,7 +210,10 @@ void main() {
         RoutePreference.forceDirect,
         reason: '「改为直连」必须真的落到规则表里，否则就是一个没反应的按钮',
       );
-      expect(find.textContaining('下一次连接'), findsWidgets);
+      // 提示语必须与实现说的一致：改动经可热更新的规则集下发，不需要重连。
+      // 这条断言锁的是「界面不会让用户白重连一次」。
+      expect(find.textContaining('无需重连'), findsWidgets);
+      expect(find.textContaining('下一次连接'), findsNothing);
     });
 
     testWidgets('没有隧道流量时说明清单会在连接后出现', (WidgetTester tester) async {

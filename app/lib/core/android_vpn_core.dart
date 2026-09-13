@@ -10,6 +10,7 @@ import 'core_monitor.dart';
 import 'cn_ip_index.dart';
 import 'dns_client.dart';
 import 'rulesets.dart';
+import 'route_rule_set_host.dart';
 import 'singbox_config.dart';
 import 'singbox_runner.dart';
 import 'tunnel_health.dart';
@@ -94,6 +95,12 @@ class AndroidVpnCore extends VpnCore {
 
   /// 自动纠正表。跨连接保留。
   final AutoRouteTable _autoRoute = AutoRouteTable();
+
+  /// 热更新规则集的本地服务（与桌面端同一套实现）。
+  ///
+  /// 安卓端同样需要它：决策与执行的时间差在两个平台上一模一样，而这里是唯一
+  /// 能取消这个时间差的机制。惰性初始化是因为它必须引用同一个表实例。
+  late final AutoRouteRuleSetHost _ruleSetHost = AutoRouteRuleSetHost(_autoRoute);
 
   /// 安卓端与桌面端一样能报告握手状态。
   ///
@@ -241,6 +248,16 @@ class AndroidVpnCore extends VpnCore {
       _cnIpIndex = await _loadCnIpIndex(ruleSetDir);
       if (aborted()) return;
 
+      // 热更新投递：先把本地规则集服务起好，再让内核去拉。
+      //
+      // 顺序不能颠倒：实测（sing-box 1.14.0）**首次**拉取失败会让内核直接起不来，
+      // 之后的刷新失败才只是报错继续。拿不到就退回内联规则——两个平台在这一点上
+      // 行为一致，因为用的是同一套实现与同一个退回路径。
+      final hotRouteSets = settings.splitMode == SplitMode.smart
+          ? await _ruleSetHost.start()
+          : null;
+      if (aborted()) return;
+
       // 3) 生成配置。分流与 DNS 策略与 Windows 端完全一致，
       //    自动纠正表也一并注入。
       //
@@ -256,6 +273,7 @@ class AndroidVpnCore extends VpnCore {
         logSplits: settings.logSplits,
         autoRoute: _autoRoute,
         ruleSets: enabledRuleSetSpecs,
+        hotRouteSets: hotRouteSets,
       );
 
       // 4) 接收内核日志，供失败归因与自动纠正使用。
@@ -359,6 +377,9 @@ class AndroidVpnCore extends VpnCore {
     // 这三者都由调用方（disconnect、取消、新一轮 _startTunnel）先立好，
     // 因此这里只负责拆服务本身。
     monitor.stop();
+    // 内核即将消失，指向本机服务的规则集也就没有使用者了。与桌面端一致：
+    // 断开就把一切都收干净，下一次连接重新起（端口会变，配置也是重新生成的）。
+    await _ruleSetHost.stop();
     try {
       await _channel.invokeMethod<void>('disconnect');
     } on Object {
@@ -444,6 +465,7 @@ class AndroidVpnCore extends VpnCore {
   @override
   void dispose() {
     monitor.stop();
+    unawaited(_ruleSetHost.stop());
     super.dispose();
   }
 

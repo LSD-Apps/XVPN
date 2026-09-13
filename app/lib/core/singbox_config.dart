@@ -5,6 +5,7 @@ import '../protocols/parsed_profile.dart';
 import '../protocols/protocol_adapter.dart';
 import 'auto_route.dart';
 import 'outbound_tags.dart';
+import 'route_rule_sets.dart';
 
 /// 入站方式：决定内核如何接管流量。两端能力不同，因此按平台选择。
 enum InboundMode {
@@ -151,6 +152,7 @@ class SingBoxConfigBuilder {
     bool logSplits = true,
     AutoRouteTable? autoRoute,
     List<RuleSetSpec> ruleSets = defaultRuleSets,
+    RouteRuleSetRefs? hotRouteSets,
   }) {
     final remoteDns = _pickRemoteDns(profile);
     final adapter = VpnProtocolFactory.adapterForProtocol(profile.protocol);
@@ -184,6 +186,7 @@ class SingBoxConfigBuilder {
         splitMode: splitMode,
         autoRoute: autoRoute,
         ruleSets: ruleSets,
+        hotRouteSets: hotRouteSets,
       ),
       if (isEndpoint) 'endpoints': <Object?>[endpoint],
       'inbounds': <Object?>[
@@ -203,12 +206,27 @@ class SingBoxConfigBuilder {
           'domain_resolver': <String, Object?>{'server': 'dns-cn'},
         },
       ],
+      // 拉取热更新规则集所用的 HTTP 客户端。
+      //
+      // 它必须在这里声明、并被 `route.rule_set[].http_client` 引用：不声明会让内核
+      // 退回「隐式默认客户端」，那条路径在 1.14.0 已弃用、1.16.0 移除；用旧的
+      // `download_detour` 同样是弃用路径。detour 固定指向 direct，理由与
+      // [AutoRouteRuleSetTags.httpClient] 上记的一致——「投递决策」不该依赖任何
+      // 分流判定，更不该依赖隧道可用。
+      if (_hotActive(hotRouteSets, splitMode))
+        'http_clients': <Object?>[
+          <String, Object?>{
+            'tag': AutoRouteRuleSetTags.httpClient,
+            'detour': AutoRouteRuleSetTags.httpClientDetour,
+          },
+        ],
       'route': _route(
         ruleSetDir: ruleSetDir,
         splitMode: splitMode,
         resolveDnsTag: remoteDns.$3,
         autoRoute: autoRoute,
         ruleSets: ruleSets,
+        hotRouteSets: hotRouteSets,
       ),
       'experimental': <String, Object?>{
         // 界面上的连接列表与实时流量都从这里取，避免自己解析日志。
@@ -337,6 +355,7 @@ class SingBoxConfigBuilder {
     required SplitMode splitMode,
     AutoRouteTable? autoRoute,
     required List<RuleSetSpec> ruleSets,
+    RouteRuleSetRefs? hotRouteSets,
   }) {
     final (remoteAddress, _, remoteTag) = remoteDns;
     final remoteServers = remoteDnsServers(profile);
@@ -362,7 +381,11 @@ class SingBoxConfigBuilder {
     // 走隧道」的域名也不该继续被送去境内解析器。
     //
     // 因此这里从**同一个** [AutoRouteTable] 派生，而不是另写一份条件。
-    final decisions = splitMode == SplitMode.smart && autoRoute != null
+    //
+    // 热更新可用时改为引用规则集：DNS 与路由必须跟着**同一次**决策变化，否则
+    // 「路由已改判、DNS 还按旧判断解析」会重新制造本方法要消除的那种矛盾。
+    final hot = _hotActive(hotRouteSets, splitMode);
+    final decisions = !hot && splitMode == SplitMode.smart && autoRoute != null
         ? autoRoute.domainSets()
         : (directDomains: const <String>[], proxyDomains: const <String>[]);
 
@@ -405,7 +428,17 @@ class SingBoxConfigBuilder {
         // 可疑答案（或直连根本不通），就不该再让境内解析器来决定它连到哪。
         // 必须排在下面 geosite-cn 那条之前：这些域名往往同时命中 geosite-cn，
         // 而那条会把它们送去境内解析器，与判定的依据直接冲突。
-        ..._dnsDomainRule(decisions.proxyDomains, remoteTag),
+        if (hot)
+          <String, Object?>{
+            'rule_set': <String>[
+              AutoRouteRuleSetTags.userProxy,
+              AutoRouteRuleSetTags.autoProxy,
+            ],
+            'action': 'route',
+            'server': remoteTag,
+          }
+        else
+          ..._dnsDomainRule(decisions.proxyDomains, remoteTag),
         // 命中**域名类**规则集的域名用直连 DNS：既快，又能拿到就近的 CDN 节点。
         //
         // 这里引用的是全部域名类规则集（`geosite-cn` 与 `geosite-cn-extra`），
@@ -419,7 +452,17 @@ class SingBoxConfigBuilder {
           },
         // 已判定「该直连」的域名（直连白名单预置 + 反方向学到的）：
         // 要用直连解析器，否则会拿到境外 CDN 的地址再去直连。
-        ..._dnsDomainRule(decisions.directDomains, 'dns-cn'),
+        if (hot)
+          <String, Object?>{
+            'rule_set': <String>[
+              AutoRouteRuleSetTags.userDirect,
+              AutoRouteRuleSetTags.autoDirect,
+            ],
+            'action': 'route',
+            'server': 'dns-cn',
+          }
+        else
+          ..._dnsDomainRule(decisions.directDomains, 'dns-cn'),
       ],
       'final': switch (splitMode) {
         SplitMode.smart => remoteTag,
@@ -448,6 +491,7 @@ class SingBoxConfigBuilder {
     required String resolveDnsTag,
     AutoRouteTable? autoRoute,
     required List<RuleSetSpec> ruleSets,
+    RouteRuleSetRefs? hotRouteSets,
   }) {
     // 域名决策只在智能分流下注入。规则来自 AutoRouteTable 这**一个**来源——
     // 自动纠正（两个方向）与直连白名单预置都在那张表里，因此这里不需要为
@@ -456,18 +500,60 @@ class SingBoxConfigBuilder {
     // 「全局代理」「全局直连」是用户显式要求忽略分流的两种模式，
     // 往里注入域名规则会与用户的意图冲突——尤其是全局直连时，
     // 注入 force-proxy 会让「完全不使用隧道」这个承诺失效。
-    final decided = splitMode == SplitMode.smart && autoRoute != null
+    final hotRefs = _hotActive(hotRouteSets, splitMode) ? hotRouteSets : null;
+    final hot = hotRefs != null;
+    final decided = !hot && splitMode == SplitMode.smart && autoRoute != null
         ? autoRoute.buildRouteRules()
         : (
             userRules: const <Map<String, Object?>>[],
             otherRules: const <Map<String, Object?>>[],
           );
 
+    // 热更新投递：决策由本机服务的四份规则集提供，内核按 update_interval 反复
+    // 拉取，因此**不需要重连**就能改判。
+    //
+    // 两个投递方式只在「决策何时生效」上不同，规则内容同源（都来自
+    // `AutoRouteTable.domainMatchForms()`）。分段的**位置**也逐条对应：用户段在
+    // `ip_is_private` 之前，学到段在它之后——理由见 `buildRouteRules()` 的文档。
+    final userSegment = hot
+        ? <Map<String, Object?>>[
+            _hotRule(AutoRouteRuleSetTags.userProxy, OutboundTags.vpn),
+            _hotRule(AutoRouteRuleSetTags.userDirect, OutboundTags.direct),
+          ]
+        : decided.userRules;
+    final autoSegment = hot
+        ? <Map<String, Object?>>[
+            _hotRule(AutoRouteRuleSetTags.autoProxy, OutboundTags.vpn),
+            _hotRule(AutoRouteRuleSetTags.autoDirect, OutboundTags.direct),
+          ]
+        : decided.otherRules;
+
     // 规则集标签按传入顺序排列。用户删掉某个规则集后，这里也不会再引用它，
     // 因此内核不会因为「rule_set 未定义」而拒绝启动。
     final ruleSetTags = <String>[
       for (final spec in ruleSets) spec.tag,
     ];
+
+    // 热更新的四份规则集定义。
+    //
+    // 四份恒被定义、恒被引用（即使某一组恰好为空，空规则集什么都不匹配）。少定义
+    // 一个，内核就会因「引用了未定义的 rule_set」拒绝启动——那是启动期硬失败，
+    // 而不是一条规则不生效。地址由 [RouteRuleSetRefs.isComplete] 保证齐全。
+    final hotRuleSetDefs = <Map<String, Object?>>[];
+    if (hotRefs != null) {
+      for (final tag in AutoRouteRuleSetTags.all) {
+        final url = hotRefs.urls[tag];
+        if (url == null) continue;
+        hotRuleSetDefs.add(<String, Object?>{
+          'type': 'remote',
+          'tag': tag,
+          'format': 'source',
+          'url': url,
+          'update_interval': _goDuration(hotRefs.updateInterval),
+          'http_client': AutoRouteRuleSetTags.httpClient,
+        });
+      }
+    }
 
     return <String, Object?>{
       'rules': <Object?>[
@@ -479,7 +565,7 @@ class SingBoxConfigBuilder {
         <String, Object?>{'protocol': 'dns', 'action': 'hijack-dns'},
         // ① 用户手工指定的走向。最高优先级，**连内网直连都能覆盖**
         // （用户可能为了排查问题故意把某个内网域名指向代理）。
-        ...decided.userRules,
+        ...userSegment,
         // ② 私有地址段始终直连。
         //
         // 位置很关键，且**不再是口头约定**：它必须早于程序学到与内置白名单的
@@ -494,7 +580,7 @@ class SingBoxConfigBuilder {
         //   * 「直连失败→走隧道」的那一批需要被拉回隧道，而规则库会先把它们
         //     判成直连（因为它们解析到 geoip-cn 内的地址）；
         //   * 「该直连却被判进隧道」的那一批需要被拉出来，而规则库根本认不出它们。
-        ...decided.otherRules,
+        ...autoSegment,
         // ④ 规则库。
         if (splitMode == SplitMode.smart && ruleSetTags.isNotEmpty)
           <String, Object?>{
@@ -504,6 +590,8 @@ class SingBoxConfigBuilder {
         // ⑤ `route.final` 兜底（见下方）。
       ],
       'rule_set': <Object?>[
+        // 热更新的四份：由本机回环服务提供，内核按 update_interval 反复拉取。
+        ...hotRuleSetDefs,
         for (final spec in ruleSets)
           <String, Object?>{
             'type': 'local',
@@ -565,5 +653,33 @@ class SingBoxConfigBuilder {
         'server': server,
       },
     ];
+  }
+
+  // ------------------------------------------------------------ 热更新规则集
+
+  /// 热更新投递是否可用。
+  ///
+  /// 三个条件缺一不可：调用方给了接入点、四份地址齐全、且是智能分流。
+  ///
+  /// 「四份地址齐全」不是多余的谨慎：路由规则会引用全部四个标签，少一个内核就
+  /// 拒绝启动。把它在这里判掉，就退回了改造前的内联方式——**热生效没了，连接
+  /// 照旧**，而不是让用户面对一个起不来的内核。
+  ///
+  /// 全局代理/全局直连不注入域名决策（用户显式要求忽略分流），因此也不需要规则集；
+  /// 那时若仍引用它们，反而会让「完全不使用隧道」这类承诺被一条规则悄悄破坏。
+  static bool _hotActive(RouteRuleSetRefs? refs, SplitMode splitMode) =>
+      refs != null && refs.isComplete && splitMode == SplitMode.smart;
+
+  /// 一条「引用规则集决定走向」的路由规则。
+  static Map<String, Object?> _hotRule(String tag, String outbound) =>
+      <String, Object?>{
+        'rule_set': <String>[tag],
+        'outbound': outbound,
+      };
+
+  /// Go 风格的时长文本。sing-box 的 `update_interval` 用这种写法。
+  static String _goDuration(Duration duration) {
+    if (duration.inMilliseconds % 1000 == 0) return '${duration.inSeconds}s';
+    return '${duration.inMilliseconds}ms';
   }
 }

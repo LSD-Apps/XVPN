@@ -154,6 +154,117 @@ void main() {
       expect(entryOf(second, 'geosite-cn').enabled, isTrue);
     });
 
+    test('升级：存档里没有的新增内置规则集会被补上', () {
+      // 模拟旧版本留下的存档：只有两个内置规则集，且没有 removedBuiltins 键。
+      // 这个缺陷是端到端自测发现的：出厂副本都解包到了磁盘，但生成的内核配置里
+      // 只引用了两个旧规则集——新增的「默认启用」规则集对升级用户**静默失效**。
+      store.save(<String, Object?>{
+        'profiles': <Object?>[],
+        'ruleSets': <Object?>[
+          <String, Object?>{
+            'name': 'geosite-cn',
+            'kind': 'builtin',
+            'url': 'https://e/a.srs',
+            'enabled': true,
+            'sizeBytes': 0,
+          },
+          <String, Object?>{
+            'name': 'geoip-cn',
+            'kind': 'builtin',
+            'url': 'https://e/b.srs',
+            'enabled': true,
+            'sizeBytes': 0,
+          },
+        ],
+      });
+      final state = newState();
+      addTearDown(state.dispose);
+
+      expect(
+        state.ruleSets.map((RuleSetEntry e) => e.name),
+        containsAll(<String>[
+          'geosite-cn',
+          'geoip-cn',
+          'geosite-cn-extra',
+          'geoip-cn-extra',
+        ]),
+        reason: '新增的内置规则集必须补进来，否则「默认启用」对升级用户失效',
+      );
+      expect(
+        entryOf(state, 'geosite-cn-extra').enabled,
+        isTrue,
+        reason: '补进来的条目要按定义里的默认值启用',
+      );
+      expect(entryOf(state, 'geoip-cn-extra').enabled, isTrue);
+      // 补进来的条目同样要进内核配置——这才是「生效」的判据。
+      expect(
+        state.core.enabledRuleSetSpecs.map((RuleSetSpec s) => s.tag),
+        containsAll(<String>['geosite-cn-extra', 'geoip-cn-extra']),
+      );
+    });
+
+    test('用户删掉的内置规则集不会被「补新增」逻辑复活', () {
+      final first = newState();
+      expect(first.deleteRuleSet('geoip-cn-extra'), isTrue);
+      expect(
+        first.ruleSets.any((RuleSetEntry e) => e.name == 'geoip-cn-extra'),
+        isFalse,
+      );
+      first.dispose();
+
+      final second = newState();
+      addTearDown(second.dispose);
+      expect(
+        second.ruleSets.any((RuleSetEntry e) => e.name == 'geoip-cn-extra'),
+        isFalse,
+        reason: '删除是用户的明确决定，不能被补齐逻辑复活',
+      );
+      expect(
+        second.ruleSets.any((RuleSetEntry e) => e.name == 'geosite-cn-extra'),
+        isTrue,
+        reason: '补新增只影响缺失的那些，不牵连别的',
+      );
+    });
+
+    test('存档里已有的停用状态不被补齐逻辑覆盖', () {
+      final first = newState();
+      expect(first.setRuleSetEnabled('geosite-cn-extra', false), isTrue);
+      first.dispose();
+
+      final second = newState();
+      addTearDown(second.dispose);
+      expect(
+        entryOf(second, 'geosite-cn-extra').enabled,
+        isFalse,
+        reason: '补新增只补「不存在」的条目，不该把用户停用的重新启用',
+      );
+    });
+
+    test('恢复内置规则会清空删除记录，之后新增的内置项照常补入', () {
+      final first = newState();
+      first.deleteRuleSet('geosite-cn-extra');
+      first.dispose();
+
+      final second = newState();
+      addTearDown(second.dispose);
+      expect(second.ruleSets.any((RuleSetEntry e) => e.name == 'geosite-cn-extra'), isFalse);
+
+      second.restoreBuiltinRuleSets();
+      expect(
+        second.ruleSets.any((RuleSetEntry e) => e.name == 'geosite-cn-extra'),
+        isTrue,
+      );
+      second.dispose();
+
+      final third = newState();
+      addTearDown(third.dispose);
+      expect(
+        third.ruleSets.any((RuleSetEntry e) => e.name == 'geosite-cn-extra'),
+        isTrue,
+        reason: '恢复内置之后删除记录应已清空，重启不该又把它去掉',
+      );
+    });
+
     test('删除全部规则集后重启不会退回出厂默认列表', () {
       final first = newState();
       // 逐条删完当前所有规则集（而不是写死两个名字）：将来新增内置项时，

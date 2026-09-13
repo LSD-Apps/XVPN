@@ -54,6 +54,13 @@ export 'route_learning.dart'
         shouldRevokeLearnedProxy;
 
 
+/// 一组域名匹配式的两种形式。
+///
+/// 两者都要下发：sing-box 的 `domain` 是**精确匹配**，`example.com` 不会命中
+/// `www.example.com`；而学习者手里拿到的往往是子域，用户与规则库里写的又可能是
+/// 父域。只下发一种就会出现「规则明明有、域名就是不直连」这类看不出原因的行为。
+typedef DomainMatchForms = ({List<String> exact, List<String> suffix});
+
 /// 一条尚未定性的「直连没有交付」证据。
 ///
 /// 它还不是规则，因此不放进 `AutoRouteTable._exact`（那会立刻生成路由规则）。
@@ -1290,11 +1297,37 @@ class AutoRouteTable {
   /// 学习者手里拿到的却往往是子域。两者都下发才符合直觉。
   ///
   /// 每段内按 `proxy 精确 → proxy 后缀 → direct 精确 → direct 后缀` 排列。
+  ///
+  /// 这是**内联**投递方式：决策在生成 config.json 时定死，因此只在下一次连接
+  /// 时生效。热更新投递方式见 [domainMatchForms]。
   ({
     List<Map<String, Object?>> userRules,
     List<Map<String, Object?>> otherRules,
   })
   buildRouteRules() {
+    final forms = domainMatchForms();
+    return (
+      userRules: _rulesFor(forms.userProxy, forms.userDirect),
+      otherRules: _rulesFor(forms.autoProxy, forms.autoDirect),
+    );
+  }
+
+  /// 按「来源 × 走向」切出的四组域名匹配式。
+  ///
+  /// 存在的理由是**同一份决策要投递两次**：一次作为内联路由规则写进
+  /// `config.json`（[buildRouteRules]，配置生成时定死），一次作为可热更新的
+  /// 规则集文档（内核按 `update_interval` 反复拉取）。
+  ///
+  /// 两处各写一份分组逻辑迟早会分叉，而分叉的表现很隐蔽——**界面显示的走向**
+  /// 与**内核实际执行的走向**不一致，用户看到的解释与真实行为对不上，却很难
+  /// 归因。因此分组只在这里做一次，两种投递方式都从它派生。
+  ({
+    DomainMatchForms userProxy,
+    DomainMatchForms userDirect,
+    DomainMatchForms autoProxy,
+    DomainMatchForms autoDirect,
+  })
+  domainMatchForms() {
     final user = <AutoRouteEntry>[];
     final others = <AutoRouteEntry>[];
     for (final entry in _exact.values) {
@@ -1305,43 +1338,46 @@ class AutoRouteTable {
       }
     }
     return (
-      userRules: _rulesFor(user),
-      otherRules: _rulesFor(others),
+      userProxy: _formsFor(user, RoutePreference.forceProxy),
+      userDirect: _formsFor(user, RoutePreference.forceDirect),
+      autoProxy: _formsFor(others, RoutePreference.forceProxy),
+      autoDirect: _formsFor(others, RoutePreference.forceDirect),
     );
   }
 
-  /// 把一批条目翻译成路由规则片段。
+  /// 把一批条目里走向为 [preference] 的那些翻译成域名匹配式。
   ///
   /// 段内排序：按域名长度降序，这样更具体的子域规则先命中父域规则
   /// （父域规则在同一个 `domain_suffix` 列表里会覆盖它）。
-  static List<Map<String, Object?>> _rulesFor(List<AutoRouteEntry> entries) {
-    if (entries.isEmpty) return const <Map<String, Object?>>[];
-    final sorted = entries.toList(growable: false)
+  static DomainMatchForms _formsFor(
+    List<AutoRouteEntry> entries,
+    RoutePreference preference,
+  ) {
+    final sorted = entries
+        .where((AutoRouteEntry e) => e.preference == preference)
+        .toList(growable: false)
       ..sort((AutoRouteEntry a, AutoRouteEntry b) {
         final byLength = b.domain.length.compareTo(a.domain.length);
         return byLength != 0 ? byLength : a.domain.compareTo(b.domain);
       });
 
-    final proxyExact = <String>[];
-    final proxySuffix = <String>[];
-    final directExact = <String>[];
-    final directSuffix = <String>[];
-
+    final exact = <String>[];
+    final suffix = <String>[];
     for (final entry in sorted) {
-      final hasSuffixForm = entry.domain.contains('.');
-      switch (entry.preference) {
-        case RoutePreference.forceProxy:
-          proxyExact.add(entry.domain);
-          if (hasSuffixForm) proxySuffix.add(entry.domain);
-        case RoutePreference.forceDirect:
-          directExact.add(entry.domain);
-          if (hasSuffixForm) directSuffix.add(entry.domain);
-      }
+      exact.add(entry.domain);
+      // 单标签主机名（以及不含点的名字）没有「子域」这一说，只下发精确形式。
+      if (entry.domain.contains('.')) suffix.add(entry.domain);
     }
+    return (exact: exact, suffix: suffix);
+  }
 
+  static List<Map<String, Object?>> _rulesFor(
+    DomainMatchForms proxy,
+    DomainMatchForms direct,
+  ) {
     return <Map<String, Object?>>[
-      ..._chunkedRule(proxyExact, proxySuffix, OutboundTags.vpn),
-      ..._chunkedRule(directExact, directSuffix, OutboundTags.direct),
+      ..._chunkedRule(proxy.exact, proxy.suffix, OutboundTags.vpn),
+      ..._chunkedRule(direct.exact, direct.suffix, OutboundTags.direct),
     ];
   }
 

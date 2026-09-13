@@ -708,7 +708,7 @@ class _DomainCheckDialogState extends State<_DomainCheckDialog> {
                     children: <Widget>[
                       Expanded(
                         child: Text(
-                          '改判立刻生效，下次连接写进路由',
+                          '改判立即生效（内核 10 秒内刷新分流）',
                           style: TextStyle(fontSize: 11, color: XV.muted2),
                         ),
                       ),

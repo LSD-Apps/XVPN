@@ -778,6 +778,10 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
   ///
   /// 返回是否真的写入了规则。界面据此给出反馈——用户点了「添加」却什么都没
   /// 发生（例如输入的是一个 IP，而 IP 不参与按域名的分流规则），是必须说清楚的。
+  ///
+  /// 「什么时候生效」由 `route_rule_sets.dart` 那套投递机制决定：内核按
+  /// update_interval 反复拉取当前决策，因此**不需要重连**，最多十几秒后生效。
+  /// 这里不做任何主动通知——投递是内核侧的行为，不是界面状态。
   bool setDomainPreference(String domain, RoutePreference preference) {
     final table = _core.autoRoute;
     if (table == null) return false;
@@ -793,8 +797,9 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
 
   /// 启用/停用一个直连白名单预置。
   ///
-  /// 返回是否真的改变了状态。改动在下一次连接（或重连）时才会写进内核配置——
-  /// 内核是拿着生成好的 config.json 运行的，不重连就不会读新的规则。
+  /// 返回是否真的改变了状态。改动经 [AutoRouteTable] 下发，而那张表是作为
+  /// **可热更新的规则集**投递给内核的（见 `route_rule_sets.dart`）：内核按
+  /// update_interval 反复拉取，因此不需要重连，最多十几秒后生效。
   ///
   /// 预置走 [AutoRouteTable] 这一条统一路径（而不是在配置生成时另插规则），
   /// 因此匹配、优先级、界面、DNS 策略、反向纠正都自动一致。
@@ -991,11 +996,19 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
 
     _wantConnected = data['wantConnected'] as bool? ?? false;
 
-    // 规则集：键存在就整份采用（删掉的内置规则集因此保持删除），键缺失才用
+    // 规则集：键存在就采用存档（删掉的内置规则集因此保持删除），键缺失才用
     // 出厂默认值。这两者必须区分——用「列表为空」当「没有配置」会让用户
     // 删光规则集后又在重启时看到它们全部复活。
     if (data.containsKey('ruleSets')) {
       _ruleSets = _readRuleSets(data['ruleSets']);
+      _removedBuiltins = _readRemovedBuiltins(data['removedBuiltins']);
+      // 关键一步：把**存档里没有、也没有被用户删除过**的内置规则集补进来。
+      //
+      // 只做「有存档就用存档」是不够的：升级上来的用户存档里没有新加的内置
+      // 规则集，于是那些「默认启用」的规则集对他们**静默失效**——开关显示成
+      // 未启用，用户以为是自己关的。这个缺陷端到端跑起来才暴露：出厂副本都解包
+      // 到了磁盘，但生成的内核配置里只引用了两个旧规则集。
+      _mergeNewBuiltins();
     }
 
     // 自动纠正表交给内核侧恢复：它是内核的行为，不是界面的状态。
@@ -1147,6 +1160,9 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
         'ruleSets': <Object?>[
           for (final RuleSetEntry entry in _ruleSets) entry.toJson(),
         ],
+        // 用户明确删掉的内置规则集。必须落盘，否则下次启动会被
+        // `_mergeNewBuiltins` 补回来，「删掉的内置保持删除」这条语义就没了。
+        'removedBuiltins': _removedBuiltins,
         // 自动纠正表随设置一起落盘。它的价值是「学一次，以后都记得」，
         // 每次重启就忘掉会让用户觉得分流时好时坏。
         'autoRoute': _core.exportAutoRoute(),
@@ -1200,10 +1216,56 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
   /// 被改动，随时可以用 [restoreBuiltinRuleSets] 找回来。删除会连磁盘上的副本
   /// 一并清掉；内置的下次确保目录时可能由出厂副本重新落盘，但它已不在列表里，
   /// 因此不会被内核引用。
+  /// 用户**明确删除过**的内置规则集名。
+  ///
+  /// 存在的理由是「删掉的内置规则集保持删除」这条语义需要区分两种情况：
+  ///
+  ///   * 「用户把它删了」→ 不该复活；
+  ///   * 「这个内置规则集是**新增的**，存档里自然没有」→ 应当补进来。
+  ///
+  /// 靠「不在 `_ruleSets` 里」无法区分这两者，因此把删除动作显式记下来。
+  /// 这个缺陷是端到端自测发现的：出厂副本都解包到了磁盘，但生成的内核配置里
+  /// 只引用了两个旧规则集，新增的两份对升级用户**静默失效**。
+  List<String> _removedBuiltins = <String>[];
+
+  /// 把存档里没有、也没有被用户删除过的内置规则集补进来。
+  void _mergeNewBuiltins() {
+    final present = _ruleSets.map((RuleSetEntry e) => e.name).toSet();
+    for (final builtin in RuleSetStore.builtins) {
+      if (present.contains(builtin.name)) continue;
+      if (_removedBuiltins.contains(builtin.name)) continue;
+      _ruleSets.add(builtin.toEntry());
+    }
+    // 清掉指向已不存在内置规则集的陈旧记录：程序升级后某个内置项可能被移除，
+    // 留着它只会让存档慢慢积攒无意义的条目。
+    _removedBuiltins.removeWhere(
+      (String name) => !RuleSetStore.builtinFileNames.contains('$name.srs'),
+    );
+  }
+
+  /// 解析存档里的「已删除内置规则集」列表。单条损坏只跳过这一条。
+  static List<String> _readRemovedBuiltins(Object? raw) {
+    // 必须返回**可增长**的列表：调用方随后会对它做 removeWhere 清理陈旧记录。
+    if (raw is! List) return <String>[];
+    final names = <String>[];
+    for (final item in raw) {
+      if (item is! String) continue;
+      if (names.contains(item)) continue;
+      names.add(item);
+    }
+    return names;
+  }
+
+  /// 删除一个规则集。
   bool deleteRuleSet(String name) {
     final index = _ruleSets.indexWhere((RuleSetEntry e) => e.name == name);
     if (index < 0) return false;
     final entry = _ruleSets.removeAt(index);
+    // 内置的删除要显式记下来，否则下次启动会被 [_mergeNewBuiltins] 当成
+    // 「新增的内置规则集没有出现过」而补回来。
+    if (entry.isBuiltin && !_removedBuiltins.contains(name)) {
+      _removedBuiltins = <String>[..._removedBuiltins, name];
+    }
     unawaited(_deleteRuleSetFile(entry));
     _commitRuleSets();
     return true;
@@ -1331,6 +1393,9 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
       ...RuleSetStore.defaultEntries(),
       ...custom,
     ];
+    // 「恢复内置规则」的意思就是把删除记录清空——之后新增的内置规则集
+    // 也应当照常补进来。
+    _removedBuiltins = <String>[];
     _core.autoRoute?.removeLearned();
     // 展示用的「最近学到」也一并清掉；用户手工指定的条目保留。
     _learnedDecisions.removeWhere(
@@ -1612,7 +1677,8 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
   void onAutoRouteLearned(AutoRouteDecision decision) {
     _rememberDecision(decision);
     notifyListeners();
-    // 学到的规则要尽快落盘：它决定下一次连接的路由表。
+    // 学到的规则要尽快落盘：它既决定本次会话接下来的分流（经可热更新的规则集
+    // 投递给运行中的内核），也是下一次连接的路由表来源。
     _persist();
   }
 

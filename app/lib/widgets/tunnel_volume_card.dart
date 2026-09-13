@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../app_state.dart';
+import '../core/route_rule_sets.dart';
 import '../core/tunnel_report.dart';
 import '../format.dart';
 import '../models.dart';
@@ -105,12 +106,16 @@ class TunnelVolumeCard extends StatelessWidget {
 
   void _prefer(BuildContext context, TunnelVolumeEntry entry) {
     state.preferDirectFor(entry.domain);
-    // 改的是内核配置里的路由表，而内核是拿着已生成的配置在跑，所以必须说明
-    // 「什么时候生效」，否则用户会以为点了立刻变，然后怀疑没生效。
+    // 改动经自动纠正表下发，而那张表是作为**可热更新的规则集**投递给内核的：
+    // 内核按 update_interval 反复拉取，因此不需要重连，最多十几秒后生效。
+    //
+    // 这句话必须与实现一致，两个方向都不能错：说「立刻生效」而实际要等重连，
+    // 用户会以为点了没用；说「下次连接生效」而实际几秒就生效，用户会白重连一次。
     ScaffoldMessenger.maybeOf(context)?.showSnackBar(
       SnackBar(
         content: Text(
-          '已把 ${entry.domain} 改为直连，下一次连接（或重连）时生效',
+          '已把 ${entry.domain} 改为直连，'
+          '${RouteRuleSetRefs.defaultUpdateInterval.inSeconds} 秒内生效（无需重连）',
           style: TextStyle(fontSize: 12.5, color: XV.text),
         ),
         backgroundColor: XV.panel3,

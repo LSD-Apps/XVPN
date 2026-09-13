@@ -12,6 +12,7 @@ import 'dns_client.dart';
 import 'platform_paths.dart';
 import 'port_allocator.dart';
 import 'reconnect.dart';
+import 'route_rule_set_host.dart';
 import 'rulesets.dart';
 import 'singbox_config.dart';
 import 'system_proxy.dart';
@@ -216,6 +217,12 @@ class SingBoxRunner extends VpnCore {
   /// 自动纠正表。跨连接保留，因此用户不用每次重连都重新学习一遍。
   final AutoRouteTable _autoRoute = AutoRouteTable();
 
+  /// 热更新规则集的本地服务。
+  ///
+  /// 惰性初始化：它必须引用**同一个** [AutoRouteTable] 实例，而字段初始化器里
+  /// 不能引用 `this`。
+  late final AutoRouteRuleSetHost _ruleSetHost = AutoRouteRuleSetHost(_autoRoute);
+
   CnIpIndex _cnIpIndex = CnIpIndex.empty;
   bool _indexLoaded = false;
 
@@ -376,7 +383,19 @@ class SingBoxRunner extends VpnCore {
       }
 
       // 1) 生成配置。规则集直接引用随包分发的文件，避免二次拷贝。
-      //    每次都重新生成：这样自动纠正表里新学到的规则能在下次连接时生效。
+      //
+      //    热更新投递：先把本地规则集服务起好，再让内核去拉。
+      //
+      //    顺序不能颠倒，也不能省略：实测（sing-box 1.14.0）**首次**拉取失败会让
+      //    内核直接起不来（`start service: initialize rule-set`），而之后的刷新
+      //    失败只是报错继续。服务起不来就退回内联规则——热生效没了，连接照旧。
+      //    这也正是自动纠正「学到的规则本次会话就生效」的实现方式：内核按
+      //    update_interval 反复拉取当前决策，不需要重建配置、更不需要重连。
+      final hotRouteSets = settings.splitMode == SplitMode.smart
+          ? await _ruleSetHost.start()
+          : null;
+      if (aborted()) return;
+
       //    这里把目录记给测试观测点：更新界面写的是不是同一个目录，靠它断言。
       debugRuleSetDirObserver?.call(runtime.ruleSetDir.path);
       final config = SingBoxConfigBuilder.build(
@@ -388,6 +407,7 @@ class SingBoxRunner extends VpnCore {
         logSplits: settings.logSplits,
         autoRoute: _autoRoute,
         ruleSets: enabledRuleSetSpecs,
+        hotRouteSets: hotRouteSets,
       );
       final configFile = File(
         '${runtime.workDir.path}${Platform.pathSeparator}config.json',
@@ -607,6 +627,11 @@ class SingBoxRunner extends VpnCore {
   Future<void> _stopCore({required bool notifyStatus}) async {
     monitor.stop();
 
+    // 内核即将消失，指向本机服务的规则集也就没有使用者了。收掉它而不是留着：
+    // 断开之后还开着一个回环监听、继续对外提供分流决策，与「断开就是把一切都
+    // 收干净」这条约定不符。下一次连接会重新起（端口会变，配置也是重新生成的）。
+    await _ruleSetHost.stop();
+
     if (_proxyTakenOver) {
       // 还原失败**必须出声**。
       //
@@ -738,6 +763,10 @@ class SingBoxRunner extends VpnCore {
     monitor.stop();
     _process?.kill();
     _process = null;
+    // 兜底收掉规则集服务。正常路径上 `_stopCore` 已经收过，这里是覆盖
+    // 「引擎被直接拆掉、没走断开流程」的情况（开发时的热重启、进程被强杀前的
+    // dispose）。stop 可重复调用。
+    unawaited(_ruleSetHost.stop());
     // 兜底还原系统代理。
     //
     // Windows 上正常退出由原生侧在 WM_DESTROY / WM_QUERYENDSESSION 里完成；

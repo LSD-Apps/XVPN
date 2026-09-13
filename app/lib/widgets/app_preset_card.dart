@@ -55,8 +55,9 @@ class AppPresetCard extends StatelessWidget {
           for (final preset in presets)
             _buildPreset(preset, enabled.contains(preset.id)),
           const SizedBox(height: 6),
+          // 预置经自动纠正表下发，而那张表是可热更新的规则集，因此不需要重连。
           Text(
-            '改动在下一次连接（或重连）时写进内核配置。',
+            '改动会在十几秒内生效，无需重连。',
             style: XvText.caption,
           ),
         ],
