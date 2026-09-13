@@ -61,6 +61,11 @@ class FlutterWindow : public Win32Window {
   static constexpr UINT kTrayCallbackMessage = WM_APP + 1;
   static constexpr int kTrayMenuShow = 40001;
   static constexpr int kTrayMenuQuit = 40002;
+  /// 「发现新版本」——**可点**，点它显示主界面并让 Dart 切到设置页的
+  /// 「版本更新」卡片。此前它被做成灰色纯信息项，理由是「没有一条现成的
+  /// native → Dart 通道」，但那条通道本就在用（同文件的 maximizedChanged、
+  /// Linux 的 quitRequested），于是托盘告诉用户有新版本却无处可去。
+  static constexpr int kTrayMenuUpdate = 40003;
 
   NOTIFYICONDATAW tray_icon_ = {};
   bool tray_installed_ = false;

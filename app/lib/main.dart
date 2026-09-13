@@ -8,6 +8,7 @@ import 'package:flutter/services.dart';
 import 'app_state.dart';
 import 'core/android_vpn_core.dart';
 import 'core/licenses.dart';
+import 'core/screen_navigation.dart';
 import 'core/singbox_runner.dart';
 import 'core/store.dart';
 import 'core/system_proxy.dart';
@@ -146,6 +147,11 @@ class _XvpnAppState extends State<XvpnApp> {
     // Dart 收尾（还原系统代理、结束 sing-box），再由原生退出。见
     // [WindowControls.onQuitRequested]。
     WindowControls.onQuitRequested = _shutdownForExit;
+    // 托盘「发现新版本」：原生把窗口显示出来，这里让界面切到设置页的更新入口。
+    // 走 ScreenNavigation 而不是直接改标签索引——那个「区域 → 本布局索引」的
+    // 翻译由外壳负责，桌面与移动端落点不同（见 XvShell._onNavigationRequested）。
+    WindowControls.onShowUpdateRequested = () =>
+        ScreenNavigation.instance.request(AppSection.settings);
 
     // 启动参数里的配置优先导入（「双击配置文件打开」的场景）。
     final path = widget.launchConfPath;

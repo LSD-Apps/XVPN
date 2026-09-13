@@ -287,6 +287,24 @@ class RuleSetStore {
       enabledByDefault: true,
       isDomainRuleSet: true,
     ),
+    // ── IP 类补充 ───────────────────────────────────────────────
+    //
+    // 补的是 geoip-cn **整块缺失** 8.0.0.0/8（含阿里云国内段）——实测有 7ms
+    // 延迟的国内地址被判为境外。刷新上游到当前版本后 `8.` 前缀仍是 0 条，
+    // 因此不是「副本过期」而是那份数据本身不含该段。
+    //
+    // 用**并集**而不是替换：两份列表各有对方没有的网段（实测 `180.76.0.1`
+    // 只在 geoip-cn 里）。内核的 `rule_set` 天然取并集，所以并存即可。
+    //
+    // `isDomainRuleSet` 保持 false（这是 IP 类），因此它**不会**进 DNS 规则——
+    // DNS 查的是域名，把 IP 类规则集写进 DNS 规则没有意义。
+    BuiltinRuleSet(
+      name: 'geoip-cn-extra',
+      source: '由 scripts/build-cn-ip-ruleset.ps1 从 '
+          'gaoyifan/china-operator-ip（MIT）编译；重跑脚本即可刷新。'
+          '刷新后必须同时重跑 build-cn-ip-index.ps1——cn-ip.bin 由它派生',
+      enabledByDefault: true,
+    ),
   ];
 
   /// 文件名 → 上游地址，只含**可更新**的那些。

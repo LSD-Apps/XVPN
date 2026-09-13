@@ -46,7 +46,7 @@ void main() {
     test('构建期产物标成不可更新，且默认启用有实测依据', () {
       expect(
         extras().map((BuiltinRuleSet b) => b.name).toSet(),
-        <String>{'geosite-cn-extra'},
+        <String>{'geosite-cn-extra', 'geoip-cn-extra'},
         reason: '新增构建期产物时要同步这条断言与其默认值的实测依据',
       );
       for (final entry in extras()) {

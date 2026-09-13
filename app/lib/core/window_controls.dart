@@ -112,6 +112,17 @@ class WindowControls {
   /// 回调**失败也必须继续退出**：卡住不关比清理不干净更糟。
   static Future<void> Function()? onQuitRequested;
 
+  /// 原生请求「打开更新界面」（托盘里那条「发现新版本」菜单项）。
+  ///
+  /// 托盘在原生侧，而「更新」是一个 Dart 侧的页面；这条推送就是把两者接起来
+  /// 的那一步。此前那条菜单项被做成灰色纯信息项，理由是「没有现成的
+  /// native → Dart 通道」——但本文件里 [maximized] 与 [onQuitRequested] 走的
+  /// 就是同一条通道，所以那是个不成立的前提：于是一处「告诉你但让你做不了什么」
+  /// 的界面被留了下来。
+  ///
+  /// 由入口注册（见 main.dart），与 [onQuitRequested] 同一处。
+  static void Function()? onShowUpdateRequested;
+
   /// 请原生真正退出进程。只在 [onQuitRequested] 收尾完成（或失败）之后调用。
   ///
   /// 刻意不用 `exit()`：让 GTK 正常走完 shutdown。原生另有兜底超时，即使这条
@@ -153,6 +164,11 @@ class WindowControls {
       if (call.method == 'maximizedChanged') {
         final value = call.arguments;
         if (value is bool) maximized.value = value;
+      } else if (call.method == 'trayOpenUpdate') {
+        // 托盘「发现新版本」被点。原生已经顺手把窗口显示出来了，这里只负责
+        // 让界面切到更新入口。回调缺失（测试、嵌入场景）时静默——原生那边
+        // 至少还把窗口亮了出来，不会变成完全没反应。
+        onShowUpdateRequested?.call();
       } else if (call.method == 'quitRequested') {
         try {
           await onQuitRequested?.call();

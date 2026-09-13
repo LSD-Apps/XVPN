@@ -100,7 +100,12 @@ void main() {
       // 于是它会出现在 diff 里，而不是悄悄溜过去。
       expect(
         state.ruleSets.map((RuleSetEntry e) => e.name),
-        <String>['geosite-cn', 'geoip-cn', 'geosite-cn-extra'],
+        <String>[
+          'geosite-cn',
+          'geoip-cn',
+          'geosite-cn-extra',
+          'geoip-cn-extra',
+        ],
       );
       for (final entry in state.ruleSets) {
         expect(entry.isBuiltin, isTrue);
@@ -318,7 +323,12 @@ void main() {
       // 是一处**显式**的、会被 diff 看到的事实，而不是从别处推导出来的结果。
       expect(
         core.enabledRuleSetSpecs.map((RuleSetSpec s) => s.tag),
-        <String>['geosite-cn', 'geoip-cn', 'geosite-cn-extra'],
+        <String>[
+          'geosite-cn',
+          'geoip-cn',
+          'geosite-cn-extra',
+          'geoip-cn-extra',
+        ],
       );
       // 域名类标记决定谁能参与 DNS 直连分流，标错不会报错、只会让判定失效。
       expect(
@@ -329,11 +339,16 @@ void main() {
         reason: 'geosite-cn-extra 是域名类；漏标会让被它判为直连的域名经隧道解析',
       );
 
-      // 生成出来的配置里，这三条规则集都要有定义并参与路由。
+      // 生成出来的配置里，这四条规则集都要有定义并参与路由。
       final route = _map(_build(core.enabledRuleSetSpecs)['route']);
       expect(
         _list(route['rule_set']).map((Object? s) => _map(s)['tag']),
-        <String>['geosite-cn', 'geoip-cn', 'geosite-cn-extra'],
+        <String>[
+          'geosite-cn',
+          'geoip-cn',
+          'geosite-cn-extra',
+          'geoip-cn-extra',
+        ],
       );
     });
 

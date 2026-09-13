@@ -13,7 +13,14 @@
 // 用法（依赖随包分发的 sing-box.exe 做反编译）：
 //
 //   sing-box rule-set decompile assets/rulesets/geoip-cn.srs -o geoip-cn.json
-//   dart run tool/build_cn_ip_index.dart geoip-cn.json assets/rulesets/cn-ip.bin
+//   sing-box rule-set decompile assets/rulesets/geoip-cn-extra.srs -o geoip-cn-extra.json
+//   dart run tool/build_cn_ip_index.dart geoip-cn.json geoip-cn-extra.json assets/rulesets/cn-ip.bin
+//
+// 支持**多份输入**，这一点是必需的：随包的 geoip-cn.srs 整块缺失 8.0.0.0/8
+// （含阿里云国内段），靠 geoip-cn-extra.srs 补齐。路由那边由内核的 rule_set
+// 取并集，而这张索引必须与路由**覆盖一致**——否则会出现「路由判为直连、
+// 判定却认为那是境外地址」，反方向纠正因此永不触发。
+// 最后一个参数是输出，前面的都是输入。
 //
 // 输出格式（小端）：
 //
@@ -31,40 +38,46 @@ import 'dart:typed_data';
 void main(List<String> args) {
   if (args.length < 2) {
     stderr.writeln(
-      '用法: dart run tool/build_cn_ip_index.dart <geoip-cn.json> <out.bin>',
+      '用法: dart run tool/build_cn_ip_index.dart <输入.json> [更多.json ...] <out.bin>',
     );
     exitCode = 2;
     return;
   }
 
-  final source = File(args[0]);
-  if (!source.existsSync()) {
-    stderr.writeln('找不到输入文件：${source.path}');
-    exitCode = 2;
-    return;
-  }
-
-  final decoded = jsonDecode(source.readAsStringSync());
-  if (decoded is! Map) {
-    stderr.writeln('输入不是 sing-box 规则集 JSON');
-    exitCode = 2;
-    return;
-  }
+  // 最后一个参数是输出，其余都是输入。单输入（历史用法）与多输入都成立。
+  final outPath = args.last;
+  final inputPaths = args.sublist(0, args.length - 1);
 
   final rawCidrs = <String>[];
-  final rules = decoded['rules'];
-  if (rules is List) {
-    for (final rule in rules) {
-      if (rule is! Map) continue;
-      final list = rule['ip_cidr'];
-      if (list is! List) continue;
-      for (final item in list) {
-        if (item is String) rawCidrs.add(item);
+  for (final path in inputPaths) {
+    final source = File(path);
+    if (!source.existsSync()) {
+      stderr.writeln('找不到输入文件：${source.path}');
+      exitCode = 2;
+      return;
+    }
+    final before = rawCidrs.length;
+    final decoded = jsonDecode(source.readAsStringSync());
+    if (decoded is! Map) {
+      stderr.writeln('输入不是 sing-box 规则集 JSON：${source.path}');
+      exitCode = 2;
+      return;
+    }
+    final rules = decoded['rules'];
+    if (rules is List) {
+      for (final rule in rules) {
+        if (rule is! Map) continue;
+        final list = rule['ip_cidr'];
+        if (list is! List) continue;
+        for (final item in list) {
+          if (item is String) rawCidrs.add(item);
+        }
       }
     }
+    stdout.writeln('${source.path}：${rawCidrs.length - before} 条 ip_cidr');
   }
   if (rawCidrs.isEmpty) {
-    stderr.writeln('JSON 里没有任何 ip_cidr 条目');
+    stderr.writeln('所有输入里都没有任何 ip_cidr 条目');
     exitCode = 2;
     return;
   }
@@ -122,7 +135,7 @@ void main(List<String> args) {
     // 后 3 字节保留，便于将来扩展（例如加国家码）而不改 magic。
   }
 
-  final out = File(args[1]);
+  final out = File(outPath);
   out.parent.createSync(recursive: true);
   out.writeAsBytesSync(bytes, flush: true);
 

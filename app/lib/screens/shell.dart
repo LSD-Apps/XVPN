@@ -70,13 +70,30 @@ class _XvShellState extends State<XvShell> {
   /// 索引 2 的「配置文件」页，移动端则是索引 3 的设置标签（配置列表内嵌其中）。
   /// 此前两者恰好都是 2，改动标签结构时必须逐端核对，否则「切换配置」会跳到
   /// 一个新加的标签页上，而用户以为程序坏了。
+  ///
+  /// 「设置」同理：桌面侧栏索引 4、移动端索引 3（更新入口在设置页里，
+  /// 托盘「发现新版本」与标题栏的更新角标都落到这里）。
   void _onNavigationRequested() {
-    if (ScreenNavigation.instance.value != AppSection.profiles) return;
+    final section = ScreenNavigation.instance.value;
+    // 桌面与移动端的落点逐端写死：移动端没有独立的「配置文件」标签，
+    // 配置列表内嵌在设置里，因此同一个区域在两端可能指向不同索引。
+    int? desktopTab;
+    int? mobileTab;
+    switch (section) {
+      case AppSection.profiles:
+        desktopTab = 2;
+        mobileTab = 3;
+      case AppSection.settings:
+        desktopTab = 4;
+        mobileTab = 3;
+      default:
+        return;
+    }
     // 先清空再跳转：否则下一次重建会重复触发同一个请求。
     ScreenNavigation.instance.consume();
     setState(() {
-      _desktopTab = 2;
-      _mobileTab = 3;
+      _desktopTab = desktopTab!;
+      _mobileTab = mobileTab!;
     });
   }
 

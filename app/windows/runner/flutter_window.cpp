@@ -755,18 +755,21 @@ void FlutterWindow::ShowTrayMenu() {
   HMENU menu = CreatePopupMenu();
   if (menu == nullptr) return;
   AppendMenuW(menu, MF_STRING, kTrayMenuShow, L"显示主界面");
-  // 版本与更新提示是**纯信息项**（MF_GRAYED，且 id 为 0），不是可点动作。
-  // 理由：托盘现在的命令全部在原生侧闭环处理（显示 / 退出），没有一条
-  // 「原生告诉 Dart 去做什么」的现成通道；把「发现新版本」做成可点会是一个
-  // 按了没反应的承诺。要让它可点，需要的是一条新的 native → Dart 推送，
-  // 与 maximizedChanged 同一形状。
+  // 版本号是**纯信息项**（MF_GRAYED、id 为 0），这没有问题：它本来就没有动作。
+  //
+  // 「发现新版本」则必须是**可点**的：它承载的是一条可操作的信息（应用里有
+  // 下载与安装的入口），做成灰项等于告诉用户一件事然后不给他任何出路。
+  // 此前这里写的是「没有一条现成的 native → Dart 通道」，但那条通道本就在用
+  // （见下方 WM_SIZE 里的 maximizedChanged，以及 Linux 的 quitRequested），
+  // 因此那是个不成立的理由。
   if (!tray_version_.empty()) {
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING | MF_GRAYED, 0,
                 (L"XVPN " + tray_version_).c_str());
     if (!tray_update_.empty()) {
-      AppendMenuW(menu, MF_STRING | MF_GRAYED, 0,
-                  (L"发现新版本 v" + tray_update_).c_str());
+      AppendMenuW(menu, MF_STRING, kTrayMenuUpdate,
+                  (L"发现新版本 v" + tray_update_ + L"（打开更新界面）")
+                      .c_str());
     }
   }
   AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
@@ -854,6 +857,17 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
     switch (LOWORD(wparam)) {
       case kTrayMenuShow:
         ShowMainWindow();
+        return 0;
+      case kTrayMenuUpdate:
+        // 先把窗口亮出来，再让 Dart 切到设置页的「版本更新」卡片。
+        // 两步都做：只切页而不显示窗口的话，用户点的东西"没反应"
+        // （窗口还在托盘里）；只显示窗口而不切页的话，用户还得自己找。
+        ShowMainWindow();
+        if (window_channel_) {
+          window_channel_->InvokeMethod(
+              "trayOpenUpdate",
+              std::make_unique<flutter::EncodableValue>());
+        }
         return 0;
       case kTrayMenuQuit:
         RemoveTrayIcon();

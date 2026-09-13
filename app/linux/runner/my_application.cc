@@ -380,6 +380,27 @@ static void tray_quit_cb(GtkMenuItem* item, gpointer user_data) {
   request_quit(MY_APPLICATION(user_data));
 }
 
+// 「发现新版本」被点：显示主界面，并让 Dart 切到设置页的「版本更新」卡片。
+//
+// 与 Windows 端 kTrayMenuUpdate 分支逐步对齐：两步都做——只切页不显示窗口，
+// 用户会觉得点了没反应；只显示窗口不切页，用户还得自己找。
+static void tray_update_cb(GtkMenuItem* item, gpointer user_data) {
+  (void)item;
+  MyApplication* self = MY_APPLICATION(user_data);
+  if (self->window != nullptr) {
+    gtk_widget_show(GTK_WIDGET(self->window));
+    gtk_window_deiconify(self->window);
+    gtk_window_present(self->window);
+  }
+  if (self->window_channel == nullptr) {
+    return;
+  }
+  // 与 request_quit 同一种写法：不带参数，用 null 而不是空列表。
+  g_autoptr(FlValue) args = fl_value_new_null();
+  fl_method_channel_invoke_method(self->window_channel, "trayOpenUpdate", args,
+                                  nullptr, nullptr, nullptr);
+}
+
 // 从载荷里取字符串字段。类型不对或不存在都当「没给」。
 static const gchar* tray_string(FlValue* state, const char* key) {
   FlValue* value = fl_value_lookup_string(state, key);
@@ -425,6 +446,7 @@ static void apply_tray_state(MyApplication* self, FlValue* state) {
   g_string_free(title, TRUE);
 
   // 菜单里的两个信息项与 Windows 端同序：版本 + 条件性的更新提示。
+  // 更新项的文案要**说清点它会发生什么**，因为它是可点的（Windows 端一致）。
   if (version != nullptr && *version != '\0') {
     g_autofree gchar* label = g_strdup_printf("XVPN %s", version);
     gtk_menu_item_set_label(GTK_MENU_ITEM(self->tray_version_item), label);
@@ -433,7 +455,8 @@ static void apply_tray_state(MyApplication* self, FlValue* state) {
     gtk_widget_set_visible(self->tray_version_item, FALSE);
   }
   if (update != nullptr && *update != '\0') {
-    g_autofree gchar* label = g_strdup_printf("发现新版本 v%s", update);
+    g_autofree gchar* label =
+        g_strdup_printf("发现新版本 v%s（打开更新界面）", update);
     gtk_menu_item_set_label(GTK_MENU_ITEM(self->tray_update_item), label);
     gtk_widget_set_visible(self->tray_update_item, TRUE);
   } else {
@@ -468,7 +491,7 @@ static gboolean setup_tray(MyApplication* self) {
   }
 
   // 菜单逐条对齐 Windows 端（windows/runner/flutter_window.cpp 的 ShowTrayMenu）：
-  // 显示主界面 / 版本（灰、纯信息）/ 更新提示（灰、纯信息、条件）/ 退出 XVPN。
+  // 显示主界面 / 版本（灰、纯信息）/ 更新提示（可点、条件出现）/ 退出 XVPN。
   GtkWidget* menu = gtk_menu_new();
   GtkWidget* show_item = gtk_menu_item_new_with_label("显示主界面");
   g_signal_connect(show_item, "activate", G_CALLBACK(tray_show_cb), self);
@@ -477,8 +500,12 @@ static gboolean setup_tray(MyApplication* self) {
   self->tray_version_item = gtk_menu_item_new_with_label("XVPN");
   gtk_widget_set_sensitive(self->tray_version_item, FALSE);
   gtk_menu_shell_append(GTK_MENU_SHELL(menu), self->tray_version_item);
+  // 更新项**保持可点**：它承载的是可操作的信息（应用里有下载与安装入口），
+  // 做成不可点等于告诉用户有新版本却不给出路。是否出现由可见性控制
+  // （见 apply_tray_state），因此不需要在这里灰掉它。
   self->tray_update_item = gtk_menu_item_new_with_label("");
-  gtk_widget_set_sensitive(self->tray_update_item, FALSE);
+  g_signal_connect(self->tray_update_item, "activate",
+                   G_CALLBACK(tray_update_cb), self);
   gtk_menu_shell_append(GTK_MENU_SHELL(menu), self->tray_update_item);
   gtk_menu_shell_append(GTK_MENU_SHELL(menu), gtk_separator_menu_item_new());
   GtkWidget* quit_item = gtk_menu_item_new_with_label("退出 XVPN");
