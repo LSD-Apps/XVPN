@@ -42,6 +42,14 @@ dependencies:
   ffi: ^2.2.0
   url_launcher: ^6.3.2
 
+  # 应用内「开源许可」把 NOTICE.md / THIRD-PARTY-NOTICES.md 按 Markdown 渲染
+  # （标题、GFM 表格、代码块、链接）。刻意选 flutter_markdown_plus 而不是
+  # flutter_markdown：后者在 pub.dev 上已标注 **discontinued**（README 原文
+  # 「This project has been discontinued, and will not receive further
+  # updates」，最后一次发布距今 16 个月）；flutter_markdown_plus 是它的维护
+  # 延续、API 同源。这是唯一的 Markdown 渲染依赖，不要「简化」回前者。
+  flutter_markdown_plus: ^1.0.12
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

@@ -1,6 +1,11 @@
+import 'dart:async';
+import 'dart:convert';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 
+import '../core/links.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
 
@@ -38,10 +43,18 @@ typedef LicenseEntryLoader = Future<List<LicenseEntry>> Function();
 /// 列表（按组件名筛选）→ 点条目 → 全文，两级都在同一个弹窗内完成，返回只切
 /// 内部状态而不是压路由，因此「返回列表」在任何平台上都不会丢筛选词。
 class LicensesDialog extends StatefulWidget {
-  const LicensesDialog({super.key, this.loadEntries});
+  const LicensesDialog({
+    super.key,
+    this.loadEntries,
+    this.openExternalUrl = launchInBrowser,
+  });
 
   /// 为 null 时读 [LicenseRegistry]（生产路径）。
   final LicenseEntryLoader? loadEntries;
+
+  /// 打开正文里的链接。默认走 `core/links.dart` 的 [launchInBrowser]，与标题栏
+  /// GitHub 按钮同一个实现；抽成参数是为了让测试注入记录器（真实实现要开浏览器）。
+  final ExternalUrlLauncher openExternalUrl;
 
   @override
   State<LicensesDialog> createState() => _LicensesDialogState();
@@ -204,7 +217,11 @@ class _LicensesDialogState extends State<LicensesDialog> {
   Widget _content(BuildContext context) {
     final selected = _selected;
     if (selected != null) {
-      return _LicenseDetail(key: ObjectKey(selected), entry: selected);
+      return _LicenseDetail(
+        key: ObjectKey(selected),
+        entry: selected,
+        openExternalUrl: widget.openExternalUrl,
+      );
     }
 
     return FutureBuilder<List<LicenseEntry>>(
@@ -274,60 +291,354 @@ class _LicensesDialogState extends State<LicensesDialog> {
 
 /// 某个条目的全文。
 ///
-/// 单独成一个 StatefulWidget：这样每换一个条目就重新解析一份段落，而
-/// [_paragraphs] 只在打开时算一次，不会在滚动时反复触发。
+/// 单独成一个 StatefulWidget：这样每换一个条目就重新解析一次，而 [_content] 只在
+/// 打开时算一次，不会在滚动时反复触发。
 class _LicenseDetail extends StatefulWidget {
-  const _LicenseDetail({super.key, required this.entry});
+  const _LicenseDetail({
+    super.key,
+    required this.entry,
+    required this.openExternalUrl,
+  });
 
   final LicenseEntry entry;
+
+  /// 打开正文里的链接的实现，由 [LicensesDialog] 注入。
+  final ExternalUrlLauncher openExternalUrl;
 
   @override
   State<_LicenseDetail> createState() => _LicenseDetailState();
 }
 
 class _LicenseDetailState extends State<_LicenseDetail> {
-  /// 只解析一次。
+  /// 只在打开时算一次。
   ///
-  /// `LicenseEntry.paragraphs` 是个 getter，每访问一次都会**重新**走一遍全文
-  /// （`LicenseEntryWithLineBreaks` 的解析是 O(文本长度)）。在 `ListView.builder`
-  /// 里逐行访问它会把同一个大文件解析上千遍，因此这里先 materialize 成
-  /// `List<LicenseParagraph>`，builder 只按下标取用。
+  /// 用 `Future` 而不是在 `initState` 里同步算：355 KB 那份即使只是扫描分段也要
+  /// 十几毫秒，已经接近一帧的预算；放进首帧会表现为「点了没反应」。让出一帧先
+  /// 显示「正在排版」。
+  late final Future<_LicenseContent> _content = Future<_LicenseContent>(
+    () => _parseLicenseContent(widget.entry),
+  );
+
+  /// 打开正文里的链接。
   ///
-  /// 用 `Future` 而不是在 `initState` 里同步算：347 KB 那份的解析实测约十几毫秒，
-  /// 已经接近一帧的预算；放进首帧会表现为「点了没反应」。让出一帧先显示「正在排版」。
-  late final Future<List<LicenseParagraph>> _paragraphs =
-      Future<List<LicenseParagraph>>(() => widget.entry.paragraphs.toList());
+  /// 失败绝不能把异常甩到界面上：与标题栏 GitHub 按钮（`_GitHubButtonState._open`）
+  /// 同一套容错——平台通道缺失、系统没有默认浏览器都归为「没打开」，提示一句
+  /// 即可。异步返回前先取 messenger，避免跨 await 使用 context。
+  Future<void> _openLink(String? href) async {
+    if (href == null || href.isEmpty) return;
+    final Uri? uri = Uri.tryParse(href);
+    if (uri == null) return;
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    bool opened;
+    try {
+      opened = await widget.openExternalUrl(uri);
+    } on Object catch (error) {
+      debugPrint('打开许可链接失败：$error');
+      opened = false;
+    }
+    if (opened || !mounted) return;
+    messenger?.showSnackBar(
+      SnackBar(
+        content: Text(
+          '无法打开浏览器，请手动访问 $href',
+          style: TextStyle(fontSize: 12.5, color: XV.text),
+        ),
+        backgroundColor: XV.panel3,
+        behavior: SnackBarBehavior.floating,
+        margin: const EdgeInsets.all(16),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(XV.rCtl),
+          side: BorderSide(color: XV.red.withValues(alpha: 0.35)),
+        ),
+        duration: const Duration(seconds: 4),
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
-    return FutureBuilder<List<LicenseParagraph>>(
-      future: _paragraphs,
+    return FutureBuilder<_LicenseContent>(
+      future: _content,
       builder:
-          (
-            BuildContext context,
-            AsyncSnapshot<List<LicenseParagraph>> snapshot,
-          ) {
+          (BuildContext context, AsyncSnapshot<_LicenseContent> snapshot) {
             if (snapshot.hasError) {
               return _licenseNote('无法展开许可证全文：${snapshot.error}');
             }
-            final paragraphs = snapshot.data;
-            if (paragraphs == null) {
+            final content = snapshot.data;
+            if (content == null) {
               return _licenseNote('正在排版许可全文…');
             }
-            if (paragraphs.isEmpty) {
-              return _licenseNote('这一条目没有可显示的正文');
-            }
             // 整段包在 SelectionArea 里：用户可以跨段落选中并复制 GPL 全文。
-            return SelectionArea(
-              child: _LicenseGutterList(
-                itemCount: paragraphs.length,
-                itemBuilder: (BuildContext context, int index) =>
-                    LicenseParagraphLine(paragraph: paragraphs[index]),
-              ),
-            );
+            // Markdown 正文也靠这一层做选择，因此下面的 `MarkdownBody` **不**打开
+            // 它自己的 `selectable`——那会给每个文本片段建一个 `SelectableText`，
+            // 选中机制与这里重复，而且对 347 KB 的条目明显更重。
+            return SelectionArea(child: _body(content));
           },
     );
   }
+
+  Widget _body(_LicenseContent content) {
+    switch (content) {
+      case final _PlainLicenseContent plain:
+        if (plain.paragraphs.isEmpty) {
+          return _licenseNote('这一条目没有可显示的正文');
+        }
+        return _LicenseGutterList(
+          itemCount: plain.paragraphs.length,
+          itemBuilder: (BuildContext context, int index) =>
+              LicenseParagraphLine(paragraph: plain.paragraphs[index]),
+        );
+      case final _MarkdownLicenseContent markdown:
+        if (markdown.sections.isEmpty) {
+          return _licenseNote('这一条目没有可显示的正文');
+        }
+        final styleSheet = _markdownStyleSheet();
+        return _LicenseGutterList(
+          itemCount: markdown.sections.length,
+          itemBuilder: (BuildContext context, int index) => Padding(
+            padding: const EdgeInsets.only(bottom: 6),
+            // 用 `MarkdownBody` 而不是 `Markdown(noScroll: true)`：后者会给每个
+            // 块再套一层默认 16px 的 `Padding`，与这里的行距/缩进打架；`MarkdownBody`
+            // 既不滚动也不加内边距，正好塞进外层已有的滚动区（[_LicenseGutterList]）。
+            child: MarkdownBody(
+              data: markdown.sections[index],
+              styleSheet: styleSheet,
+              onTapLink: (String text, String? href, String title) =>
+                  unawaited(_openLink(href)),
+            ),
+          ),
+        );
+    }
+  }
+}
+
+/// 许可全文的渲染模型。
+///
+/// 分两种而不是一律走 Markdown：`LICENSE` 是 GPL-3.0 的**纯文本**正文，里面有
+/// `<name of author>`、`<program>` 这类尖括号占位，交给 Markdown 解析会被当成
+/// 内联 HTML 标签吞掉（正文直接少内容）；Flutter 聚合的依赖许可同理。因此只有
+/// 真正带 Markdown 结构（顶层标题 / GFM 表格）的文档才按 Markdown 渲染。
+sealed class _LicenseContent {
+  const _LicenseContent();
+}
+
+/// 纯文本正文：仍按段落渲染（[LicenseParagraphLine]）。
+class _PlainLicenseContent extends _LicenseContent {
+  const _PlainLicenseContent(this.paragraphs);
+
+  final List<LicenseParagraph> paragraphs;
+}
+
+/// Markdown 正文：已按顶层标题切成若干段，交给 `ListView.builder` 懒建。
+class _MarkdownLicenseContent extends _LicenseContent {
+  const _MarkdownLicenseContent(this.sections);
+
+  final List<String> sections;
+}
+
+/// 判定一份正文是不是 Markdown。
+///
+/// 只看两个**结构性**标记：列 0 的 ATX 标题、GFM 表格分隔行。纯文本许可里几乎
+/// 不会出现这两样（GPL 正文实测 0 处），因此不会把 GPL / Flutter 聚合许可误判。
+_LicenseContent _parseLicenseContent(LicenseEntry entry) {
+  final String? raw = entry is LicenseEntryWithLineBreaks ? entry.text : null;
+  if (raw != null && _looksLikeMarkdown(raw)) {
+    return _MarkdownLicenseContent(splitMarkdownSections(raw));
+  }
+  return _PlainLicenseContent(entry.paragraphs.toList());
+}
+
+/// 列 0 的 ATX 标题。CommonMark 允许标题打断段落，因此它必然是顶层块的开头。
+final RegExp _atxHeading = RegExp(r'^#{1,6}(\s|$)');
+
+/// 代码围栏的开头（``` 或 ~~~，3 个以上）。
+final RegExp _fenceStart = RegExp(r'^(`{3,}|~{3,})');
+
+/// GFM 表格分隔行，例如 `| --- | :--: |`。
+final RegExp _tableDelimiter = RegExp(r'^[\s:|-]*-{3,}[\s:|-]*$');
+
+bool _looksLikeMarkdown(String text) {
+  var headings = 0;
+  for (final String line in const LineSplitter().convert(text)) {
+    if (_atxHeading.hasMatch(line)) {
+      headings++;
+      // 两个列 0 标题就足以判定；纯文本正文里不会这样成对出现。
+      if (headings >= 2) return true;
+    } else if (line.contains('|') && _tableDelimiter.hasMatch(line)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/// 把 Markdown 按**顶层标题**切成若干段，供懒加载逐段渲染。
+///
+/// 为什么必须切：Markdown 渲染不是懒的——`MarkdownBody` 会把整段文档一次性解析
+/// 成 widget 树。`THIRD-PARTY-NOTICES.md` 有 355 KB / 1683 段，一次性铺完会卡住
+/// 首帧。切开后交给 [_LicenseGutterList] 的 `ListView.builder`，只有视口附近的段
+/// 会被真正构建。
+///
+/// 为什么按标题切是安全的：列 0 的标题必然是顶层块的开头（前一个块一定已经
+/// 结束），切点不会落进表格或列表中间。围栏状态单独跟踪：围栏里的 `#` 是正文而
+/// 不是标题——这份文件把每份许可正文都包在 4 个反引号的围栏里，里面出现 3 个
+/// 反引号时也不能误判成闭合。
+List<String> splitMarkdownSections(String source) {
+  final sections = <String>[];
+  final buffer = <String>[];
+  String? openFence;
+
+  void flush() {
+    if (buffer.any((String line) => line.trim().isNotEmpty)) {
+      sections.add(buffer.join('\n'));
+    }
+    buffer.clear();
+  }
+
+  for (final String line in const LineSplitter().convert(source)) {
+    final Match? fence = _fenceStart.firstMatch(line);
+    if (openFence == null) {
+      if (fence != null) {
+        openFence = fence.group(1);
+      } else if (_atxHeading.hasMatch(line)) {
+        flush();
+      }
+    } else if (fence != null && _closesFence(line, openFence)) {
+      openFence = null;
+    }
+    buffer.add(line);
+  }
+  flush();
+  return sections;
+}
+
+/// 闭合围栏必须与开启围栏同字符、不短于它，且其后只有空白。
+bool _closesFence(String line, String openFence) {
+  final String marker = openFence[0];
+  var run = 0;
+  while (run < line.length && line[run] == marker) {
+    run++;
+  }
+  return run >= openFence.length && line.substring(run).trim().isEmpty;
+}
+
+/// 把 Markdown 的各个元素映射到本项目 token。
+///
+/// 不传这份样式表的话，`flutter_markdown_plus` 会退回 `MarkdownStyleSheet.fromTheme`
+/// （蓝色链接、Material 字号、卡片底色）。上一版界面正是因为露出 Material 观感才
+/// 被用户说「像另一个程序」，这里每个可见元素都显式取自 [XV] / `XvText`；颜色在
+/// 每次 build 时重新读取，因此 [XV] 全局切换深浅调色板后两边都会跟着走。
+MarkdownStyleSheet _markdownStyleSheet() {
+  // 局部变量是为了少写几次 `XV.field`，同时强调「代码底色 = 输入类控件底色」。
+  final Color field = XV.field;
+  return MarkdownStyleSheet(
+    a: TextStyle(
+      color: XV.green,
+      decoration: TextDecoration.underline,
+      decorationColor: XV.green.withValues(alpha: 0.5),
+    ),
+    p: XvText.body.copyWith(height: 1.65, letterSpacing: 0),
+    pPadding: EdgeInsets.zero,
+    code: XvText.mono.copyWith(
+      color: XV.text,
+      fontSize: 12,
+      letterSpacing: 0,
+      backgroundColor: field,
+    ),
+    h1: TextStyle(
+      fontSize: 17,
+      fontWeight: FontWeight.w700,
+      height: 1.4,
+      letterSpacing: -0.2,
+      color: XV.text,
+    ),
+    h1Padding: const EdgeInsets.only(top: 4, bottom: 10),
+    h2: TextStyle(
+      fontSize: 15,
+      fontWeight: FontWeight.w700,
+      height: 1.4,
+      letterSpacing: 0,
+      color: XV.text,
+    ),
+    h2Padding: const EdgeInsets.only(top: 14, bottom: 8),
+    h3: TextStyle(
+      fontSize: 13.5,
+      fontWeight: FontWeight.w600,
+      height: 1.4,
+      letterSpacing: 0,
+      color: XV.text,
+    ),
+    h3Padding: const EdgeInsets.only(top: 12, bottom: 6),
+    h4: TextStyle(
+      fontSize: 13,
+      fontWeight: FontWeight.w600,
+      height: 1.4,
+      letterSpacing: 0,
+      color: XV.text,
+    ),
+    h4Padding: const EdgeInsets.only(top: 10, bottom: 4),
+    h5: TextStyle(
+      fontSize: 12.5,
+      fontWeight: FontWeight.w600,
+      height: 1.4,
+      letterSpacing: 0,
+      color: XV.text,
+    ),
+    h5Padding: const EdgeInsets.only(top: 8, bottom: 4),
+    h6: TextStyle(
+      fontSize: 12.5,
+      fontWeight: FontWeight.w600,
+      letterSpacing: 0.2,
+      color: XV.muted,
+    ),
+    h6Padding: const EdgeInsets.only(top: 8, bottom: 4),
+    em: const TextStyle(fontStyle: FontStyle.italic),
+    strong: TextStyle(fontWeight: FontWeight.w700, color: XV.text),
+    del: const TextStyle(decoration: TextDecoration.lineThrough),
+    blockquote: XvText.bodyMuted,
+    blockquotePadding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
+    blockquoteDecoration: BoxDecoration(
+      color: XV.panel3.withValues(alpha: 0.5),
+      border: Border(
+        left: BorderSide(color: XV.green.withValues(alpha: 0.55), width: 3),
+      ),
+      borderRadius: BorderRadius.circular(6),
+    ),
+    listIndent: 18,
+    listBullet: XvText.body.copyWith(height: 1.65, letterSpacing: 0),
+    listBulletPadding: const EdgeInsets.only(right: 6),
+    tablePadding: const EdgeInsets.only(top: 2, bottom: 10),
+    tableHead: TextStyle(
+      fontSize: 12.5,
+      fontWeight: FontWeight.w600,
+      height: 1.5,
+      letterSpacing: 0,
+      color: XV.text,
+    ),
+    tableBody: TextStyle(
+      fontSize: 12.5,
+      height: 1.5,
+      letterSpacing: 0,
+      color: XV.text,
+    ),
+    tableBorder: TableBorder.all(color: XV.line, width: 1),
+    tableColumnWidth: const FlexColumnWidth(),
+    // 表头与正文同向左对齐：包的兜底样式把表头居中，看起来像 Material 默认表。
+    tableHeadAlign: TextAlign.left,
+    tableCellsPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+    tableCellsDecoration: const BoxDecoration(),
+    tableHeadCellsDecoration: BoxDecoration(color: XV.panel3),
+    blockSpacing: 8,
+    codeblockPadding: const EdgeInsets.all(12),
+    codeblockDecoration: BoxDecoration(
+      color: field,
+      border: Border.all(color: XV.line),
+      borderRadius: BorderRadius.circular(8),
+    ),
+    horizontalRuleDecoration: BoxDecoration(
+      border: Border(top: BorderSide(color: XV.line)),
+    ),
+    checkbox: XvText.body.copyWith(color: XV.green),
+  );
 }
 
 /// 许可正文的一段。

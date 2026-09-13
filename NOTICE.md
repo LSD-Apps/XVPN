@@ -161,14 +161,21 @@ CC0-1.0 / MPL-2.0 / Unlicense 各 1）与许可全文。
 | `file_selector_windows` | 0.9.3+6 | BSD-3-Clause |
 | `desktop_drop` | 0.8.4 | Apache-2.0 |
 | `ffi` | 2.2.0 | BSD-3-Clause |
+| `flutter_markdown_plus` | 1.0.12 | BSD-3-Clause |
 | `http` | 1.6.0 | BSD-3-Clause |
 | `url_launcher` | 6.3.2 | BSD-3-Clause |
 | `url_launcher_android` | 6.3.33 | BSD-3-Clause |
 | `url_launcher_linux` | 3.2.3 | BSD-3-Clause |
 | `url_launcher_platform_interface` | 2.3.2 | BSD-3-Clause |
 | `url_launcher_windows` | 3.1.6 | BSD-3-Clause |
-| `markdown`（仅开发期） | 7.3.1 | BSD-3-Clause |
+| `markdown`（开发期工具 + 运行时传递依赖） | 7.3.1 | BSD-3-Clause |
 | `flutter_lints`（仅开发期） | 6.0.0 | BSD-3-Clause |
+
+`flutter_markdown_plus` 用于应用内「开源许可」界面渲染 Markdown 正文，其传递
+依赖为 `markdown` / `meta` / `path`（均为 BSD-3-Clause）。其中 `meta` 与 `path`
+本就随 Flutter SDK 进入依赖图；`markdown` 此前只被 `tool/build_privacy_html.dart`
+这个开发期工具用到、标注为「仅开发期」，现在同时是 `flutter_markdown_plus` 的
+运行时传递依赖，**会进入应用产物**，因此上表不再把它标成仅开发期。
 
 BSD-3-Clause 与 Apache-2.0 均与 GPL-3.0 兼容。Flutter SDK 本身为
 BSD-3-Clause。
