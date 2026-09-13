@@ -35,6 +35,7 @@ library;
 import 'app_presets.dart';
 import 'outbound_tags.dart';
 
+
 /// 分流倾向。
 enum RoutePreference {
   /// 强制走隧道。
@@ -94,6 +95,32 @@ extension RouteRuleSourceX on RouteRuleSource {
   };
 }
 
+/// 一条尚未定性的「直连没有交付」证据。
+///
+/// 它还不是规则，因此不放进 `AutoRouteTable._exact`（那会立刻生成路由规则）。
+/// 达到阈值后由 [AutoRouteTable._recordDirectSetback] 提升成真正的规则。
+class _PendingSetback {
+  _PendingSetback({required this.createdAt});
+
+  /// 首次观察到它的时间。提升成规则时沿用，让规则的「存在多久」如实反映观察起点。
+  final DateTime createdAt;
+
+  /// 连接失败的次数。
+  int failures = 0;
+
+  /// 「握手成功但没有数据」的次数。
+  int stalls = 0;
+
+  /// 连续「没有交付」的次数。达到阈值即提升。
+  int consecutive = 0;
+
+  /// 最近一次的原因摘要，提升后写进规则供界面展示。
+  String? reason;
+
+  /// 最近一次的 DNS 交叉校验结论名。
+  String? dnsVerdict;
+}
+
 /// 一条自动纠正规则 + 支撑它的证据。
 class AutoRouteEntry {
   AutoRouteEntry({
@@ -104,7 +131,9 @@ class AutoRouteEntry {
     this.lastHitAt,
     this.directFailures = 0,
     this.directSuccesses = 0,
+    this.stalls = 0,
     this.consecutiveFailures = 0,
+    this.consecutiveSuccesses = 0,
     this.proxiedBytes = 0,
     this.domesticHits = 0,
     this.dnsVerdict,
@@ -125,13 +154,37 @@ class AutoRouteEntry {
   /// 累计「判为直连却失败」的次数。
   int directFailures;
 
-  /// 累计「判为直连且成功」的观测次数。
+  /// 累计「判为直连且**确实交付了内容**」的观测次数。
   ///
-  /// 只要它大于 0，就说明直连**能**通，连续失败计数会被清零。
+  /// 关键词是「确实交付」。此前这里把「连接跑出过任何字节」都算成功，而实测
+  /// （见 [AutoRouteTable.recordDirectStall]）表明失败形态里有「TLS 握手成功、
+  /// 随后只漏出几百字节就挂住」——那会被记成成功，于是 `consecutiveFailures`
+  /// 被清零、「直连其实能通」这个错误结论被写进证据。
+  /// 现在只有字节数达到 `CoreMonitor.substantiveByteFloor` 的观测才会走到这里。
   int directSuccesses;
 
-  /// 连续失败次数。达到阈值才触发纠正。
+  /// 累计「握手成功但没有交付内容」的次数。
+  ///
+  /// 这是实测里最常见、而原实现**完全看不见**的失败形态：日志里没有 `ERROR` 行
+  /// （所以失败归因抓不到），又有零星字节（所以也不算成功），于是既不推动学习、
+  /// 也不构成反证——一个 40% 成功率的域名因此在学习表里永远静默。
+  ///
+  /// 对分流决策而言它与 [directFailures] 同类：直连这条路没有交付内容。
+  int stalls;
+
+  /// 连续「直连没有交付」的次数（含连接失败与 [stalls]）。达到阈值才改判走隧道。
   int consecutiveFailures;
+
+  /// 连续「确实交付」的次数。用于**撤销**学到的强制代理规则。
+  ///
+  /// 为什么需要它，而不是沿用「累计成功 2 次即撤销」：
+  ///
+  /// 实测 github.com 在 10 次尝试里呈「成功 / 连续失败 4 次 / 成功 / 连续失败 3 次 /
+  /// 成功」——即在坏时段里**失败是成簇的，而成功偶尔插进来**。用累计计数，两次
+  /// 侥幸成功就足以撤销刚刚学到的强制代理规则，于是规则被反复推翻又重建，用户
+  /// 看到的是「分流时好时坏」。改用**连续**计数后，交替出现的成败永远攒不满阈值，
+  /// 规则因此稳定；而网络真的恢复时连续成功会很快攒够并撤销——迟滞是自动的。
+  int consecutiveSuccesses;
 
   /// 走隧道时累计的字节数。用来判断「改成代理以后确实在用」。
   int proxiedBytes;
@@ -175,7 +228,9 @@ class AutoRouteEntry {
     if (lastHitAt != null) 'lastHitAt': lastHitAt!.toIso8601String(),
     'directFailures': directFailures,
     'directSuccesses': directSuccesses,
+    'stalls': stalls,
     'consecutiveFailures': consecutiveFailures,
+    'consecutiveSuccesses': consecutiveSuccesses,
     'proxiedBytes': proxiedBytes,
     'domesticHits': domesticHits,
     if (dnsVerdict != null) 'dnsVerdict': dnsVerdict,
@@ -204,7 +259,12 @@ class AutoRouteEntry {
       lastHitAt: _time(json['lastHitAt']),
       directFailures: (json['directFailures'] as num?)?.toInt() ?? 0,
       directSuccesses: (json['directSuccesses'] as num?)?.toInt() ?? 0,
+      // 旧存档没有这两个键：`stalls` 从 0 起算（它记录的是新引入的观测），
+      // `consecutiveSuccesses` 也从 0 起——宁可让撤销多等几次，
+      // 也不要凭一个不存在的历史立刻撤销一条正在起作用的规则。
+      stalls: (json['stalls'] as num?)?.toInt() ?? 0,
       consecutiveFailures: (json['consecutiveFailures'] as num?)?.toInt() ?? 0,
+      consecutiveSuccesses: (json['consecutiveSuccesses'] as num?)?.toInt() ?? 0,
       proxiedBytes: (json['proxiedBytes'] as num?)?.toInt() ?? 0,
       domesticHits: (json['domesticHits'] as num?)?.toInt() ?? 0,
       dnsVerdict: json['dnsVerdict']?.toString(),
@@ -248,6 +308,7 @@ class AutoRouteTable {
     this.capacity = 400,
     this.promotionThreshold = 3,
     this.domesticPromotionThreshold = 2,
+    this.revokeSuccessThreshold = 3,
     this.decayAfter = const Duration(days: 14),
   }) : assert(capacity > 0);
 
@@ -270,6 +331,13 @@ class AutoRouteTable {
   /// 承载却走不通）。也不需要 3：那会让一个明显在国内的站点白走两轮隧道。
   final int domesticPromotionThreshold;
 
+  /// 学到的强制代理规则需要**连续**多少次「确实交付」才撤销。
+  ///
+  /// 取 3 与 [promotionThreshold] 对称：改判与撤销都要连续三次，因此交替出现的
+  /// 成败（实测 github.com 在坏时段就是这种分布）永远攒不满任何一边的阈值，
+  /// 规则稳定；而网络真的恢复时连续成功会很快攒够，撤销照样及时。
+  final int revokeSuccessThreshold;
+
   /// 精确域名 → 条目。
   final Map<String, AutoRouteEntry> _exact = <String, AutoRouteEntry>{};
 
@@ -284,6 +352,26 @@ class AutoRouteTable {
   /// 与 [_exact] 分开是刻意的：这些还**不是规则**，只是证据。放进 [_exact]
   /// 会立刻生成路由规则，而方向正好是反的（见 [recordDomesticAnswer]）。
   final Map<String, int> _domesticStreak = <String, int>{};
+
+  /// 尚未定性的「直连没有交付」证据（连接失败与挂死都算）。
+  ///
+  /// 同样与 [_exact] 分开，理由更硬：`AutoRouteEntry` 的默认 `preference` 是
+  /// [RoutePreference.forceProxy]，一旦装进 [_exact]，`buildRouteRules()` 立刻会
+  /// 为它生成一条「强制走隧道」的规则——于是写在 [promotionThreshold] 上的
+  /// 「连续 3 次才纠正」实际变成了「1 次就生效」。文档与代码在这里是矛盾的，
+  /// 而矛盾的方向是**更激进**（一次抖动就把域名推进隧道），正是本文件开头
+  /// 说要避免的那种「分流时好时坏」。
+  ///
+  /// 因此未定性的证据先攒在这里，达到阈值才变成规则。两个方向（失败→代理、
+  /// 国内解析→直连）现在用的是同一种做法。
+  ///
+  /// 不落盘：它还不是规则，不该在用户看不见的地方积累状态。代价是重启后要
+  /// 重新数几次，而这个代价是刻意的。
+  final Map<String, _PendingSetback> _pendingSetbacks =
+      <String, _PendingSetback>{};
+
+  /// 未定性证据的条数上限。超过就整表清空——它只影响「再数几次」的成本。
+  static const int maxPendingSetbacks = 200;
 
   /// 未定性证据的上界。超过就整表清空，理由见 [_rememberDomesticStreak]。
   static const int maxPendingDomesticEvidence = 200;
@@ -309,7 +397,9 @@ class AutoRouteTable {
       lastHitAt: existing?.lastHitAt,
       directFailures: existing?.directFailures ?? 0,
       directSuccesses: existing?.directSuccesses ?? 0,
+      stalls: existing?.stalls ?? 0,
       consecutiveFailures: existing?.consecutiveFailures ?? 0,
+      consecutiveSuccesses: existing?.consecutiveSuccesses ?? 0,
       proxiedBytes: existing?.proxiedBytes ?? 0,
       dnsVerdict: existing?.dnsVerdict,
       lastFailureReason: existing?.lastFailureReason,
@@ -373,7 +463,9 @@ class AutoRouteTable {
           createdAt: existing?.createdAt ?? DateTime.now(),
           directFailures: existing?.directFailures ?? 0,
           directSuccesses: existing?.directSuccesses ?? 0,
+          stalls: existing?.stalls ?? 0,
           consecutiveFailures: existing?.consecutiveFailures ?? 0,
+          consecutiveSuccesses: existing?.consecutiveSuccesses ?? 0,
           proxiedBytes: existing?.proxiedBytes ?? 0,
           domesticHits: existing?.domesticHits ?? 0,
         ),
@@ -398,104 +490,238 @@ class AutoRouteTable {
     String host, {
     String? reason,
     String? dnsVerdict,
+  }) => _recordDirectSetback(
+    host,
+    reason: reason,
+    dnsVerdict: dnsVerdict,
+    stalled: false,
+  );
+
+  /// 记录一次「直连握手成功但**没有交付内容**」。
+  ///
+  /// 这是实测里最常见、而原先完全看不见的一类失败：TLS 握手只用几百毫秒就完成，
+  /// 随后连接活着 8–10 秒却只交付 0 字节（或零星几百字节）。它为什么看不见：
+  ///
+  ///   * 失败归因只解析含 `ERROR` 的日志行（`core_log.dart`），而这条路径没有
+  ///     `ERROR`——连接是「建立成功」的，只是没有数据；
+  ///   * 它又有零星字节，于是按「跑出过流量就算成功」的旧判据会被记成**成功**，
+  ///     把 `consecutiveFailures` 清零。
+  ///
+  /// 对分流决策而言它与连接失败同类：**直连这条路交付不了内容**。因此这里把它
+  /// 计入同一个连续失败计数，只是单独记在 [AutoRouteEntry.stalls] 里，
+  /// 好让界面上能区分「连不上」与「连上了但没数据」。
+  AutoRouteDecision recordDirectStall(String host, {String? reason}) =>
+      _recordDirectSetback(host, reason: reason, stalled: true);
+
+  /// 失败与挂死的共同处理。
+  ///
+  /// 两者对决策的影响完全一致（都说明直连没有交付），差异只在记到哪个计数、
+  /// 以及界面上的说法。因此共用一条路径，避免两处各写一份阈值判断而漂移。
+  AutoRouteDecision _recordDirectSetback(
+    String host, {
+    String? reason,
+    String? dnsVerdict,
+    required bool stalled,
   }) {
     final domain = normalizeDomain(host);
     if (domain.isEmpty) {
       return AutoRouteDecision(domain: host, added: false, reason: '目标不是域名');
     }
-    final entry =
-        _exact[domain] ??
-        AutoRouteEntry(domain: domain, createdAt: DateTime.now());
-    entry.directFailures++;
-    entry.consecutiveFailures++;
-    // 反证优先：一次直连失败就把「直连解析落在国内」的连续计数清零。
+    // 反证优先：一次「没有交付」就把「直连解析落在国内」的连续计数清零。
     //
-    // 不做这一步会来回翻转——被 3 次失败改成 forceProxy 之后，残留的计数会让
-    // 下一次正面解析立刻又把它改回 forceDirect，用户看到的是分流「时好时坏」，
+    // 不做这一步会来回翻转——被改成 forceProxy 之后，残留的计数会让下一次正面
+    // 解析立刻又把它改回 forceDirect，用户看到的是分流「时好时坏」，
     // 而这正是本文件开头说要避免的。
     _domesticStreak.remove(domain);
-    entry.lastFailureReason = reason;
-    if (dnsVerdict != null) entry.dnsVerdict = dnsVerdict;
 
     final poisoned = dnsVerdict == 'suspectPoisoning';
     final threshold = poisoned ? 1 : promotionThreshold;
-    // 用户已经显式指定过的规则不参与自动改写。
-    if (entry.source == RouteRuleSource.user) {
-      _install(entry);
+    final existing = _exact[domain];
+
+    if (existing != null) {
+      if (stalled) {
+        existing.stalls++;
+      } else {
+        existing.directFailures++;
+      }
+      existing.consecutiveFailures++;
+      // 一次「没有交付」就清零连续成功：撤销规则必须靠**连续**的正常交付，
+      // 而不是累计几次侥幸成功（见 [AutoRouteEntry.consecutiveSuccesses]）。
+      existing.consecutiveSuccesses = 0;
+      if (reason != null) existing.lastFailureReason = reason;
+      if (dnsVerdict != null) existing.dnsVerdict = dnsVerdict;
+
+      // 用户已经显式指定过的规则不参与自动改写。
+      if (existing.source == RouteRuleSource.user) {
+        _install(existing);
+        return AutoRouteDecision(
+          domain: domain,
+          added: false,
+          reason: '已有用户规则（${existing.preference.label}），仅记录失败',
+          entry: existing,
+        );
+      }
+
+      // 已有一条**直连**规则（反方向学到的）被连续证伪 → 改成走隧道。
+      // 已经是 forceProxy 的不再重复改判，只继续记账。
+      if (existing.consecutiveFailures >= threshold &&
+          existing.preference != RoutePreference.forceProxy) {
+        final promoted = AutoRouteEntry(
+          domain: domain,
+          preference: RoutePreference.forceProxy,
+          source: RouteRuleSource.learned,
+          createdAt: existing.createdAt ?? DateTime.now(),
+          lastHitAt: DateTime.now(),
+          directFailures: existing.directFailures,
+          directSuccesses: existing.directSuccesses,
+          stalls: existing.stalls,
+          consecutiveFailures: existing.consecutiveFailures,
+          consecutiveSuccesses: 0,
+          proxiedBytes: existing.proxiedBytes,
+          dnsVerdict: existing.dnsVerdict,
+          lastFailureReason: existing.lastFailureReason,
+        );
+        _install(promoted);
+        return AutoRouteDecision(
+          domain: domain,
+          added: true,
+          reason: poisoned
+              ? '解析结果不一致，已自动改为走隧道'
+              : _promotionReason(stalled, existing.consecutiveFailures),
+          entry: promoted,
+        );
+      }
+
+      _install(existing);
       return AutoRouteDecision(
         domain: domain,
         added: false,
-        reason: '已有用户规则（${entry.preference.label}），仅记录失败',
-        entry: entry,
+        reason: _observationReason(stalled, existing.consecutiveFailures, threshold),
+        entry: existing,
       );
     }
 
-    if (entry.consecutiveFailures >= threshold && entry.directSuccesses == 0) {
-      final wasNew =
-          !_exact.containsKey(domain) ||
-          entry.preference != RoutePreference.forceProxy;
-      final promoted = AutoRouteEntry(
-        domain: domain,
-        preference: RoutePreference.forceProxy,
-        source: RouteRuleSource.learned,
-        createdAt: entry.createdAt ?? DateTime.now(),
-        lastHitAt: DateTime.now(),
-        directFailures: entry.directFailures,
-        directSuccesses: entry.directSuccesses,
-        consecutiveFailures: entry.consecutiveFailures,
-        proxiedBytes: entry.proxiedBytes,
-        dnsVerdict: entry.dnsVerdict,
-        lastFailureReason: entry.lastFailureReason,
-      );
-      _install(promoted);
+    // 还没有规则：证据先攒在待定区，达到阈值才建规则（见 [_pendingSetbacks]）。
+    final pending = _pendingSetbacks.putIfAbsent(
+      domain,
+      () => _PendingSetback(createdAt: DateTime.now()),
+    );
+    if (stalled) {
+      pending.stalls++;
+    } else {
+      pending.failures++;
+    }
+    pending.consecutive++;
+    if (reason != null) pending.reason = reason;
+    if (dnsVerdict != null) pending.dnsVerdict = dnsVerdict;
+
+    if (pending.consecutive < threshold) {
+      _enforcePendingCapacity();
       return AutoRouteDecision(
         domain: domain,
-        added: wasNew,
-        reason: poisoned
-            ? '解析结果不一致，已自动改为走隧道'
-            : '连续 ${entry.consecutiveFailures} 次判为直连但失败，已自动改为走隧道',
-        entry: promoted,
+        added: false,
+        reason: _observationReason(stalled, pending.consecutive, threshold),
       );
     }
 
-    _install(entry);
+    _pendingSetbacks.remove(domain);
+    final promoted = AutoRouteEntry(
+      domain: domain,
+      preference: RoutePreference.forceProxy,
+      source: RouteRuleSource.learned,
+      createdAt: pending.createdAt,
+      lastHitAt: DateTime.now(),
+      directFailures: pending.failures,
+      stalls: pending.stalls,
+      consecutiveFailures: pending.consecutive,
+      dnsVerdict: pending.dnsVerdict,
+      lastFailureReason: pending.reason,
+    );
+    _install(promoted);
     return AutoRouteDecision(
       domain: domain,
-      added: false,
-      reason: '失败 ${entry.consecutiveFailures}/$threshold 次，继续观察',
-      entry: entry,
+      added: true,
+      reason: poisoned
+          ? '解析结果不一致，已自动改为走隧道'
+          : _promotionReason(stalled, pending.consecutive),
+      entry: promoted,
     );
   }
 
-  /// 记录一次「判为直连且连接有流量」。返回是否确实记下了。
+  static String _promotionReason(bool stalled, int consecutive) => stalled
+      ? '连续 $consecutive 次直连握手成功但没有数据，已自动改为走隧道'
+      : '连续 $consecutive 次判为直连但失败，已自动改为走隧道';
+
+  static String _observationReason(bool stalled, int consecutive, int threshold) =>
+      stalled
+      ? '直连握手成功但没有数据 $consecutive/$threshold 次，继续观察'
+      : '失败 $consecutive/$threshold 次，继续观察';
+
+  /// 未定性证据超限时整表清空，避免它随会话无限增长。
+  void _enforcePendingCapacity() {
+    if (_pendingSetbacks.length > maxPendingSetbacks) {
+      _pendingSetbacks.clear();
+    }
+  }
+
+  /// 记录一次「判为直连且**确实交付了内容**」。
   ///
   /// 返回 bool 而不是 void 是为了让上层能正确地去重：只有**确实记录成功**时
   /// 才该把这个域名标记为「已处理过」。
   ///
-  /// 这里踩过一个自己挖的坑：上层原本无条件把域名加进「已上报」集合，
-  /// 而一个域名完全可能先失败若干次、之后才出现一次成功的直连。第一次成功时
-  /// 表里已经有条目，一切正常；但如果顺序反过来（先被别的路径写进集合），
-  /// 真正的成功就被当成重复而丢掉——于是「直连其实能通」这个关键反证
-  /// 永远不会被记账，失败计数继续累积，最终把一个正常域名推进隧道。
+  /// 「确实交付」由调用方保证（见 `CoreMonitor` 的字节下限判据）：只有字节数够
+  /// 说明连接真的把内容送出来了才算。此前只要连接跑出过任何字节就走到这里，
+  /// 于是「TLS 通了、漏出几百字节、然后挂住」会被记成成功——那正是实测里最常见
+  /// 的失败形态，却被当成了「直连没问题」的证据。
   ///
-  /// 这是反证：直连既然能跑出流量，就说明之前把它判为「规则未覆盖」
+  /// 这是反证：直连既然把内容交付出来了，就说明之前把它判为「规则未覆盖」
   /// 是不成立的，连续失败计数必须清零，否则会攒够阈值误改路由。
   bool recordDirectSuccess(String host) {
     final domain = normalizeDomain(host);
     if (domain.isEmpty) return false;
     final entry = _exact[domain];
-    if (entry == null) return false;
+    if (entry == null) {
+      // 还没有规则：这次交付推翻的是**待定区**里的失败证据。
+      // 删掉它并如实返回 true——若在这里返回 false，上层会认为「什么都没记下」，
+      // 于是同一个域名会反复重试，而反证其实已经生效。
+      return _pendingSetbacks.remove(domain) != null;
+    }
     entry.directSuccesses++;
+    entry.consecutiveSuccesses++;
     entry.consecutiveFailures = 0;
-    // 学到的强制代理规则如果被证明能直连，就撤销它；
+    // 学到的强制代理规则如果被连续证明能直连，就撤销它；
     // 用户指定的规则不动。
+    //
+    // 用**连续**成功而不是累计成功：实测的坏时段里失败成簇、成功偶尔插进来，
+    // 累计计数会让两次侥幸成功就推翻刚学到的规则，规则因此反复横跳。
     if (entry.source == RouteRuleSource.learned &&
         entry.preference == RoutePreference.forceProxy &&
-        entry.directSuccesses >= 2) {
+        entry.consecutiveSuccesses >= revokeSuccessThreshold) {
       _uninstall(domain);
     }
     return true;
   }
+
+  /// 查一个域名在**待定区**里的证据（尚未定性，因此还没有规则）。
+  ///
+  /// 供测试与诊断使用：单独暴露是为了让「未定性的证据确实被记下了」这件事能被
+  /// 直接断言——否则只能通过「攒够阈值后规则出现」间接推断，而中间状态恰恰是
+  /// 最容易写错的地方（它此前正是被一次 `_install` 静默变成了规则）。
+  ///
+  /// 刻意不给它加 `@visibleForTesting`：本文件是纯 Dart 模型，为了一个注解引入
+  /// Flutter 依赖不划算。
+  ({int failures, int stalls, int consecutive})? pendingSetback(String domain) {
+    final pending = _pendingSetbacks[normalizeDomain(domain)];
+    if (pending == null) return null;
+    return (
+      failures: pending.failures,
+      stalls: pending.stalls,
+      consecutive: pending.consecutive,
+    );
+  }
+
+  /// 未定性证据的条数。
+  int get pendingSetbackCount => _pendingSetbacks.length;
 
   /// 记录一次「直连解析结果落在国内网段」。
   ///
@@ -549,7 +775,9 @@ class AutoRouteTable {
       lastHitAt: DateTime.now(),
       directFailures: current.directFailures,
       directSuccesses: current.directSuccesses,
+      stalls: current.stalls,
       consecutiveFailures: current.consecutiveFailures,
+      consecutiveSuccesses: current.consecutiveSuccesses,
       proxiedBytes: current.proxiedBytes,
       // 计数留在规则上：它既是这条规则的依据，也是界面上的证据。
       domesticHits: streak,
@@ -724,6 +952,9 @@ class AutoRouteTable {
     for (final domain in removed) {
       _uninstall(domain);
     }
+    // 未定性的证据也是程序学来的，一并丢弃——「恢复内置规则」的意思是回到出厂
+    // 判断，而不是保留一半观察。
+    _pendingSetbacks.clear();
     return removed;
   }
 
@@ -731,6 +962,7 @@ class AutoRouteTable {
     _exact.clear();
     _suffixBuckets.clear();
     _domesticStreak.clear();
+    _pendingSetbacks.clear();
   }
 
   /// 需要落盘的条目。

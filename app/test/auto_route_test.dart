@@ -83,7 +83,7 @@ void main() {
   });
 
   group('从失败证据里学习', () {
-    test('连续失败达到阈值才纠正', () {
+    test('连续失败达到阈值才纠正，之前不产生任何规则', () {
       final table = AutoRouteTable(promotionThreshold: 3);
 
       final first = table.recordDirectFailure(
@@ -92,18 +92,36 @@ void main() {
       );
       expect(first.added, isFalse);
       expect(
-        first.entry!.preference,
-        RoutePreference.forceProxy,
-        reason: '内部倾向已经记下，但还没对外生效',
+        table.match('blocked.example'),
+        isNull,
+        reason: '一次失败不该产生规则。原先这里会立刻建一条 preference 为 '
+            'forceProxy 的条目，而 buildRouteRules() 会照它生成规则——'
+            '于是「连续 3 次才纠正」实际变成了 1 次。',
       );
-      expect(table.match('blocked.example'), isNotNull);
+      expect(
+        table.buildRouteRules().otherRules,
+        isEmpty,
+        reason: '配置文件里也不该出现针对它的规则',
+      );
+      expect(
+        table.pendingSetback('blocked.example')?.consecutive,
+        1,
+        reason: '但证据要记进待定区，否则阈值永远攒不满',
+      );
 
       table.recordDirectFailure('blocked.example');
-      expect(table.length, 1);
+      expect(table.length, 0, reason: '还没定性，表里不该有条目');
+      expect(table.pendingSetback('blocked.example')?.consecutive, 2);
 
       final third = table.recordDirectFailure('blocked.example');
-      expect(third.added, isFalse, reason: '条目在第一次失败时就存在了');
+      expect(third.added, isTrue, reason: '这一下才真正改判');
       expect(third.reason, contains('连续 3 次'));
+      expect(table.length, 1);
+      expect(
+        table.pendingSetback('blocked.example'),
+        isNull,
+        reason: '提升成规则后应从待定区移除，否则同一份证据会被计两次',
+      );
     });
 
     test('一次抖动不会改路由', () {
@@ -134,7 +152,7 @@ void main() {
       expect(decision.reason, contains('继续观察'));
     });
 
-    test('直连成功两次会撤销程序学到的强制代理', () {
+    test('连续三次成功才撤销程序学到的强制代理', () {
       final table = AutoRouteTable(promotionThreshold: 1);
       table.recordDirectFailure('maybe.example');
       expect(
@@ -142,12 +160,21 @@ void main() {
         RoutePreference.forceProxy,
       );
 
+      // 前两次不足以撤销：撤销要求**连续**三次，因此坏时段里偶尔插进来的
+      // 成功无法推翻刚学到的规则（实测 github.com 就是这种分布）。
       table.recordDirectSuccess('maybe.example');
       table.recordDirectSuccess('maybe.example');
       expect(
         table.match('maybe.example'),
+        isNotNull,
+        reason: '两次成功不该撤销——否则规则会在坏时段里反复横跳',
+      );
+
+      table.recordDirectSuccess('maybe.example');
+      expect(
+        table.match('maybe.example'),
         isNull,
-        reason: '既然直连真的跑出了流量，说明当初的判断不成立',
+        reason: '既然直连连续交付了内容，说明当初的判断不成立',
       );
     });
 
@@ -170,14 +197,19 @@ void main() {
       final table = AutoRouteTable(promotionThreshold: 3);
       table.recordDirectFailure('flappy.example');
       table.recordDirectFailure('flappy.example');
-      // 第三次失败之前直连通了：失败计数应立即清零。
+      // 第三次失败之前直连通了：待定的失败证据应立即作废。
       expect(table.recordDirectSuccess('flappy.example'), isTrue);
-      expect(table.match('flappy.example')!.consecutiveFailures, 0);
+      expect(
+        table.pendingSetback('flappy.example'),
+        isNull,
+        reason: '直连既然交付了内容，之前那点失败证据就不成立了',
+      );
 
       // 之后即使再失败两次也不该达到阈值。
       table.recordDirectFailure('flappy.example');
       final decision = table.recordDirectFailure('flappy.example');
       expect(decision.reason, contains('继续观察'));
+      expect(table.match('flappy.example'), isNull);
     });
 
     test('用户规则永远不被自动改写', () {

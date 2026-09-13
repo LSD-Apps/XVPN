@@ -508,8 +508,12 @@ class _AutoRouteCardState extends State<AutoRouteCard> {
       ];
       return parts.join(' · ');
     }
+    // 两种「没有交付」分开说：连接失败与「握手成功但没有数据」是不同的现象，
+    // 而后者原先在归因里完全看不到。只按失败次数显示会得出
+    // 「判为直连但失败 0 次」这种自相矛盾的理由。
     final parts = <String>[
-      '判为直连但失败 ${entry.directFailures} 次',
+      if (entry.directFailures > 0) '判为直连但失败 ${entry.directFailures} 次',
+      if (entry.stalls > 0) '握手成功但没有数据 ${entry.stalls} 次',
       if (entry.lastFailureReason != null) entry.lastFailureReason!,
       if (entry.proxiedBytes > 0)
         '已走隧道 ${(entry.proxiedBytes / 1024).round()} KB',

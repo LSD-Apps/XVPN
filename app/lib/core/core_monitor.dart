@@ -19,7 +19,8 @@ library;
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
+
+import 'package:flutter/foundation.dart';
 
 import '../models.dart';
 import 'auto_route.dart';
@@ -37,6 +38,59 @@ import 'startup_self_check.dart';
 import 'tunnel_health.dart';
 import 'vpn_core.dart';
 import 'wireguard_handshake.dart';
+
+/// 一条**已关闭**直连连接的质量判定结果。
+///
+/// 三态而不是布尔：拿不准时不下结论，比下错结论安全——与 DNS 交叉校验
+/// 「拿不到地理信息就不下结论」是同一条原则。
+enum DirectOutcome {
+  /// 不是直连连接，不参与这套判定。
+  notApplicable,
+
+  /// 确实交付了内容（字节数达到下限）：可信的正向证据。
+  delivered,
+
+  /// 握手成功但没有数据：存活够久却几乎没交付。对分流而言是一次失败。
+  stalled,
+
+  /// 证据不足（存活短且字节少）：可能是一个正常的小响应，也可能是一次快速
+  /// 失败——后者由内核日志的 `ERROR` 行负责归因，不需要在这里重复计。
+  pending,
+}
+
+/// 一条连接在本机侧留下的最后状态。
+///
+/// 存在的理由：内核只给「当前活着的连接」，连接一关闭就从快照里消失。而判定
+/// 它是否挂死，恰恰需要它**关闭那一刻**的字节数与存活时长。因此在每条连接存活
+/// 期间逐轮刷新这里的字段，关闭时用它做判定。
+class _ConnectionTrace {
+  _ConnectionTrace({
+    required this.host,
+    required this.direct,
+    required this.bytes,
+    this.startedAt,
+    required this.lastSeenAt,
+  }) : firstSeenAt = lastSeenAt;
+
+  String host;
+  final bool direct;
+
+  /// 该连接累计交付的字节数（内核计数，只增不减）。
+  int bytes;
+
+  /// 内核给出的连接建立时间。缺失时退回本机首次看到它的时刻。
+  final DateTime? startedAt;
+
+  /// 本机首次看到它的时刻。
+  final DateTime firstSeenAt;
+
+  /// 本机最后一次看到它仍活着的时刻。
+  DateTime lastSeenAt;
+
+  /// 存活时长。用「最后看到」而不是「现在」作为终点：连接已经关闭，
+  /// 用当前时刻会把之后每一轮的等待时间也算进去，越晚判定显得活得越久。
+  Duration get alive => lastSeenAt.difference(startedAt ?? firstSeenAt);
+}
 
 /// 观测引擎的依赖注入点。
 class CoreMonitorHooks {
@@ -173,10 +227,49 @@ class CoreMonitor {
 
   final RateCalculator _rate = RateCalculator();
 
-  /// 已建立过连接的域名，用于「直连成功」的反证。
+  /// 记录「确实交付」与「挂死」的最近时刻，用于**时间窗限流**。
   ///
-  /// 只保留最近若干条：这是纯粹的近期证据，不需要长期记忆。
-  final BoundedIdSet _directSuccessSeen = BoundedIdSet(2000);
+  /// 为什么不是「一次会话只记一次」（原先的做法）：那样一个域名最多只能贡献
+  /// 1 次观测，而晋升需要连续 3 次、撤销也需要连续 3 次，于是**两条阈值都永远
+  /// 攒不满**——挂死推不动晋升，成功也撤销不了规则。这是把「够不够」交给
+  /// 「记几次」来管，而它们本来该由阈值来管。
+  ///
+  /// 也不是「每条连接都记」：一次页面加载会开出几十条连接，同一个故障会被
+  /// 重复计成几十次，阈值同样失去意义。
+  ///
+  /// 因此用时间窗：同一个域名在 [directOutcomeWindow] 内只记一次。一次故障里的
+  /// 多条连接被折成一次观测，而持续存在几分钟的问题会稳定累积——这正是
+  /// 「这个域名现在是不是有问题」想问的东西。
+  ///
+  /// 两个 kind 各记一份：同一个域名完全可能既挂死过、也正常交付过，
+  /// 那正是「不稳定」这件事本身，合并会丢掉其中一半的事实。
+  final Map<String, DateTime> _lastDeliveredAt = <String, DateTime>{};
+  final Map<String, DateTime> _lastStallAt = <String, DateTime>{};
+
+  /// 同一个域名的同类观测之间的最小间隔。
+  ///
+  /// 取 15 秒的依据：轮询周期是 1 秒，而一次页面加载/一次重试风暴都在几秒内
+  /// 完成；15 秒既能把它们折叠成一次，又能让持续存在的问题在大约 45 秒内
+  /// 攒满「连续 3 次」。更长会让纠正变迟钝，更短则挡不住突发。
+  static const Duration directOutcomeWindow = Duration(seconds: 15);
+
+  /// 限流表的容量上限。超出即整体清空：它只影响「再数几次」的成本。
+  static const int maxDirectOutcomeLog = 2000;
+
+  /// 该域名是否在时间窗内已经记过同类观测。
+  static bool _recentlyRecorded(
+    Map<String, DateTime> log,
+    String domain,
+    DateTime now,
+  ) {
+    final last = log[domain];
+    return last != null && now.difference(last) < directOutcomeWindow;
+  }
+
+  static void _stamp(Map<String, DateTime> log, String domain, DateTime now) {
+    log[domain] = now;
+    if (log.length > maxDirectOutcomeLog) log.clear();
+  }
 
   /// 待探测「是否本该直连」的隧道目标。
   ///
@@ -286,7 +379,11 @@ class CoreMonitor {
   /// 紧接着一次探测失败又会报「隧道不通」。
   void start({DateTime? since}) {
     _seen.clear();
-    _directSuccessSeen.clear();
+    _lastDeliveredAt.clear();
+    _lastStallAt.clear();
+    // 连接轨迹必须清掉：上一次会话的连接 id 不会重现，留着会让第一次
+    // 质量判定把「上一轮的旧轨迹」当成一条刚关闭的连接。
+    _connTraces.clear();
     _rate.reset();
     _lastLatencyProbe = null;
     _latencyFailures = 0;
@@ -495,12 +592,6 @@ class CoreMonitor {
     return 0;
   }
 
-  /// 每条连接上一轮读到的字节数，用于算增量。
-  ///
-  /// 键是连接 id。连接从内核列表里消失（关闭）时就地清理，因此这个表的大小
-  /// 与实际活连接数同阶，不会随会话时长增长。
-  final Map<String, int> _lastBytes = <String, int>{};
-
   /// 把「每条连接累计多少字节」换算成「本目标这一轮新增多少」，上报给界面。
   ///
   /// 为什么必须算增量：内核的 `upload` / `download` 是**该连接的累计值**，
@@ -508,16 +599,19 @@ class CoreMonitor {
   ///
   /// 连接关闭后会从列表里消失，它最后一段流量就统计不到了——这是这套观测方式
   /// 的固有限制（快照里没有关闭的连接），因此界面上的流量是**偏低**的下界，
-  /// 而不是虚高的估计值。
+  /// 而不是虚高的估计值。而**质量判定**恰好要用到关闭那一刻的状态，因此同一趟
+  /// 里顺手把它消费掉（见 [_emitClosedConnectionQuality]）。
   void _emitTrafficDeltas(Map<String, Object?> json) {
     final rawList = json['connections'];
     if (rawList is! List) {
-      // 读不到列表时**不能**清空账本：清掉会让下一轮的每条连接都被当成新连接，
-      // 于是那一轮的流量增量被整体丢弃。留着旧值最多让某条连接的增量算成 0。
+      // 读不到列表时**不能**清空账本、也不做质量判定：两种误动作都会把
+      // 「读不到」当成「连接已关闭/没有流量」。留着旧值最多让某条连接的
+      // 增量算成 0。
       return;
     }
 
     final live = <String>{};
+    final now = DateTime.now();
     // 同一目标可能同时有多条连接，先把增量按目标归并再一次上报，
     // 避免一秒内为同一个域名回调十几次。
     //
@@ -533,13 +627,28 @@ class CoreMonitor {
       live.add(conn.id);
 
       final total = conn.upload + conn.download;
-      final previous = _lastBytes[conn.id];
-      _lastBytes[conn.id] = total;
+      // 先取旧字节数再更新——顺序反了会让增量恒为 0。
+      final trace = _connTraces[conn.id];
+      final previousBytes = trace?.bytes;
+      if (trace == null) {
+        _connTraces[conn.id] = _ConnectionTrace(
+          host: conn.host,
+          direct: !conn.proxied,
+          bytes: total,
+          startedAt: conn.startedAt,
+          lastSeenAt: now,
+        );
+      } else {
+        trace.bytes = total;
+        trace.lastSeenAt = now;
+        // 同一连接的目标可能中途才被嗅探出来，因此有值时刷新；空值不覆盖。
+        if (conn.host.isNotEmpty) trace.host = conn.host;
+      }
       // 第一次见到这条连接时没有增量可言：它的全部字节都发生在建连那一刻之前，
       // 而那部分流量属于「连接刚建立」这个事件，不是本轮的增量。
-      if (previous == null) continue;
+      if (previousBytes == null) continue;
 
-      final delta = total - previous;
+      final delta = total - previousBytes;
       if (delta <= 0) continue;
 
       final kind = conn.proxied ? RouteKind.proxy : RouteKind.direct;
@@ -554,10 +663,8 @@ class CoreMonitor {
       );
     }
 
-    // 清理已关闭连接的账目，否则这个表会随会话一直增长。
-    if (_lastBytes.length > live.length) {
-      _lastBytes.removeWhere((String id, int _) => !live.contains(id));
-    }
+    // 已关闭的连接：清账目，并按最终字节数与存活时长判定质量。
+    _emitClosedConnectionQuality(live);
 
     for (final entry in deltas.entries) {
       hooks.listener.onConnectionTraffic(
@@ -584,9 +691,12 @@ class CoreMonitor {
     return candidate > delta ? delta : candidate;
   }
 
-  /// 新连接 → 分流记录，并顺带做两件事：
-  ///   * 直连且跑出了流量的域名，记为「直连成功」的反证；
-  ///   * 走隧道的流量按域名累计，供自动纠正判断规则是否真在用。
+  /// 新连接 → 分流记录，并顺带把走隧道的流量按域名累计。
+  ///
+  /// 注意这里**不再**判定「直连成功」。原因见
+  /// [classifyClosedDirectConnection]：一条连接刚出现时它的字节数还没有意义
+  /// （新连接往往只有几百字节的首包），当时就下结论会把「握手成功、随后挂住」
+  /// 误判成成功。现在改为在该连接**消失之后**按它的最终字节数与存活时长判定。
   void _emitNewConnections(Map<String, Object?> json) {
     final fresh = ClashSnapshot.pullNew(json, _seen);
     if (fresh.isEmpty) return;
@@ -609,16 +719,104 @@ class CoreMonitor {
         // 顺带排入反方向纠正的候选：走隧道的域名里，可能有本该直连的。
         // 这里只入队，不做探测——探测要占隧道往返，见 [probeDirectCandidates]。
         _enqueueDirectCandidate(host, table);
-      } else if (conn.totalBytes > 0) {
-        // 只在确实记下了一次「直连成功」时才把它标记为已处理，否则每秒都会
-        // 累加一次。注意必须用返回值判断：这个域名可能先失败过若干次、
-        // 现在才第一次真正连通，那时它是**新的**反证，不能被去重集合挡掉。
-        final domain = AutoRouteTable.normalizeDomain(host);
-        if (domain.isNotEmpty && !_directSuccessSeen.contains(domain)) {
-          if (table.recordDirectSuccess(host)) {
-            _directSuccessSeen.add(domain);
+      }
+    }
+  }
+
+  // ------------------------------------------------- 直连连接的质量判定
+
+  /// 判定「交付了内容」的字节下限。
+  ///
+  /// 实测校准（2026-09-13，中国大陆·深圳，**直连** measured with `curl --noproxy '*'`）：
+  ///
+  /// ```
+  /// 成功的请求  交付 577,137 字节（一次慢的：448,401 字节 / 12.0s）
+  /// 挂死的请求  交付 0 字节（存活 8–10 秒）
+  /// ```
+  ///
+  /// 两者相差**三个数量级**，因此这个下限取得宽松也不会误判。取 8 KB：远低于
+  /// 任何真实页面或下载对象，又远高于「隐约漏出几个字节」的情形。
+  ///
+  /// 为什么不能沿用「跑出过任何字节就算成功」：实测里最常见的失败形态恰恰是
+  /// 「TLS 握手几百毫秒就成功、随后只漏出零星字节就挂住」，用 `> 0` 会把这一类
+  /// 记成成功，进而把连续失败计数清零。
+  static const int substantiveByteFloor = 8 * 1024;
+
+  /// 判定「握手成功但没有交付」的存活时长下限。
+  ///
+  /// 实测：挂死连接的存活时长为 8–10 秒（受客户端超时限制，真实值只会更长），
+  /// 而成功的连接为 0.8–4.6 秒。**但只看时长不够**——同一批实测里有一次
+  /// 存活 12.0 秒却交付了 448 KB 的「慢但成功」。因此必须与字节数联合判断，
+  /// 这正是 [classifyClosedDirectConnection] 的写法。
+  static const Duration stallFloor = Duration(seconds: 6);
+
+  /// 一条**已关闭**直连连接的质量判定结果。
+  ///
+  /// 三态而不是布尔：拿不准时不下结论，比下错结论安全——这与 DNS 交叉校验
+  /// 「拿不到地理信息就不下结论」是同一条原则。
+  @visibleForTesting
+  static DirectOutcome classifyClosedDirectConnection({
+    required bool direct,
+    required int bytes,
+    required Duration? alive,
+  }) {
+    if (!direct) return DirectOutcome.notApplicable;
+    // 交付够多 → 这条直连确实把内容送出来了，是可信的正向证据。
+    if (bytes >= substantiveByteFloor) return DirectOutcome.delivered;
+    // 存活够久却几乎没交付 → 挂死。这是实测中最常见、而原先完全看不见的一类。
+    if (alive != null && alive >= stallFloor) return DirectOutcome.stalled;
+    // 其余（短命且字节少）不下结论：可能是一个正常的小响应，也可能是一次
+    // 快速失败——后者由内核日志的 ERROR 行负责归因，不需要这里重复计。
+    return DirectOutcome.pending;
+  }
+
+  /// 逐轮记录每条连接的最后状态，用于在它**消失之后**做质量判定。
+  ///
+  /// 键是连接 id。连接关闭时从内核列表里消失，那一刻本机手里留着它最后已知的
+  /// 字节数与时间戳——这正好是判定所需的两项。因此把 [ClashConnection.startedAt]
+  /// （此前被解析但从未被使用）用起来。
+  final Map<String, _ConnectionTrace> _connTraces = <String, _ConnectionTrace>{};
+
+  /// 消费「本轮消失了」的连接：对每一条做质量判定并转成学习证据。
+  ///
+  /// [live] 是本轮仍活着的连接 id 集合。
+  void _emitClosedConnectionQuality(Set<String> live) {
+    if (_connTraces.length <= live.length) return;
+    final table = _autoRoute;
+    final now = DateTime.now();
+
+    final closed = _connTraces.entries
+        .where((MapEntry<String, _ConnectionTrace> e) => !live.contains(e.key))
+        .toList(growable: false);
+
+    for (final entry in closed) {
+      _connTraces.remove(entry.key);
+      if (table == null) continue;
+      final trace = entry.value;
+      final outcome = classifyClosedDirectConnection(
+        direct: trace.direct,
+        bytes: trace.bytes,
+        alive: trace.alive,
+      );
+      final domain = AutoRouteTable.normalizeDomain(trace.host);
+      if (domain.isEmpty) continue;
+      switch (outcome) {
+        case DirectOutcome.delivered:
+          if (_recentlyRecorded(_lastDeliveredAt, domain, now)) continue;
+          if (table.recordDirectSuccess(trace.host)) {
+            _stamp(_lastDeliveredAt, domain, now);
           }
-        }
+        case DirectOutcome.stalled:
+          if (_recentlyRecorded(_lastStallAt, domain, now)) continue;
+          final decision = table.recordDirectStall(
+            trace.host,
+            reason: '握手成功但 ${trace.bytes} 字节后无数据',
+          );
+          _stamp(_lastStallAt, domain, now);
+          if (decision.added) hooks.listener.onAutoRouteLearned(decision);
+        case DirectOutcome.notApplicable:
+        case DirectOutcome.pending:
+          break;
       }
     }
   }

@@ -90,7 +90,7 @@ void main() {
 
       expect(table.recordDomesticAnswer('flaky.example').added, isFalse);
       expect(
-        table.match('flaky.example')!.preference,
+        table.match('flaky.example')?.preference,
         isNot(RoutePreference.forceDirect),
         reason: '反证优先：不清零会让两个方向反复互相推翻，分流时好时坏',
       );
