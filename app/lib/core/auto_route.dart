@@ -124,6 +124,7 @@ class AutoRouteEntry {
     this.domesticHits = 0,
     this.byRate = false,
     this.rateNote,
+    this.flips = 0,
     this.dnsVerdict,
     this.lastFailureReason,
   });
@@ -196,6 +197,19 @@ class AutoRouteEntry {
   /// 自相矛盾的说法。
   String? rateNote;
 
+  /// 这个域名的走向被程序改过多少次（只统计 learned 规则的翻转）。
+  ///
+  /// 存在的意义是让「会不会反复弹跳」从一句承诺变成**用户看得见的事实**：
+  /// 本项目最忌「界面上承诺了、代码没做到」，而三个学习方向各有独立计数，
+  /// 它们之间的仲裁一旦有缺口，表现就是这里不断增长。
+  ///
+  /// 翻转本身不一定是缺陷——网络真的在切换时它就该增长。但它是个信号：
+  /// 持续增长的条目值得用户手工指定走向，而那正是界面提供的能力。
+  ///
+  /// 不参与任何判据：它只是观测，绝不反过来影响路由（否则它会变成一个
+  /// 「因为我犹豫过，所以我要更犹豫」的正反馈）。
+  int flips = 0;
+
   /// 直连解析结果落在国内网段（`geoip-cn` 前缀索引内）的次数。  ///
   /// 这是**反方向**（把走隧道的域名改成直连）的证据，与 [directFailures] 方向相反。
   /// 之所以需要它：本程序是白名单式直连，不在 `geosite-cn` 内的域名必然进隧道，
@@ -241,6 +255,7 @@ class AutoRouteEntry {
     'domesticHits': domesticHits,
     if (byRate) 'byRate': true,
     if (rateNote != null) 'rateNote': rateNote,
+    if (flips > 0) 'flips': flips,
     if (dnsVerdict != null) 'dnsVerdict': dnsVerdict,
     if (lastFailureReason != null) 'lastFailureReason': lastFailureReason,
   };
@@ -280,6 +295,7 @@ class AutoRouteEntry {
       // **因为直连失败**而学到的规则放回直连——那是明确的功能回退。
       byRate: json['byRate'] as bool? ?? false,
       rateNote: json['rateNote']?.toString(),
+      flips: (json['flips'] as num?)?.toInt() ?? 0,
       dnsVerdict: json['dnsVerdict']?.toString(),
       lastFailureReason: json['lastFailureReason']?.toString(),
     );
@@ -606,6 +622,10 @@ class AutoRouteTable {
         proxiedBytes: existing.proxiedBytes,
         dnsVerdict: existing.dnsVerdict,
         lastFailureReason: existing.lastFailureReason,
+        // 走向确实变了才算一次翻转（从 forceDirect 改判；已经在隧道上的
+        // 只是继续记账，不该让它增长）。
+        flips: existing.flips +
+            (existing.preference != RoutePreference.forceProxy ? 1 : 0),
       );
       _install(promoted);
       return AutoRouteDecision(
@@ -803,6 +823,12 @@ class AutoRouteTable {
         rateNote: note,
         dnsVerdict: existing?.dnsVerdict,
         lastFailureReason: existing?.lastFailureReason,
+        // 记一次翻转：走向确实变了才算。
+        flips: (existing?.flips ?? 0) +
+            (existing != null &&
+                    existing.preference != RoutePreference.forceProxy
+                ? 1
+                : 0),
       );
       _install(promoted);
       return AutoRouteDecision(
@@ -953,6 +979,34 @@ class AutoRouteTable {
         entry: existing,
       );
     }
+    // 已经有一条**观测性**的走隧道规则时，正面推断不得把它推翻。
+    //
+    // 这是三个学习方向之间的**非对称仲裁**，也是防「反复弹跳」的关键一条：
+    //
+    //   * 「解析落在国内网段」是**推断**——该地址可能并不可达（企业异地部署、
+    //     规则集范围内的 CDN 却走不通、解析不可信）；
+    //   * 「直连失效 / 挂死 / 速率偏慢」是**观测**。
+    //
+    // 观测应当压过推断，反向则不成立。若不这样定，一个**实测不通**的域名会被
+    // 继续送来的「解析落在国内」反复翻回直连，然后再被失效翻回隧道——用户看到的
+    // 就是分流「时好时坏」。这条此前是缺的，由 test/learning_arbitration_test.dart
+    // 复现后补上。
+    //
+    // 走隧道规则本身仍然会被撤销，只是要由**观测**来撤：直连连续三次确实交付
+    // （`recordDirectSuccess`），或速率规则在隧道上同样偏慢（`recordDeliveryRate`）。
+    // 两条路都不需要「解析落在国内」插手。
+    if (existing != null &&
+        existing.preference == RoutePreference.forceProxy &&
+        existing.source == RouteRuleSource.learned) {
+      // 顺手清掉未定性的正面计数：留着它会在规则被撤销的那一刻立刻又攒满。
+      _domesticStreak.remove(domain);
+      return AutoRouteDecision(
+        domain: domain,
+        added: false,
+        reason: '已有「实测直连不通/偏慢」的走隧道规则，解析结果不足以推翻它',
+        entry: existing,
+      );
+    }
 
     final streak = (_domesticStreak[domain] ?? 0) + 1;
     if (streak < policy.domesticPromotionThreshold) {
@@ -988,6 +1042,15 @@ class AutoRouteTable {
       domesticHits: streak,
       dnsVerdict: current.dnsVerdict,
       lastFailureReason: reason ?? current.lastFailureReason,
+      // 走到这里时 existing 要么为空、要么不是 learned 的走隧道规则，
+      // 因此 genuinely 改变走向的情形只有「原先是 learned 的直连」以外
+      // 的少数——保守地只在真的变了时 +1。
+      flips:
+          current.flips +
+          (current.preference != RoutePreference.forceDirect &&
+                  current.source == RouteRuleSource.learned
+              ? 1
+              : 0),
     );
     _install(promoted);
     _domesticStreak.remove(domain);

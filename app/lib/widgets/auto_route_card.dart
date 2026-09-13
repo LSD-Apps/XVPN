@@ -517,6 +517,9 @@ class _AutoRouteCardState extends State<AutoRouteCard> {
       // 速率证据单独成句：它**不是失败**（连接成功交付了内容），
       // 只是慢。混进「失败」那句会让界面自相矛盾。
       if (entry.rateNote != null) entry.rateNote!,
+      // 翻转次数只在真的翻过时出现。它是「这个域名稳不稳定」的**可见证据**：
+      // 持续增长的条目值得用户手工指定走向，而那是界面已经提供的能力。
+      if (entry.flips > 0) '走向已被程序改过 ${entry.flips} 次',
       if (entry.lastFailureReason != null) entry.lastFailureReason!,
       if (entry.proxiedBytes > 0)
         '已走隧道 ${(entry.proxiedBytes / 1024).round()} KB',
