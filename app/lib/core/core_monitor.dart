@@ -29,6 +29,7 @@ import 'core_log.dart';
 import 'dns_client.dart';
 import 'dns_monitor.dart';
 import 'mtu_probe.dart';
+import 'outbound_tags.dart';
 import 'port_allocator.dart';
 import 'record_buffer.dart';
 import 'singbox_config.dart';
@@ -177,6 +178,32 @@ class CoreMonitor {
   /// 只保留最近若干条：这是纯粹的近期证据，不需要长期记忆。
   final BoundedIdSet _directSuccessSeen = BoundedIdSet(2000);
 
+  /// 待探测「是否本该直连」的隧道目标。
+  ///
+  /// 反方向自动纠正的输入队列：新出现的走隧道域名先排进来，之后按
+  /// [candidateInterval] 一批一批去探测。做成「积压 + 分批」而不是「见到就探」，
+  /// 是因为每次探测都要占一次隧道往返（`DnsMonitor.crossCheck`），一次全探
+  /// 会与其它探测抢带宽，还会把耗时测成排队时间。
+  final List<String> _directCandidates = <String>[];
+
+  /// 已经在队列里的域名，避免同一域名被反复排入。
+  final Set<String> _directCandidateSeen = <String>{};
+
+  /// 队列容量。满了丢最旧的：这是「最近谁在走隧道」的近期证据，
+  /// 不需要长期记忆，而无界队列在异常流量下会一直涨。
+  static const int candidateBacklogCapacity = 64;
+
+  /// 每轮最多探测几个域名。
+  static const int candidatesPerRound = 2;
+
+  /// 两轮候选探测之间的间隔。
+  static const Duration candidateInterval = Duration(seconds: 30);
+
+  Timer? _candidateTimer;
+
+  /// 候选探测是否有一轮在跑。与 [_tickRunning] 同理：慢探测不该被定时器叠起来。
+  bool _candidateProbeRunning = false;
+
   late final DnsResolver _dnsResolver = hooks.dnsResolver ?? UdpDnsResolver();
 
   /// 隧道与直连探测的实现。默认走真实网络，测试可注入桩。
@@ -283,6 +310,18 @@ class CoreMonitor {
       _dnsTimer?.cancel();
       _dnsTimer = Timer.periodic(dnsInterval, (_) => unawaited(refreshDns()));
 
+      // 反方向自动纠正的驱动：探测「走隧道的域名是否本该直连」。
+      // 只在有自动纠正表时启用——没有表就没有地方写结论。
+      if (_autoRoute != null) {
+        _directCandidates.clear();
+        _directCandidateSeen.clear();
+        _candidateTimer?.cancel();
+        _candidateTimer = Timer.periodic(
+          candidateInterval,
+          (_) => unawaited(probeDirectCandidates()),
+        );
+      }
+
       _selfCheckTimer?.cancel();
       _selfCheckTimer = Timer.periodic(
         const Duration(minutes: 10),
@@ -308,6 +347,8 @@ class CoreMonitor {
     _pollTimer = null;
     _dnsTimer?.cancel();
     _dnsTimer = null;
+    _candidateTimer?.cancel();
+    _candidateTimer = null;
     _selfCheckTimer?.cancel();
     _selfCheckTimer = null;
     _rate.reset();
@@ -434,7 +475,7 @@ class CoreMonitor {
       final rawChains = conn['chains'];
       final proxied =
           rawChains is List &&
-          rawChains.any((Object? c) => c.toString() == 'vpn');
+          rawChains.any((Object? c) => c.toString() == OutboundTags.vpn);
       if (proxied) {
         proxiedBytes += bytes;
       } else {
@@ -479,7 +520,11 @@ class CoreMonitor {
     final live = <String>{};
     // 同一目标可能同时有多条连接，先把增量按目标归并再一次上报，
     // 避免一秒内为同一个域名回调十几次。
-    final deltas = <String, ({RouteKind kind, int up, int down})>{};
+    //
+    // 键里必须带 kind：同一个目标在同一秒内既有直连又有代理连接是可能的
+    // （例如先被判直连、后续连接走了隧道）。只按目标归并会让两路字节被合并到
+    // 「最后一条连接」的方向上，于是会话占比统计把一整份混合流量记到其中一路。
+    final deltas = <(String, RouteKind), ({int up, int down})>{};
 
     for (final raw in rawList) {
       if (raw is! Map) continue;
@@ -497,14 +542,13 @@ class CoreMonitor {
       final delta = total - previous;
       if (delta <= 0) continue;
 
-      final target = conn.target;
       final kind = conn.proxied ? RouteKind.proxy : RouteKind.direct;
-      final previousOfTarget = deltas[target];
+      final key = (conn.target, kind);
       // 上传/下载的增量无法从总量差里精确拆开（账本只存了总量），
       // 按当前比例近似分摊。这不影响总量正确性，只影响拆分精度。
       final splitUp = _splitUpload(conn, delta);
-      deltas[target] = (
-        kind: kind,
+      final previousOfTarget = deltas[key];
+      deltas[key] = (
         up: (previousOfTarget?.up ?? 0) + splitUp,
         down: (previousOfTarget?.down ?? 0) + (delta - splitUp),
       );
@@ -518,8 +562,8 @@ class CoreMonitor {
     for (final entry in deltas.entries) {
       hooks.listener.onConnectionTraffic(
         ConnectionTraffic(
-          target: entry.key,
-          kind: entry.value.kind,
+          target: entry.key.$1,
+          kind: entry.key.$2,
           uploadDelta: entry.value.up,
           downloadDelta: entry.value.down,
         ),
@@ -562,6 +606,9 @@ class CoreMonitor {
       if (host.isEmpty) continue;
       if (conn.proxied) {
         table.recordProxiedBytes(host, conn.totalBytes);
+        // 顺带排入反方向纠正的候选：走隧道的域名里，可能有本该直连的。
+        // 这里只入队，不做探测——探测要占隧道往返，见 [probeDirectCandidates]。
+        _enqueueDirectCandidate(host, table);
       } else if (conn.totalBytes > 0) {
         // 只在确实记下了一次「直连成功」时才把它标记为已处理，否则每秒都会
         // 累加一次。注意必须用返回值判断：这个域名可能先失败过若干次、
@@ -576,8 +623,95 @@ class CoreMonitor {
     }
   }
 
-  // ---------------------------------------------------------------- 失败归因
+  // ------------------------------------------------- 反方向自动纠正（隧道→直连）
 
+  /// 把一个走隧道的域名排入「是否本该直连」的探测队列。
+  ///
+  /// 过滤掉不必要与没意义的候选：
+  ///   * IP 目标与单标签主机名——按域名的规则对它们没有意义；
+  ///   * 已有用户规则——用户的决定不该被程序改写；
+  ///   * 已经是直连的——没有要改的东西。
+  void _enqueueDirectCandidate(String host, AutoRouteTable table) {
+    final domain = AutoRouteTable.normalizeDomain(host);
+    if (domain.isEmpty) return;
+    if (_directCandidateSeen.contains(domain)) return;
+    final existing = table.match(domain);
+    if (existing != null &&
+        (existing.source == RouteRuleSource.user ||
+            existing.preference == RoutePreference.forceDirect)) {
+      return;
+    }
+    _directCandidateSeen.add(domain);
+    _directCandidates.add(domain);
+    while (_directCandidates.length > candidateBacklogCapacity) {
+      final evicted = _directCandidates.removeAt(0);
+      _directCandidateSeen.remove(evicted);
+    }
+  }
+
+  /// 探测「走隧道的域名是否本该直连」，并把结论写进自动纠正表。
+  ///
+  /// 为什么必须有这一步：本程序是白名单式直连，不在 `geosite-cn` 内的域名
+  /// **必然**进隧道，而 `geoip-cn` 不参与域名目标的判定（实测见
+  /// `docs/RULES.md`）。这类流量不失败、不报错，只白占隧道带宽，因此原先
+  /// 唯一能自动纠正的方向是「往隧道里推」。这里补上反方向。
+  ///
+  /// 证据是**DNS 事实**：该域名的直连解析答案落在 `geoip-cn` 覆盖的网段内。
+  /// 拿不到地理信息时不下结论（索引缺失、答案全是 IPv6）——与 `DnsMonitor`
+  /// 的保守原则一致：宁可少一次纠正，也不要把正常流量推出隧道。
+  Future<void> probeDirectCandidates() async {
+    if (_disposed || _candidateProbeRunning) return;
+    final table = _autoRoute;
+    if (table == null || _directCandidates.isEmpty) return;
+    _candidateProbeRunning = true;
+    // 本轮需要留到下一轮再探的域名。
+    //
+    // 必须攒到这里、循环结束后再入队：如果就地重新入队，循环的下一次迭代会
+    // **立刻**再探同一个域名，于是「两次独立测量」变成背靠背的两次——证据强度
+    // 与它的意图不符（指望的是隔一会的另一次观测，不是同一瞬间重复一次）。
+    final requeue = <String>[];
+    try {
+      for (
+        var i = 0;
+        i < candidatesPerRound && _directCandidates.isNotEmpty;
+        i++
+      ) {
+        // 从队尾取：队列代表的是一批待查目标，顺序无关紧要，而队尾取出是 O(1)。
+        final domain = _directCandidates.removeLast();
+        _directCandidateSeen.remove(domain);
+        if (_disposed) return;
+        // force 是必须的：见 [crossCheck] 的说明——不绕过缓存的话，第二次
+        // 「证据」只是重读同一次测量，会让阈值变成假指标。
+        final check = await crossCheck(domain, force: true);
+        if (check == null) continue;
+        final region = classifyRegion(hooks.cnIpIndex, check.domesticAnswers);
+        if (region != AddressRegion.domestic) {
+          // 不在国内网段：不必再探。答案会随 CDN 调度变化，但为此每 30 秒
+          // 占一次隧道往返并不划算——它下次出现在隧道流量里时会重新入队。
+          continue;
+        }
+        final decision = table.recordDomesticAnswer(
+          domain,
+          reason: '直连解析 ${check.domesticAnswers.join('、')} 落在国内网段',
+        );
+        if (decision.added) {
+          hooks.listener.onAutoRouteLearned(decision);
+        } else {
+          // 证据还不够：留到下一轮再测一次独立观测，去凑阈值。
+          // 不留的话这个域名只被测一次，阈值永远凑不满——反方向纠正就等于
+          // 完全不会生效。
+          requeue.add(domain);
+        }
+      }
+    } finally {
+      for (final domain in requeue) {
+        _enqueueDirectCandidate(domain, table);
+      }
+      _candidateProbeRunning = false;
+    }
+  }
+
+  // ---------------------------------------------------------------- 失败归因
   /// 内核日志回调。两端各自把日志行喂进来。
   ///
   /// 这是「自动化智能化分流」的入口：判为直连却失败是唯一能同时说明
@@ -677,12 +811,16 @@ class CoreMonitor {
   }
 
   /// 对一个域名做交叉校验（连接失败时调用，也可由界面主动触发）。
-  Future<DnsCrossCheck?> crossCheck(String domain) async {
+  ///
+  /// [force] 为 true 时绕过交叉校验的缓存。反方向纠正需要它：那条路径要求
+  /// **多次独立测量**才能改路由，而 `DnsMonitor` 的缓存 TTL 是 10 分钟——
+  /// 不绕过缓存的话，第二次「证据」只是把同一次测量重读一遍，等于伪造证据。
+  Future<DnsCrossCheck?> crossCheck(String domain, {bool force = false}) async {
     _ensureDnsMonitor();
     final monitor = _dnsMonitor;
     if (monitor == null) return null;
     try {
-      return await monitor.crossCheck(domain);
+      return await monitor.crossCheck(domain, force: force);
     } on Object {
       return null;
     }

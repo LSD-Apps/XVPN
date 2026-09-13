@@ -5,8 +5,10 @@ import '../core/rulesets.dart';
 import '../format.dart';
 import '../models.dart';
 import '../theme.dart';
+import '../widgets/app_preset_card.dart';
 import '../widgets/auto_route_card.dart';
 import '../widgets/common.dart';
+import '../widgets/tunnel_volume_card.dart';
 
 /// 分流规则页。
 ///
@@ -59,6 +61,10 @@ class RulesScreen extends StatelessWidget {
           const SizedBox(height: 13),
           _buildRuleSetsCard(context, compact: false),
           const SizedBox(height: 13),
+          AppPresetCard(state: state, compact: false),
+          const SizedBox(height: 13),
+          TunnelVolumeCard(state: state, compact: false),
+          const SizedBox(height: 13),
           AutoRouteCard(state: state, compact: false),
         ],
       ),
@@ -81,6 +87,10 @@ class RulesScreen extends StatelessWidget {
                 _buildSplitCard(compact: true),
                 const SizedBox(height: 12),
                 _buildRuleSetsCard(context, compact: true),
+                const SizedBox(height: 12),
+                AppPresetCard(state: state, compact: true),
+                const SizedBox(height: 12),
+                TunnelVolumeCard(state: state, compact: true),
                 const SizedBox(height: 12),
                 AutoRouteCard(state: state, compact: true),
                 const SizedBox(height: 24),
@@ -176,7 +186,84 @@ class RulesScreen extends StatelessWidget {
               ),
             ],
           ),
+          if (RuleSetStore.suggested.isNotEmpty) ...<Widget>[
+            const SizedBox(height: 14),
+            Text('推荐规则集', style: XvText.rowTitle),
+            const SizedBox(height: 4),
+            Text(
+              '由用户自行添加的第三方规则集：程序只提供地址，不再分发数据。'
+              '因此它们的许可与收录标准由上游决定，是否使用请你自行判断。',
+              style: XvText.caption,
+            ),
+            for (final suggestion in RuleSetStore.suggested)
+              _buildSuggestion(context, suggestion),
+          ],
         ],
+      ),
+    );
+  }
+
+  /// 一条推荐规则集。已添加过的不再出现（避免来回点出重名错误）。
+  Widget _buildSuggestion(BuildContext context, SuggestedRuleSet suggestion) {
+    final already = state.ruleSets.any(
+      (RuleSetEntry e) => e.name == suggestion.name,
+    );
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          Row(
+            children: <Widget>[
+              Flexible(
+                child: Text(
+                  suggestion.label,
+                  style: XvText.bodyMuted.copyWith(color: XV.text),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              const SizedBox(width: 8),
+              if (already)
+                RouteTag.green('已添加')
+              else
+                TapAction(
+                  // 刻意不叫「添加」：手工域名规则那一行的按钮已经叫「添加」，
+                  // 两个不同动作同名会让按文案定位的地方（测试、无障碍）歧义。
+                  label: '添加此规则集',
+                  onTap: () => _addSuggestion(context, suggestion),
+                ),
+            ],
+          ),
+          const SizedBox(height: 3),
+          Text(suggestion.note, style: XvText.caption),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _addSuggestion(
+    BuildContext context,
+    SuggestedRuleSet suggestion,
+  ) async {
+    // 复用自定义规则集那条路径：下载、魔数校验、落盘、写进内核配置全都一样，
+    // 因此推荐规则集与手工添加的条目在行为上没有任何差别。
+    final error = await state.addCustomRuleSet(
+      name: suggestion.name,
+      url: suggestion.url,
+      // 带上「域名类」标记：否则被它判为直连的域名仍会经隧道解析，
+      // 而这条规则集正是我们主动推荐给用户的。
+      domainRuleSet: suggestion.domainRuleSet,
+    );
+    if (!context.mounted) return;
+    ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+      SnackBar(
+        content: Text(
+          error ?? '已添加规则集「${suggestion.name}」，启用后在下一次连接生效',
+          style: TextStyle(fontSize: 12.5, color: XV.text),
+        ),
+        backgroundColor: XV.panel3,
+        behavior: SnackBarBehavior.floating,
+        margin: const EdgeInsets.all(16),
       ),
     );
   }
@@ -208,6 +295,12 @@ class RulesScreen extends StatelessWidget {
               if (!entry.enabled) ...<Widget>[
                 const SizedBox(width: 6),
                 RouteTag.warn('已停用'),
+              ],
+              if (!entry.updatable) ...<Widget>[
+                const SizedBox(width: 6),
+                // 说清楚「为什么这个没有更新按钮」：它是构建期产物，
+                // 上游给的不是 .srs，程序没法直接下载。
+                RouteTag.direct('构建产物'),
               ],
             ],
           ),
@@ -340,10 +433,13 @@ class RulesScreen extends StatelessWidget {
       context,
       title: '恢复内置规则',
       message:
-          '恢复内置规则会做两件事：\n'
-          '· 重新启用两个内置规则集（geosite-cn、geoip-cn）；\n'
+          '恢复内置规则会做三件事：\n'
+          '· 重新启用 geosite-cn、geoip-cn 两个内置规则集；\n'
           '· 清除程序自动学到的域名分流规则。\n\n'
-          '你手工指定的域名规则与自定义规则集会保留。',
+          '以下内容**不会**被改动：\n'
+          '· 你手工指定的域名规则；\n'
+          '· 自定义规则集与推荐添加的第三方规则集；\n'
+          '· 「直连白名单」的开关状态（它由那张卡片单独管理）。',
       confirmLabel: '恢复',
     );
     if (!confirmed || !context.mounted) return;

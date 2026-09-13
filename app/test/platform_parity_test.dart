@@ -222,7 +222,7 @@ MIIB
           findsOneWidget,
           reason: '$platform 应能从导航进到「分流规则」页',
         );
-        for (final text in <String>['规则集', '域名分流规则']) {
+        for (final text in <String>['规则集', '直连白名单', '隧道流量去向', '域名分流规则']) {
           expect(
             find.text(text),
             findsWidgets,

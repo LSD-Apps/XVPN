@@ -28,6 +28,7 @@ library;
 
 import 'dart:convert';
 
+import 'outbound_tags.dart';
 import 'record_buffer.dart';
 
 /// 把 JSON 里的数值宽松地读成 int。
@@ -116,7 +117,7 @@ class ClashConnection {
     final chains = rawChains is List ? rawChains : const <Object?>[];
     // 出站标签取链尾：项目里只有 vpn / direct 两个出站，链尾就是最终落点。
     final outbound = chains.isEmpty
-        ? 'direct'
+        ? OutboundTags.direct
         : chains.map((Object? c) => c.toString()).last;
 
     return ClashConnection(
@@ -127,7 +128,9 @@ class ClashConnection {
           int.tryParse(metadata['destinationPort']?.toString() ?? '') ?? 0,
       rule: ruleDisplayName(json['rule']?.toString() ?? ''),
       outbound: outbound,
-      proxied: chains.any((Object? c) => c.toString() == 'vpn'),
+      proxied: chains.any(
+        (Object? c) => c.toString() == OutboundTags.vpn,
+      ),
       upload: _intOf(json['upload']),
       download: _intOf(json['download']),
       startedAt: _parseTime(json['start']),

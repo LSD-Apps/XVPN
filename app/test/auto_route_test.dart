@@ -278,7 +278,7 @@ void main() {
       table.recordDirectFailure('blocked.example');
       table.recordDirectFailure('other.example');
 
-      final rules = table.buildRouteRules();
+      final rules = table.buildRouteRules().otherRules;
       expect(rules, hasLength(1));
       expect(rules.first['outbound'], 'vpn');
       expect(rules.first['domain'], contains('blocked.example'));
@@ -290,15 +290,51 @@ void main() {
       );
     });
 
-    test('代理规则排在直连规则之前', () {
+    test('同一段内代理规则排在直连规则之前', () {
       final table = AutoRouteTable(promotionThreshold: 1);
-      table.setUserRule('direct.example', RoutePreference.forceDirect);
+      // 两条都必须来自同一段才谈得上「段内顺序」：一条经「直连失败」学成
+      // 强制代理，另一条经「解析落在国内网段」学成强制直连，都在 otherRules 段。
       table.recordDirectFailure('proxy.example');
+      table.recordDomesticAnswer('direct.example');
+      table.recordDomesticAnswer('direct.example');
 
-      final rules = table.buildRouteRules();
+      final rules = table.buildRouteRules().otherRules;
       expect(rules, hasLength(2));
       expect(rules[0]['outbound'], 'vpn');
       expect(rules[1]['outbound'], 'direct');
+    });
+
+    test('用户规则与其余规则分成两段，段间要能插进内网直连', () {
+      // 这是「内网地址始终直连」这条规则的定位依据：程序学到与内置白名单的
+      // 规则可能错误地把内网主机名指向代理（内网主机名解析出私有地址会被
+      // geoip-cn 命中，一旦临时不可达还会攒够「直连失败」），私有地址段是
+      // 确定的边界，不该由推断出的证据推翻。用户显式指定则保留最高优先级。
+      final table = AutoRouteTable(promotionThreshold: 1)
+        ..setUserRule('mine.example', RoutePreference.forceProxy)
+        ..recordDirectFailure('learned.example');
+
+      final split = table.buildRouteRules();
+      expect(
+        split.userRules.map((Map<String, Object?> r) => r['outbound']),
+        <String>['vpn'],
+      );
+      expect(
+        split.userRules.first['domain'],
+        contains('mine.example'),
+      );
+      expect(
+        split.otherRules.map((Map<String, Object?> r) => r['outbound']),
+        <String>['vpn'],
+      );
+      expect(
+        split.otherRules.first['domain'],
+        contains('learned.example'),
+      );
+      expect(
+        split.userRules.first['domain'],
+        isNot(contains('learned.example')),
+        reason: '两段必须真的分开，否则 _route() 无法把内网直连插在中间',
+      );
     });
 
     test('域名数量很多时拆成多条规则，避免单条过长', () {
@@ -306,7 +342,7 @@ void main() {
       for (var i = 0; i < 1200; i++) {
         table.recordDirectFailure('host-$i.example');
       }
-      final rules = table.buildRouteRules();
+      final rules = table.buildRouteRules().otherRules;
       expect(rules.length, greaterThan(1));
       // 每条规则的域名数都不超过上限。
       final perRule = AutoRouteTable.domainsPerRule;
@@ -325,7 +361,9 @@ void main() {
     });
 
     test('空表生成空规则，不产生空对象', () {
-      expect(AutoRouteTable().buildRouteRules(), isEmpty);
+      final split = AutoRouteTable().buildRouteRules();
+      expect(split.userRules, isEmpty);
+      expect(split.otherRules, isEmpty);
     });
   });
 

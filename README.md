@@ -40,7 +40,7 @@ reasoning is in [`docs/RELEASE.md`](docs/RELEASE.md).
 
 | What you might expect to configure | What the app does instead |
 | --- | --- |
-| Choose which traffic goes where | Bundled `geosite-cn` + `geoip-cn` rule sets — domain and IP, belt and braces |
+| Choose which traffic goes where | Bundled `geosite-cn` + `geoip-cn` rule sets — two **independent** criteria (domain vs. IP-literal), not one backing up the other; see [`docs/RULES.md`](docs/RULES.md) |
 | Set up DNS with a consistency check | Generates two resolvers: a direct resolver for rule-set matches, an in-tunnel resolver for the rest |
 | Understand WireGuard / OpenVPN / Hysteria2 parameters | Parses the config and maps every field to the core; invalid or outdated parameters are corrected automatically |
 | Reconfigure on every switch | Remembers multiple profiles; switching reconnects |
@@ -50,6 +50,14 @@ connect, and can be refreshed incrementally via "Check for updates". The
 **分流规则** (split rules) page is where you maintain them: enable, disable, add a
 custom set, delete one, or restore the built-ins — and where you review the
 default, learned and manually specified domain rules.
+
+A related but deliberately separate mechanism: **app direct presets**. Some overseas
+apps are reachable directly from mainland China (Cursor is a measured example), so
+tunnelling them only wastes tunnel capacity and adds a foreign egress IP. Those
+domains can never appear in `geosite-cn` — that is a list of *Chinese* sites — so the
+app ships an explicit allow-list you enable per app on the **分流规则** page. Which
+domains were measured as directly reachable, and which must stay in the tunnel, is
+documented in [`docs/RULES.md`](docs/RULES.md).
 
 ## Supported protocols
 
@@ -137,6 +145,24 @@ three failures that look identical but need opposite responses:
 | Direct connection fails, tunnel works | Local network or DNS problem | Don't blame your node |
 | Direct works, tunnel fails | Node/server problem | Changing rules will not help |
 | Both work, a few sites fail | Rule coverage gap | The app learns this automatically |
+| Tunnel works and direct DNS works, but **in-tunnel** DNS does not | The node won't carry UDP/53, or its declared DNS is unreachable | Use a reachable DNS first, then consider another node |
+
+Four self-check probes back this up: direct, tunnel, direct resolution, and
+**in-tunnel resolution**. The last one was a blind spot — the original DNS probe
+used a rule-set domain, so the kernel answered it with the *direct* resolver and the
+in-tunnel resolver (the resolution exit for every non-rule-set domain) was never
+exercised.
+
+DNS decisions also follow routing decisions, derived from one shared table: domains
+judged direct are resolved by the direct resolver, domains judged tunnelled by the
+in-tunnel one. Letting the two diverge means a domain you already decided to connect
+directly gets resolved by a foreign resolver — and then connected to a foreign CDN
+address. **Every domain-kind rule set** participates, declared per entry rather than
+hard-coded.
+
+Precedence is an explicit contract (the kernel acts on the first match): user rules →
+private addresses direct → learned/built-in-allow-list → rule sets → fall back to the
+tunnel. A test asserts the index ordering of all five, so a silent reorder cannot ship.
 
 ### Automatic correction — the app learns
 

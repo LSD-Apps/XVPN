@@ -5,6 +5,40 @@ import 'package:http/http.dart' as http;
 
 import 'platform_paths.dart';
 
+/// 一个推荐给用户的第三方规则集。
+///
+/// 只描述「去哪儿取」，不含数据本身——因此不涉及再分发，也就绕开了
+/// 上游许可与本项目许可是否兼容的问题（见 `RuleSetStore.suggested` 的注释）。
+class SuggestedRuleSet {
+  const SuggestedRuleSet({
+    required this.name,
+    required this.label,
+    required this.url,
+    required this.note,
+    this.domainRuleSet = false,
+  });
+
+  /// 建议使用的本地名称。用户添加时仍可改，但不能与现有条目重名。
+  final String name;
+
+  /// 界面上的展示名。
+  final String label;
+
+  final String url;
+
+  /// 说明：覆盖面、收录标准与许可状况。界面直接展示，让用户自己判断要不要用。
+  final String note;
+
+  /// 是否**域名类**规则集。
+  ///
+  /// 必须显式声明，而且是这一项决定了它能否参与 DNS 直连分流。因为
+  /// `RuleSetEntry` 对自定义条目没法从名字推断类型，先前一律按「非域名类」
+  /// 处理——于是**按我们自己的推荐**添加进来的规则集，被它判为直连的域名仍然
+  /// 经隧道解析（拿到境外 CDN 地址再去直连）。那正是要修的那类不一致，
+  /// 只不过从推荐入口重新引入了。
+  final bool domainRuleSet;
+}
+
 /// 规则集来源：随包分发的出厂规则集，还是用户自己添加的。
 ///
 /// 这个区分是界面诚实的依据：内置规则集是二进制 `.srs`，只能启用/停用与查看
@@ -27,6 +61,8 @@ class RuleSetEntry {
     this.enabled = true,
     this.updatedAt,
     this.sizeBytes = 0,
+    this.updatable = true,
+    this.domainRuleSet = false,
   });
 
   /// 唯一标识，同时是内核里的标签与文件名（去掉 `.srs`）。
@@ -35,6 +71,9 @@ class RuleSetEntry {
   final RuleSetKind kind;
 
   /// 上游下载地址。内置的取自 [RuleSetStore.sources]，自定义的由用户填写。
+  ///
+  /// [updatable] 为 false 时它不是下载地址，而是**来源说明**（形如
+  /// `builtin:...`），仅供界面展示。
   final String url;
 
   bool enabled;
@@ -44,6 +83,25 @@ class RuleSetEntry {
 
   /// 磁盘上的字节数。为 0 表示还没量过。
   int sizeBytes;
+
+  /// 能否用「检查更新」重新下载。
+  ///
+  /// 有些内置规则集是**构建期产物**（例如从 dnsmasq 配置编译出来的补充规则集）：
+  /// 上游给的不是 `.srs`，程序去下载只会拿到一份 HTML 或配置文本，被魔数校验
+  /// 拒绝，用户看到的是「检查更新失败」——而失败原因与他的网络毫无关系。
+  /// 对这类条目必须显式关掉更新，并让界面说明「要刷新请重跑构建脚本」。
+  final bool updatable;
+
+  /// 是否**域名类**规则集，即能否参与 DNS 直连分流。
+  ///
+  /// 这是逐条声明的元数据，不是从名字推导的：自定义规则集是域名类还是 IP 类，
+  /// 从文件名无从得知。先前只有 `tag == 'geosite-cn'` 这个硬编码判断，于是新增
+  /// 域名类规则集时**必然**漏掉它参与 DNS 分流——而现象是「判定该直连的域名仍被
+  /// 境外解析器解析」，极难看出原因。
+  ///
+  /// 现在把它存进存档：内置条目由 [BuiltinRuleSet.isDomainRuleSet] 决定，
+  /// 用户按推荐添加的第三方规则集则由 [SuggestedRuleSet.domainRuleSet] 带上。
+  final bool domainRuleSet;
 
   String get fileName => '$name.srs';
 
@@ -58,6 +116,8 @@ class RuleSetEntry {
     bool? enabled,
     DateTime? updatedAt,
     int? sizeBytes,
+    bool? updatable,
+    bool? domainRuleSet,
   }) {
     return RuleSetEntry(
       name: name ?? this.name,
@@ -66,6 +126,8 @@ class RuleSetEntry {
       enabled: enabled ?? this.enabled,
       updatedAt: updatedAt ?? this.updatedAt,
       sizeBytes: sizeBytes ?? this.sizeBytes,
+      updatable: updatable ?? this.updatable,
+      domainRuleSet: domainRuleSet ?? this.domainRuleSet,
     );
   }
 
@@ -76,6 +138,8 @@ class RuleSetEntry {
     'enabled': enabled,
     if (updatedAt != null) 'updatedAt': updatedAt!.toIso8601String(),
     'sizeBytes': sizeBytes,
+    if (!updatable) 'updatable': false,
+    'domainRuleSet': domainRuleSet,
   };
 
   static RuleSetEntry? fromJson(Object? raw) {
@@ -87,6 +151,13 @@ class RuleSetEntry {
     final kind = json['kind'] == 'builtin'
         ? RuleSetKind.builtin
         : RuleSetKind.custom;
+    // updatable 默认 true：键缺失是旧存档，那时的条目全都可更新。
+    // 拿不到「这份文件是构建产物」这个事实时，宁可允许更新（用户点了会有
+    // 明确报错），也不要凭空关掉一个本来能用的功能。
+    //
+    // domainRuleSet 相反，缺失时**回退到内置定义**而不是 false：旧存档里
+    // geosite-cn 的标记必然缺失，若默认 false，升级上来的用户会突然失去
+    // 「命中规则集的域名用直连解析器」这条行为——那是静默的功能回退。
     return RuleSetEntry(
       name: name,
       kind: kind,
@@ -94,6 +165,9 @@ class RuleSetEntry {
       enabled: json['enabled'] as bool? ?? true,
       updatedAt: _time(json['updatedAt']),
       sizeBytes: (json['sizeBytes'] as num?)?.toInt() ?? 0,
+      updatable: json['updatable'] as bool? ?? true,
+      domainRuleSet: json['domainRuleSet'] as bool? ??
+          RuleSetStore.isDomainRuleSetName(name),
     );
   }
 
@@ -112,6 +186,59 @@ class RuleSetEntry {
   static bool isValidName(String name) => _namePattern.hasMatch(name);
 }
 
+/// **内置**规则集的权威定义。
+///
+/// 把「有哪些内置规则集」做成一列带元数据的条目，而不是几张平行的
+/// Map/Set，是因为每一条都同时决定了几件事，散开写必然漂移：
+///   * 是否有可下载的 `.srs` 地址（能否用「检查更新」刷新）；
+///   * 是否**域名类**（决定它能否参与 DNS 直连分流——IP 类不行）；
+///   * 首次安装是否启用。
+///
+/// 尤其是「域名类」这一项：原先它是靠 `tag == 'geosite-cn'` 这个硬编码判断的，
+/// 于是新增一个域名类规则集（如 `geosite-cn-extra`）时，它会**静默地**不参与
+/// DNS 分流——表现为「判定该直连的域名仍被境外解析器解析，然后按境外 CDN 的
+/// 地址直连」，而这是最难从现象看出原因的一类问题。
+class BuiltinRuleSet {
+  const BuiltinRuleSet({
+    required this.name,
+    this.url,
+    this.source,
+    this.enabledByDefault = true,
+    this.isDomainRuleSet = false,
+  });
+
+  /// 规则集名（不含 `.srs`）。同时是内核标签与磁盘上的文件名。
+  final String name;
+
+  /// 上游下载地址。为 null 表示它**不能**在运行时更新（构建期产物）。
+  final String? url;
+
+  /// 来源说明，界面上展示。**不是 URL**——[url] 为 null 时用它交代怎么刷新。
+  final String? source;
+
+  /// 首次安装是否启用。
+  ///
+  /// 默认值必须有**实测**支撑，而不是随手取。`geosite-cn-extra` 取 true 的依据
+  /// 见 [bundledExtras] 的注释与 `docs/RULES.md`。
+  final bool enabledByDefault;
+
+  /// 是否域名类。IP 类（如 `geoip-cn`）写进 DNS 规则没有意义：DNS 查询的是域名。
+  final bool isDomainRuleSet;
+
+  bool get updatable => url != null;
+
+  String get fileName => '$name.srs';
+
+  RuleSetEntry toEntry() => RuleSetEntry(
+    name: name,
+    kind: RuleSetKind.builtin,
+    url: url ?? source ?? '',
+    enabled: enabledByDefault,
+    updatable: updatable,
+    domainRuleSet: isDomainRuleSet,
+  );
+}
+
 /// 规则库的落盘与更新。
 ///
 /// 设计：程序内打包一份规则库作为**出厂副本**，运行时复制到可写目录，
@@ -125,25 +252,92 @@ class RuleSetEntry {
 class RuleSetStore {
   RuleSetStore._();
 
-  /// 需要维护的规则库。键是文件名，值是上游地址。
+  /// 出厂规则集的**唯一**定义处。
   ///
-  /// 上游走 jsDelivr 的 `rule-set` 分支——GitHub 直连在部分网络下时通时断，
+  /// 前两项走 jsDelivr 的 `rule-set` 分支——GitHub 直连在部分网络下时通时断，
   /// 而 CDN 稳定得多（安装阶段也是从同一个地址拉取的）。
-  static const Map<String, String> sources = <String, String>{
-    'geosite-cn.srs':
-        'https://cdn.jsdelivr.net/gh/SagerNet/sing-geosite@rule-set/geosite-cn.srs',
-    'geoip-cn.srs':
-        'https://cdn.jsdelivr.net/gh/SagerNet/sing-geoip@rule-set/geoip-cn.srs',
+  static const List<BuiltinRuleSet> builtins = <BuiltinRuleSet>[
+    BuiltinRuleSet(
+      name: 'geosite-cn',
+      url: 'https://cdn.jsdelivr.net/gh/SagerNet/sing-geosite@rule-set/geosite-cn.srs',
+      isDomainRuleSet: true,
+    ),
+    BuiltinRuleSet(
+      name: 'geoip-cn',
+      url: 'https://cdn.jsdelivr.net/gh/SagerNet/sing-geoip@rule-set/geoip-cn.srs',
+      // IP 类：不能参与 DNS 直连分流。
+    ),
+    // ── 构建期产物 ──────────────────────────────────────────────
+    //
+    // 它随包分发，但**不可**用「检查更新」下载：本项的来源是 dnsmasq 配置，
+    // 需要先经 scripts/build-cn-domain-ruleset.ps1 编译。把那种地址填进来，
+    // 用户点「检查更新」只会拿到一份配置文本、被魔数校验拒绝，
+    // 而报错与他的网络毫无关系。
+    //
+    // 默认**启用**，依据是实测（见 script 的自检与 docs/RULES.md 第四节十）：
+    //   * 召回：40 个国内站点全部命中（100%）；
+    //   * 误命中：约 150 个境外域名（含被墙服务、无中国节点服务）**0 个**命中。
+    // 再加上一条安全网：万一某个被列进去的域名其实不通，它被判为直连后连接
+    // 失败会被自动纠正表学成「强制代理」，而学到的规则排在规则库**之前**，
+    // 因此能覆盖它。
+    BuiltinRuleSet(
+      name: 'geosite-cn-extra',
+      source: '由 scripts/build-cn-domain-ruleset.ps1 从 '
+          'felixonmars/dnsmasq-china-list（WTFPL v2）编译；重跑脚本即可刷新',
+      enabledByDefault: true,
+      isDomainRuleSet: true,
+    ),
+  ];
+
+  /// 文件名 → 上游地址，只含**可更新**的那些。
+  ///
+  /// 兼容既有调用点。需要判断「是不是内置」时请用 [builtinFileNames]——
+  /// 构建期产物同样是内置，只是没有可下载的地址。
+  static final Map<String, String> sources = <String, String>{
+    for (final entry in builtins)
+      if (entry.url != null) entry.fileName: entry.url!,
   };
 
-  /// 出厂规则集列表。内置规则集默认全部启用。
+  /// 全部内置规则集的文件名。
+  static final Set<String> builtinFileNames = <String>{
+    for (final entry in builtins) entry.fileName,
+  };
+
+  /// 某个规则集名是否是**域名类**内置规则集。
+  ///
+  /// 自定义规则集一律返回 false：它是域名的还是 IP 的，程序从文件名无从得知，
+  /// 因此不猜——保持既有的 DNS 策略不变（只让已知的域名类参与 DNS 分流）。
+  static bool isDomainRuleSetName(String name) {
+    for (final entry in builtins) {
+      if (entry.name == name) return entry.isDomainRuleSet;
+    }
+    return false;
+  }
+
+  /// 推荐给用户的**第三方**规则集：只给链接，由用户自己添加。
+  ///
+  /// 为什么不做成内置：这些上游要么覆盖面更大但许可与本项目不完全兼容
+  /// （ChinaMax 系是 GPL-2.0，非 or-later，不能单向升级到 GPL-3.0），要么
+  /// 收录标准与我们的决策不等价。**不再分发**数据、只提供链接，就把许可问题
+  /// 留给上游与用户，同时仍然让人一键可用。
+  ///
+  /// 与 [builtins] 的区别：那些是我们再分发的出厂规则集；这些不是。
+  static const List<SuggestedRuleSet> suggested = <SuggestedRuleSet>[
+    SuggestedRuleSet(
+      name: 'cn-large',
+      label: '国内站点（大范围）',
+      url: 'https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@sing/geo/geosite/cn.srs',
+      note: '约 11.1 万条，源自 ChinaMax。实测覆盖更全且不回退，'
+          '但收录标准是「国内解析更快」，与「该直连」不完全等价。'
+          '上游许可是 GPL-3.0（数据源自 GPL-2.0 的 ios_rule_script）。',
+      // 它是域名清单（ChinaMax_Domain 派生），因此必须参与 DNS 直连分流。
+      domainRuleSet: true,
+    ),
+  ];
+
+  /// 出厂规则集列表。逐条按 [BuiltinRuleSet.enabledByDefault] 决定是否启用。
   static List<RuleSetEntry> defaultEntries() => <RuleSetEntry>[
-    for (final entry in sources.entries)
-      RuleSetEntry(
-        name: entry.key.substring(0, entry.key.length - '.srs'.length),
-        kind: RuleSetKind.builtin,
-        url: entry.value,
-      ),
+    for (final entry in builtins) entry.toEntry(),
   ];
 
   /// `.srs` 二进制格式的魔数。校验它就能挡住把 HTML 错误页当成规则库写盘。
@@ -178,7 +372,8 @@ class RuleSetStore {
   static Directory ensure(Directory bundledDir, {Directory? targetDir}) {
     final target = resolveTargetDir(targetDir: targetDir);
     target.createSync(recursive: true);
-    for (final name in sources.keys) {
+    // 全部内置条目都要解包：可更新的是出厂副本，构建期产物同样是随包分发的。
+    for (final name in builtinFileNames) {
       final dest = File('${target.path}${Platform.pathSeparator}$name');
       if (dest.existsSync() && _looksValid(dest)) continue;
       final src = File('${bundledDir.path}${Platform.pathSeparator}$name');

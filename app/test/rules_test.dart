@@ -91,15 +91,30 @@ void main() {
       state.ruleSets.firstWhere((RuleSetEntry e) => e.name == name);
 
   group('规则集状态与持久化', () {
-    test('默认包含两个内置规则集且都启用', () {
+    test('默认规则集清单是一份显式的、可复核的出厂清单', () {
       final state = newState();
       addTearDown(state.dispose);
+
+      // 刻意**写死**清单而不是按来源推导：改变默认启用的规则集会改变所有用户的
+      // 路由，属于需要被看见的决定。写死意味着任何改动都必须同时改这条断言，
+      // 于是它会出现在 diff 里，而不是悄悄溜过去。
       expect(
         state.ruleSets.map((RuleSetEntry e) => e.name),
-        <String>['geosite-cn', 'geoip-cn'],
+        <String>['geosite-cn', 'geoip-cn', 'geosite-cn-extra'],
       );
-      expect(state.ruleSets.every((RuleSetEntry e) => e.enabled), isTrue);
-      expect(state.ruleSets.every((RuleSetEntry e) => e.isBuiltin), isTrue);
+      for (final entry in state.ruleSets) {
+        expect(entry.isBuiltin, isTrue);
+      }
+      // 每个条目的启用状态必须与内置定义里的声明一致——那是唯一的默认值来源。
+      for (final entry in state.ruleSets) {
+        final declared = RuleSetStore.builtins
+            .firstWhere((BuiltinRuleSet b) => b.name == entry.name);
+        expect(
+          entry.enabled,
+          declared.enabledByDefault,
+          reason: '${entry.name} 的默认值只能来自 BuiltinRuleSet，不能由别处决定',
+        );
+      }
     });
 
     test('停用标记跨重启保留', () {
@@ -136,8 +151,12 @@ void main() {
 
     test('删除全部规则集后重启不会退回出厂默认列表', () {
       final first = newState();
-      first.deleteRuleSet('geosite-cn');
-      first.deleteRuleSet('geoip-cn');
+      // 逐条删完当前所有规则集（而不是写死两个名字）：将来新增内置项时，
+      // 这条用例仍然在验证「删光之后不会自己复活」。
+      for (final entry in first.ruleSets.toList()) {
+        first.deleteRuleSet(entry.name);
+      }
+      expect(first.ruleSets, isEmpty);
       first.dispose();
 
       final second = newState();
@@ -291,22 +310,130 @@ void main() {
   });
 
   group('生成配置只随规则改动而变化', () {
-    test('用户没改动规则时，内核引用默认规则集生成的配置逐字节不变', () {
+    test('默认规则集清单是显式的，且整份写进内核配置', () {
       final core = SingBoxRunner(RecordingListener(), probesEnabled: false);
       addTearDown(core.dispose);
 
-      // 默认状态：出厂的两份内置规则集，全部启用。
+      // 刻意写死：默认启用的规则集一变，所有用户的路由就变，因此这个清单必须
+      // 是一处**显式**的、会被 diff 看到的事实，而不是从别处推导出来的结果。
       expect(
         core.enabledRuleSetSpecs.map((RuleSetSpec s) => s.tag),
-        <String>['geosite-cn', 'geoip-cn'],
+        <String>['geosite-cn', 'geoip-cn', 'geosite-cn-extra'],
       );
-      final wired = _build(core.enabledRuleSetSpecs);
-      final base = _build(SingBoxConfigBuilder.defaultRuleSets);
+      // 域名类标记决定谁能参与 DNS 直连分流，标错不会报错、只会让判定失效。
       expect(
-        SingBoxConfigBuilder.encode(wired),
-        SingBoxConfigBuilder.encode(base),
-        reason: '没有规则改动时配置必须与从前逐字节相同，界面的新增不能悄悄改变路由',
+        core.enabledRuleSetSpecs
+            .where((RuleSetSpec s) => s.domainRuleSet)
+            .map((RuleSetSpec s) => s.tag),
+        <String>['geosite-cn', 'geosite-cn-extra'],
+        reason: 'geosite-cn-extra 是域名类；漏标会让被它判为直连的域名经隧道解析',
       );
+
+      // 生成出来的配置里，这三条规则集都要有定义并参与路由。
+      final route = _map(_build(core.enabledRuleSetSpecs)['route']);
+      expect(
+        _list(route['rule_set']).map((Object? s) => _map(s)['tag']),
+        <String>['geosite-cn', 'geoip-cn', 'geosite-cn-extra'],
+      );
+    });
+
+    test('推荐规则集声明的域名类标记会一路进到 DNS 规则', () {
+      // 这条锁定的是 P0 缺口：先前「是否域名类」靠 `tag == 'geosite-cn'` 硬编码，
+      // 而按推荐添加的规则集走自定义路径 → 一律被当成非域名类 → 被它判为直连的
+      // 域名仍经隧道解析（拿到境外 CDN 地址再去直连）。
+      final suggestion = RuleSetStore.suggested
+          .firstWhere((SuggestedRuleSet s) => s.name == 'cn-large');
+      expect(
+        suggestion.domainRuleSet,
+        isTrue,
+        reason: 'cn-large 是域名清单（ChinaMax_Domain 派生），必须参与 DNS 分流',
+      );
+
+      final specs = <RuleSetSpec>[
+        ...SingBoxConfigBuilder.defaultRuleSets,
+        RuleSetSpec(
+          tag: suggestion.name,
+          fileName: '${suggestion.name}.srs',
+          domainRuleSet: suggestion.domainRuleSet,
+        ),
+      ];
+      final config = _build(specs);
+      final dnsRules = _list(_map(config['dns'])['rules']).map(_map).toList();
+      final toDirect = dnsRules.firstWhere(
+        (Map<String, Object?> r) =>
+            r['server'] == 'dns-cn' && r['rule_set'] != null,
+        orElse: () => <String, Object?>{},
+      );
+      expect(
+        toDirect['rule_set'],
+        contains('cn-large'),
+        reason: '推荐规则集必须出现在 DNS 直连规则里，否则判定与实际解析不一致',
+      );
+    });
+
+    test('手工新增的自定义规则集不参与 DNS 分流（类型无从得知）', () {
+      final config = _build(<RuleSetSpec>[
+        ...SingBoxConfigBuilder.defaultRuleSets,
+        const RuleSetSpec(tag: 'my-rules', fileName: 'my-rules.srs'),
+      ]);
+      final dnsRules = _list(_map(config['dns'])['rules']).map(_map).toList();
+      for (final rule in dnsRules) {
+        final tags = rule['rule_set'];
+        if (tags is List) {
+          expect(
+            tags,
+            isNot(contains('my-rules')),
+            reason: '手工新增的规则集是域名还是 IP 清单，程序不猜',
+          );
+        }
+      }
+    });
+
+    test('域名类标记跨重启保留', () async {
+      final state = newState();
+      addTearDown(state.dispose);
+      expect(
+        await state.addCustomRuleSet(
+          name: 'named-rules',
+          url: 'https://e.com/a.srs',
+          domainRuleSet: true,
+        ),
+        isNull,
+      );
+      expect(entryOf(state, 'named-rules').domainRuleSet, isTrue);
+      state.dispose();
+
+      final second = newState();
+      addTearDown(second.dispose);
+      expect(
+        entryOf(second, 'named-rules').domainRuleSet,
+        isTrue,
+        reason: '标记不持久化的话，重启后就又变成不参与 DNS 分流了',
+      );
+    });
+
+    test('旧存档缺少域名类标记时，按内置定义回退', () {
+      // 这是升级路径的关键：旧存档里 geosite-cn 必然没有这个键，
+      // 若默认 false，升级上来的用户会静默失去「命中规则集的域名走直连解析器」。
+      final legacy = RuleSetEntry.fromJson(<String, Object?>{
+        'name': 'geosite-cn',
+        'kind': 'builtin',
+        'url': 'https://example.com/geosite-cn.srs',
+      });
+      expect(legacy, isNotNull);
+      expect(
+        legacy!.domainRuleSet,
+        isTrue,
+        reason: '键缺失要回退到内置定义，而不是默认 false',
+      );
+
+      // 未知名字（自定义）缺失键时仍按非域名类。
+      final custom = RuleSetEntry.fromJson(<String, Object?>{
+        'name': 'whatever',
+        'kind': 'custom',
+        'url': 'https://example.com/x.srs',
+      });
+      expect(custom!.domainRuleSet, isFalse);
     });
 
     test('自定义规则集确实被写进内核配置', () {
@@ -366,6 +493,43 @@ void main() {
       final dns = _map(config['dns']);
       expect(_list(dns['rules']), isEmpty);
     });
+
+    test('全部域名类规则集都参与 DNS 直连分流', () {
+      // 这条锁定的是「新增域名类规则集时必须同时进 DNS 规则」：漏掉它不会报错，
+      // 只会表现为「被它判为直连的域名仍被境外解析器解析」——于是拿到境外 CDN
+      // 的地址再去直连，判定对了、结果仍错。这是最难从现象看出原因的一类问题。
+      final config = _build(<RuleSetSpec>[
+        ...SingBoxConfigBuilder.defaultRuleSets,
+        const RuleSetSpec(
+          tag: 'geosite-cn-extra',
+          fileName: 'geosite-cn-extra.srs',
+          domainRuleSet: true,
+        ),
+      ]);
+      final dnsRules = _list(_map(config['dns'])['rules']).map(_map).toList();
+      final toDirect = dnsRules.firstWhere(
+        (Map<String, Object?> r) =>
+            r['server'] == 'dns-cn' && r['rule_set'] != null,
+        orElse: () => <String, Object?>{},
+      );
+      expect(
+        toDirect['rule_set'],
+        <String>['geosite-cn', 'geosite-cn-extra'],
+        reason: '内核的一条规则里多个 rule_set 之间是「或」，一次即可表达全部域名类',
+      );
+    });
+
+    test('IP 类规则集不进入 DNS 规则', () {
+      // dns 查询的是域名，把 IP 类规则集写进 DNS 规则没有意义。
+      final config = _build(SingBoxConfigBuilder.defaultRuleSets);
+      final dnsRules = _list(_map(config['dns'])['rules']).map(_map).toList();
+      for (final rule in dnsRules) {
+        final tags = rule['rule_set'];
+        if (tags is List) {
+          expect(tags, isNot(contains('geoip-cn')));
+        }
+      }
+    });
   });
 
   group('域名规则的新增 / 编辑 / 删除', () {
@@ -404,6 +568,10 @@ void main() {
         find.widgetWithText(TextField, '例如 example.com'),
         'blocked.example.com',
       );
+      // 白名单会往这张卡片里多插一组条目，因此「添加」按钮可能落在视口外。
+      // 先滚到它再点，否则 tap 会命不中（报「widget is off-screen」）。
+      await tester.ensureVisible(find.text('添加'));
+      await tester.pumpAndSettle();
       await tester.tap(find.text('添加'));
       await tester.pumpAndSettle();
       expect(

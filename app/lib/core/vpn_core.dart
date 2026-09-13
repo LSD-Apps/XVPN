@@ -11,6 +11,7 @@ import 'core_monitor.dart';
 import 'dns_monitor.dart';
 import 'kernel_log.dart';
 import 'mtu_probe.dart';
+import 'outbound_tags.dart';
 import 'rulesets.dart';
 import 'singbox_config.dart';
 import 'startup_self_check.dart';
@@ -212,9 +213,18 @@ abstract class VpnCore {
   ///
   /// 停用是「保留配置但本程序不再使用它」，因此这里直接把停用的过滤掉，
   /// 生成出的配置里既没有它的 `rule_set` 定义，也没有引用它的路由规则。
+  ///
+  /// 「是否域名类」由 [RuleSetEntry.domainRuleSet] 逐条携带——内置条目在内置定义里
+  /// 声明，用户按推荐添加的第三方规则集由 [SuggestedRuleSet] 带上，手工新增的
+  /// 一律按非域名类处理（类型无从得知）。不再按名字查表：那样会漏掉自定义条目。
   List<RuleSetSpec> get enabledRuleSetSpecs => <RuleSetSpec>[
     for (final entry in _ruleSets)
-      if (entry.enabled) RuleSetSpec(tag: entry.tag, fileName: entry.fileName),
+      if (entry.enabled)
+        RuleSetSpec(
+          tag: entry.tag,
+          fileName: entry.fileName,
+          domainRuleSet: entry.domainRuleSet,
+        ),
   ];
 
   /// 内核日志缓冲。两端共用同一份实现。
@@ -513,7 +523,9 @@ class DemoVpnCore extends VpnCore {
           kind: kind,
           // 走与真实内核相同的归一化路径，保证演示数据不会掩盖界面问题。
           rule: normalizeRuleDescription(rule),
-          outbound: kind == RouteKind.proxy ? 'vpn' : 'direct',
+          outbound: kind == RouteKind.proxy
+              ? OutboundTags.vpn
+              : OutboundTags.direct,
         ),
       );
     });

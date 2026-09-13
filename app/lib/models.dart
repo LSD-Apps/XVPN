@@ -178,6 +178,7 @@ class AppSettings {
     this.splitMode = SplitMode.smart,
     this.logSplits = true,
     this.ruleSetUpdatedAt,
+    this.enabledAppPresets = const <String>[],
   });
 
   final bool autoConnectOnImport;
@@ -185,17 +186,25 @@ class AppSettings {
   final bool logSplits;
   final DateTime? ruleSetUpdatedAt;
 
+  /// 已启用的应用直连预置 id（见 `core/app_presets.dart`）。
+  ///
+  /// 只存 id 不存域名：预置的域名清单属于程序版本，会随实测结论修正；
+  /// 存下来会让用户机器上留着一份过期副本，且改了以后对已启用的用户无效。
+  final List<String> enabledAppPresets;
+
   AppSettings copyWith({
     bool? autoConnectOnImport,
     SplitMode? splitMode,
     bool? logSplits,
     DateTime? ruleSetUpdatedAt,
+    List<String>? enabledAppPresets,
   }) {
     return AppSettings(
       autoConnectOnImport: autoConnectOnImport ?? this.autoConnectOnImport,
       splitMode: splitMode ?? this.splitMode,
       logSplits: logSplits ?? this.logSplits,
       ruleSetUpdatedAt: ruleSetUpdatedAt ?? this.ruleSetUpdatedAt,
+      enabledAppPresets: enabledAppPresets ?? this.enabledAppPresets,
     );
   }
 }

@@ -136,6 +136,44 @@ void main() {
       expect(report.conclusion, 'DNS 解析异常');
     });
 
+    test('直连解析正常但经隧道解析失败 → 单独报「隧道不通 DNS」', () async {
+      // 这是原先的探测盲区：那条 DNS 探针用 www.baidu.com，命中 geosite-cn
+      // 因而走直连解析器，从未碰过隧道解析器。而所有非规则集域名（即全部境外
+      // 站点）都走隧道解析器——它坏了表现为「连上了却什么都打不开」。
+      final report = await _check(
+        direct: 12,
+        tunnel: 180,
+        domesticAnswers: <String>['192.0.2.148'],
+        coreAnswers: const <String>[],
+      ).run();
+
+      final tunnelDns = report.probeNamed(StartupSelfCheck.tunnelDnsName)!;
+      expect(tunnelDns.failed, isTrue);
+      expect(report.conclusion, '隧道不通 DNS');
+      expect(
+        report.advice,
+        contains('UDP/53'),
+        reason: '最常见的成因是节点不允许 UDP/53 出站，要直接说出来',
+      );
+      expect(
+        report.advice,
+        isNot(contains('更换节点')),
+        reason: '先给可达的 DNS 才是对的处置顺序',
+      );
+    });
+
+    test('隧道不通时隧道 DNS 的失败不抢归因', () async {
+      // 隧道本身就不通时，隧道 DNS 必然也失败。此时主因是节点不通，
+      // 结论应当是「隧道这条腿不通」，而不是被 DNS 那条分支抢走。
+      final report = await _check(
+        direct: 12,
+        tunnel: null,
+        coreAnswers: const <String>[],
+      ).run();
+
+      expect(report.conclusion, '隧道这条腿不通');
+    });
+
     test('内核没有返回独立答案时不误报——该域名可能被判为直连', () async {
       final report = await _check(
         direct: 12,
@@ -155,19 +193,20 @@ void main() {
   });
 
   group('报告结构', () {
-    test('三条探针都在，且顺序稳定', () async {
+    test('四条探针都在，且顺序稳定', () async {
       final report = await _check(direct: 12, tunnel: 180).run();
       expect(report.probes.map((ProbeResult p) => p.name).toList(), <String>[
         StartupSelfCheck.directName,
         StartupSelfCheck.tunnelName,
         StartupSelfCheck.dnsName,
+        StartupSelfCheck.tunnelDnsName,
       ]);
       expect(report.checkedAt.year, greaterThan(2000));
     });
 
     test('未探测时的占位结果都是 pending', () {
       final pending = StartupSelfCheck.pendingProbes();
-      expect(pending, hasLength(3));
+      expect(pending, hasLength(4));
       for (final probe in pending) {
         expect(probe.status, ProbeStatus.pending);
         expect(probe.status.label, '待检测');

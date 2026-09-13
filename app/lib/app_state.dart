@@ -5,6 +5,7 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 
+import 'core/app_presets.dart';
 import 'core/auto_route.dart';
 import 'core/core_log.dart';
 import 'core/dns_monitor.dart';
@@ -16,6 +17,7 @@ import 'core/secret_protector.dart';
 import 'core/singbox_runner.dart';
 import 'core/startup_self_check.dart';
 import 'core/store.dart';
+import 'core/tunnel_report.dart';
 import 'core/tunnel_health.dart';
 import 'core/vpn_core.dart';
 import 'core/wireguard_handshake.dart';
@@ -134,6 +136,12 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
   /// 记录版本号。每次记录变化自增，用来让筛选缓存失效。
   int _recordsVersion = 0;
 
+  /// 隧道流量去向的缓存，理由与筛选缓存相同（见 [tunnelVolume]）。
+  List<TunnelVolumeEntry>? _tunnelVolumeCache;
+  int _cachedTunnelVersion = -1;
+  int? _tunnelTotalCache;
+  int _cachedTunnelTotalVersion = -1;
+
   /// 连接失败记录。这是「检测能力」的载体：把用户看到的「打不开」
   /// 翻译成「规则判错了」还是「节点不通了」。
   ///
@@ -152,7 +160,16 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
   final List<double> _totalHistory = <double>[];
 
   VpnStatus _status = VpnStatus.disconnected;
-  AppSettings _settings = const AppSettings();
+
+  /// 默认设置。
+  ///
+  /// 不直接用 `const AppSettings()`：应用直连预置里有一项（国内站点补充）是
+  /// **默认启用**的，而默认值需要从 `AppPresets` 推导。放在这里集中一次，
+  /// 三个「从头建设置」的入口（初始值、存档缺键、解析失败回退）就不会各写一份。
+  static AppSettings defaultSettings() =>
+      AppSettings(enabledAppPresets: AppPresets.defaultEnabledIds());
+
+  AppSettings _settings = AppState.defaultSettings();
   String? _activeProfileId;
   String? _lastError;
   DateTime? _connectedSince;
@@ -304,6 +321,13 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
   /// 自动纠正表。为 null 表示当前内核不做学习（演示内核）。
   AutoRouteTable? get autoRoute => _core.autoRoute;
 
+  /// 内置的应用直连预置清单。界面据此渲染开关。
+  List<AppPreset> get appPresets => AppPresets.all;
+
+  /// 已启用的预置 id。生成内核配置时据此决定注入哪些直连规则。
+  List<String> get enabledAppPresets =>
+      List<String>.unmodifiable(_settings.enabledAppPresets);
+
   /// 最近观测到的 WireGuard 握手状态。
   ///
   /// 两端都由共用的内核日志管线喂出来，因此这里不需要按平台分支。
@@ -411,6 +435,39 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
   /// 本次筛选结果是否被上限截断。界面据此提示「还有更多」。
   bool isFilterTruncated(RouteFilter filter, String query) =>
       filteredRecords(filter, query).length >= searchResultLimit;
+
+  /// 走隧道的目标按流量降序。回答「隧道带宽被谁占了」。
+  ///
+  /// 带缓存，理由与 [filteredRecords] 相同：界面每帧都会读它，而排序是
+  /// 与记录数成正比的分配。只有记录真的变了（[_recordsVersion] 自增）才重算。
+  List<TunnelVolumeEntry> get tunnelVolume {
+    if (_tunnelVolumeCache != null && _cachedTunnelVersion == _recordsVersion) {
+      return _tunnelVolumeCache!;
+    }
+    _tunnelVolumeCache = rankTunnelTargets(
+      _recordsView,
+      table: _core.autoRoute,
+    );
+    _cachedTunnelVersion = _recordsVersion;
+    return _tunnelVolumeCache!;
+  }
+
+  /// 走隧道的总字节数（本次会话内被观察到的连接）。
+  ///
+  /// 与 [sessionProxiedBytes] 的口径不同：后者按流量增量累加、不受记录淘汰影响；
+  /// 这里是对**当前留存记录**求和，用于说明「这份清单覆盖了多少」。
+  int get tunnelVolumeTotalBytes {
+    if (_tunnelTotalCache != null && _cachedTunnelTotalVersion == _recordsVersion) {
+      return _tunnelTotalCache!;
+    }
+    _tunnelTotalCache = tunnelVolumeTotal(_recordsView);
+    _cachedTunnelTotalVersion = _recordsVersion;
+    return _tunnelTotalCache!;
+  }
+
+  /// 把一条隧道流量去向改为直连。返回是否写入成功（IP 目标会失败）。
+  bool preferDirectFor(String domain) =>
+      setDomainPreference(domain, RoutePreference.forceDirect);
 
   // ---------------------------------------------------------------- 配置导入
 
@@ -734,6 +791,42 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
     return true;
   }
 
+  /// 启用/停用一个直连白名单预置。
+  ///
+  /// 返回是否真的改变了状态。改动在下一次连接（或重连）时才会写进内核配置——
+  /// 内核是拿着生成好的 config.json 运行的，不重连就不会读新的规则。
+  ///
+  /// 预置走 [AutoRouteTable] 这一条统一路径（而不是在配置生成时另插规则），
+  /// 因此匹配、优先级、界面、DNS 策略、反向纠正都自动一致。
+  bool setAppPresetEnabled(String id, bool enabled) {
+    final preset = AppPresets.byId(id);
+    if (preset == null) return false;
+    final current = _settings.enabledAppPresets.toList();
+    if (current.contains(id) == enabled) return false;
+    if (enabled) {
+      current.add(id);
+    } else {
+      current.remove(id);
+    }
+    updateSettings(_settings.copyWith(enabledAppPresets: current));
+    _syncAppPresets();
+    return true;
+  }
+
+  /// 把当前的开关状态同步进决策表。
+  ///
+  /// 幂等：已启用且已安装的重复调用不会产生变化。安装时 [AutoRouteTable.setPreset]
+  /// 不会覆盖优先级更高的条目（学到的、用户指定的），因此重启时重新安装预置
+  /// 不会把运行中学到的纠正悄悄抹掉。
+  void _syncAppPresets() {
+    final table = _core.autoRoute;
+    if (table == null) return;
+    final enabled = _settings.enabledAppPresets.toSet();
+    for (final preset in AppPresets.all) {
+      table.setPreset(preset, enabled: enabled.contains(preset.id));
+    }
+  }
+
   /// 对一个域名做查证。
   ///
   /// 汇总三份已有的证据：内核**实际**把它判到了哪条路（分流记录）、有没有规则
@@ -824,7 +917,13 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
   /// 不影响其余配置——一份坏配置不该让用户丢掉全部配置。
   void _restore() {
     final data = store?.load();
-    if (data == null || data.isEmpty) return;
+    if (data == null || data.isEmpty) {
+      // 首次启动没有存档，但**默认启用的预置仍要安装**：它不是存档数据，
+      // 而是随代码分发的默认行为。忘了这一步的表现是「开关显示已启用、
+      // 路由里却什么都没有」，而且只有全新安装才会遇到。
+      _syncAppPresets();
+      return;
+    }
 
     final savedProfiles = data['profiles'];
     if (savedProfiles is List) {
@@ -878,9 +977,15 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
           ruleSetUpdatedAt: DateTime.tryParse(
             settings['ruleSetUpdatedAt'] as String? ?? '',
           ),
+          // 键存在就用存档里的（用户关掉默认启用的预置后重启不会被它复活）；
+          // 键缺失（旧版本存档）才回退到默认启用集合——否则升级上来的用户
+          // 会永远拿不到新增的默认项，而那不是任何人做过的选择。
+          enabledAppPresets: settings.containsKey('appPresets')
+              ? _readAppPresets(settings['appPresets'])
+              : AppPresets.defaultEnabledIds(),
         );
       } on Object {
-        _settings = const AppSettings();
+        _settings = defaultSettings();
       }
     }
 
@@ -898,6 +1003,25 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
     _core.initAutoRoute(data['autoRoute']);
     // 规则集同步给内核：生成配置时引用哪些 .srs 由它决定。
     _core.setRuleSets(_ruleSets);
+    // 预置只在存档里存了 id，域名清单属于程序版本，因此每次启动重新安装。
+    // 必须在 initAutoRoute 之后：安装时不能覆盖刚恢复的「学到 / 用户指定」条目。
+    _syncAppPresets();
+  }
+
+  /// 解析存档里的已启用预置 id。
+  ///
+  /// 忽略无法识别的 id：预置清单属于程序版本，用户升级后某个预置可能已被移除，
+  /// 存档里却还留着它的 id——那不该让恢复流程出错，也不该凭空复活一个不存在的开关。
+  static List<String> _readAppPresets(Object? raw) {
+    if (raw is! List) return const <String>[];
+    final ids = <String>[];
+    for (final item in raw) {
+      if (item is! String) continue;
+      if (AppPresets.byId(item) == null) continue;
+      if (ids.contains(item)) continue;
+      ids.add(item);
+    }
+    return ids;
   }
 
   /// 解析存档里的规则集列表。单条损坏只跳过这一条。
@@ -1014,6 +1138,9 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
           'splitMode': _settings.splitMode.index,
           'logSplits': _settings.logSplits,
           'ruleSetUpdatedAt': _settings.ruleSetUpdatedAt?.toIso8601String(),
+          // 应用直连预置只存 id：域名清单属于程序版本，随实测结论修正，
+          // 存一份副本在用户机器上只会变成过期的第二事实来源。
+          'appPresets': _settings.enabledAppPresets,
         },
         // 规则集清单随设置一起落盘。删掉的内置规则集、停用标记、自定义规则集
         // 的链接都必须重启后仍在，否则用户每次启动都要重新配置一遍。
@@ -1095,9 +1222,15 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
   ///
   /// 返回 null 表示成功，否则是给用户看的中文原因。**下载失败就不写入列表**，
   /// 而不是先登记再补下载：一个指向不存在文件的规则集会直接让内核启动失败。
+  /// 新增一个自定义规则集。
+  ///
+  /// [domainRuleSet] 决定它能否参与 DNS 直连分流。**只有按推荐添加的**才该传
+  /// true——手工新增时我们无从得知文件内容是域名还是 IP 清单，猜错会让 DNS 策略
+  /// 与实际路由不一致，因此默认 false。
   Future<String?> addCustomRuleSet({
     required String name,
     required String url,
+    bool domainRuleSet = false,
   }) async {
     final cleanName = name.trim();
     final cleanUrl = url.trim();
@@ -1122,6 +1255,7 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
         url: cleanUrl,
         updatedAt: DateTime.now(),
         sizeBytes: bytes.length,
+        domainRuleSet: domainRuleSet,
       ),
     );
     _commitRuleSets();
@@ -1216,7 +1350,7 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
     }
     // 与内置重名要挡住，即便那个内置已被删除：内置文件与解包逻辑都按固定
     // 文件名工作，重名会让「这份文件到底是出厂副本还是自定义内容」无法分辨。
-    if (RuleSetStore.sources.containsKey('$name.srs')) {
+    if (RuleSetStore.builtinFileNames.contains('$name.srs')) {
       return '「$name」与内置规则集重名，请换一个名称';
     }
     if (name != excluding &&
@@ -1256,10 +1390,18 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
       }
       final targets = <({String fileName, String url})>[
         for (final entry in _ruleSets)
-          if (entry.enabled) (fileName: entry.fileName, url: entry.url),
+          // 只更新**能**更新的：构建期产物（bundledExtras）的来源不是 `.srs`
+          // 地址，下载回来必然通不过魔数校验，报错却指向用户的网络。
+          if (entry.enabled && entry.updatable)
+            (fileName: entry.fileName, url: entry.url),
       ];
       if (targets.isEmpty) {
-        _lastError = '没有启用中的规则集可更新';
+        // 区分「没启用任何规则集」与「启用的都不可更新」——后者是正常状态
+        // （内置补充规则集只能靠重跑构建脚本刷新），不该报成错误。
+        final enabledCount = _ruleSets.where((RuleSetEntry e) => e.enabled).length;
+        _lastError = enabledCount == 0
+            ? '没有启用中的规则集可更新'
+            : '启用中的规则集都是构建期产物，需重跑构建脚本刷新';
         notifyListeners();
         return;
       }

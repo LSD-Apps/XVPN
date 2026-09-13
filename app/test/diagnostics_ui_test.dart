@@ -453,21 +453,32 @@ void main() {
         guard++;
       }
       expect(find.text('手工指定'), findsOneWidget);
-      expect(find.textContaining('目前还没有需要纠正的域名'), findsOneWidget);
+      // 默认启用的「国内长尾站点补充」会让表本来就非空，因此这里断言的是
+      // **手工指定分组**为空，而不是整张表为空——后者是改造前的口径。
+      expect(find.textContaining('还没有手工指定的域名'), findsOneWidget);
+
+      /// 手工指定的条目数。只数这一组：表里还可能有白名单预置与程序学到的规则。
+      int userRuleCount() => state.autoRoute!.entries
+          .where((AutoRouteEntry e) => e.source == RouteRuleSource.user)
+          .length;
 
       // 输入一个 IP：IP 不参与按域名的分流规则，界面必须说清楚而不是静默失败。
       final field = find.widgetWithText(TextField, '例如 example.com');
       await tester.enterText(field, '1.2.3.4');
+      await tester.ensureVisible(find.text('添加'));
+      await tester.pumpAndSettle();
       await tester.tap(find.text('添加'));
       await tester.pumpAndSettle();
       expect(find.textContaining('IP 不参与按域名的分流规则'), findsOneWidget);
-      expect(state.autoRoute!.isEmpty, isTrue, reason: '非法输入不该写入规则');
+      expect(userRuleCount(), 0, reason: '非法输入不该写入规则');
 
       // 输入合法域名：应归一化（小写、去端口）后写入并出现在列表里。
       await tester.enterText(field, 'Blocked.Example.COM:443');
+      await tester.ensureVisible(find.text('添加'));
+      await tester.pumpAndSettle();
       await tester.tap(find.text('添加'));
       await tester.pumpAndSettle();
-      expect(state.autoRoute!.length, 1);
+      expect(userRuleCount(), 1);
       expect(
         state.autoRoute!.match('blocked.example.com'),
         isNotNull,

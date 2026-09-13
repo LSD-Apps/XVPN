@@ -1,6 +1,9 @@
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:xvpn/core/app_presets.dart';
+import 'package:xvpn/core/auto_route.dart';
+import 'package:xvpn/core/rulesets.dart';
 import 'package:xvpn/core/singbox_config.dart';
 import 'package:xvpn/models.dart';
 import 'package:xvpn/protocols/protocol_adapter.dart';
@@ -198,6 +201,179 @@ void main() {
         result.exitCode,
         0,
         reason: '内核拒绝了带自定义规则集的配置：\n${result.stdout}${result.stderr}',
+      );
+    });
+
+    test('应用直连预置 · 智能分流 · mixed 能通过 sing-box check', () async {
+      // 预置走 AutoRouteTable 这**一个**决策来源，因此这里同时覆盖两种新形状：
+      //   * 路由里一条带 `domain` + `domain_suffix`、没有 `rule_set` 的规则；
+      //   * **DNS 规则**里按域名指定解析器的规则（F1：DNS 跟随路由决策）。
+      // 内核的 JSON 解码是严格的，新形状必须在真实内核上过一遍——
+      // 「配置长什么样」不等于「内核认不认」。
+      final table = AutoRouteTable();
+      for (final preset in AppPresets.all) {
+        table.setPreset(preset, enabled: true);
+      }
+      final parsed = VpnProtocolFactory.parse(_wireGuard, 'test.conf');
+      final config = SingBoxConfigBuilder.build(
+        profile: parsed,
+        splitMode: SplitMode.smart,
+        ruleSetDir: rulesets.absolute.path,
+        inboundMode: InboundMode.mixed,
+        autoRoute: table,
+      );
+      final file = File(
+        '${Directory.systemTemp.path}${Platform.pathSeparator}'
+        'xvpn-check-presets.json',
+      );
+      addTearDown(() {
+        if (file.existsSync()) file.deleteSync();
+      });
+      file.writeAsStringSync(SingBoxConfigBuilder.encode(config));
+
+      final result = await Process.run(exe.absolute.path, <String>[
+        'check',
+        '-c',
+        file.path,
+      ]);
+      expect(
+        result.exitCode,
+        0,
+        reason: '内核拒绝了带直连白名单的配置：\n${result.stdout}${result.stderr}',
+      );
+    });
+    test('出厂默认配置能通过 sing-box check', () async {
+      // 用**真正出货的那份规则集清单**过一遍内核。这是唯一同时覆盖以下三件事的
+      // 地方，而它们各自都是「配置长什么样 ≠ 内核认不认」的类型：
+      //   * 三条 rule_set 的定义与路由引用；
+      //   * DNS 规则里引用**两个**域名类 rule_set（新形状）；
+      //   * 用户 → 内网 → 学到 分三段后的路由顺序。
+      final specs = <RuleSetSpec>[
+        for (final BuiltinRuleSet b in RuleSetStore.builtins)
+          RuleSetSpec(
+            tag: b.name,
+            fileName: b.fileName,
+            domainRuleSet: b.isDomainRuleSet,
+          ),
+      ];
+      final table = AutoRouteTable(promotionThreshold: 1)
+        ..setUserRule('mine.example', RoutePreference.forceProxy)
+        ..recordDirectFailure('learned.example');
+
+      final config = SingBoxConfigBuilder.build(
+        profile: VpnProtocolFactory.parse(_wireGuard, 'test.conf'),
+        splitMode: SplitMode.smart,
+        ruleSetDir: rulesets.absolute.path,
+        inboundMode: InboundMode.mixed,
+        autoRoute: table,
+        ruleSets: specs,
+      );
+      final file = File(
+        '${Directory.systemTemp.path}${Platform.pathSeparator}'
+        'xvpn-check-defaults.json',
+      );
+      addTearDown(() {
+        if (file.existsSync()) file.deleteSync();
+      });
+      file.writeAsStringSync(SingBoxConfigBuilder.encode(config));
+
+      final result = await Process.run(exe.absolute.path, <String>[
+        'check',
+        '-c',
+        file.path,
+      ]);
+      expect(
+        result.exitCode,
+        0,
+        reason: '内核拒绝了出厂默认配置：\n${result.stdout}${result.stderr}',
+      );
+    });
+
+    test('DNS 规则引用三个域名类规则集也能通过 sing-box check', () async {
+      // 用户按「推荐规则集」添加了 cn-large（域名类自定义规则集）之后，DNS 规则里
+      // 会出现**三个**域名类标签。这是内核没验证过的新形状——一条 DNS 规则里放
+      // 多个 rule_set 属于「配置长什么样 ≠ 内核认不认」那一类。
+      final dir = Directory.systemTemp.createTempSync('xvpn-rs-three');
+      addTearDown(() {
+        if (dir.existsSync()) dir.deleteSync(recursive: true);
+      });
+      for (final b in RuleSetStore.builtins) {
+        File('${rulesets.absolute.path}${Platform.pathSeparator}${b.fileName}')
+            .copySync('${dir.path}${Platform.pathSeparator}${b.fileName}');
+      }
+      // 用一份真实的域名类规则集内容冒充第三方规则集：内核只按内容解析。
+      File('${dir.path}${Platform.pathSeparator}geosite-cn.srs')
+          .copySync('${dir.path}${Platform.pathSeparator}cn-large.srs');
+
+      final specs = <RuleSetSpec>[
+        for (final b in RuleSetStore.builtins)
+          RuleSetSpec(
+            tag: b.name,
+            fileName: b.fileName,
+            domainRuleSet: b.isDomainRuleSet,
+          ),
+        const RuleSetSpec(
+          tag: 'cn-large',
+          fileName: 'cn-large.srs',
+          domainRuleSet: true,
+        ),
+      ];
+      final config = SingBoxConfigBuilder.build(
+        profile: VpnProtocolFactory.parse(_wireGuard, 'test.conf'),
+        splitMode: SplitMode.smart,
+        ruleSetDir: dir.path,
+        inboundMode: InboundMode.mixed,
+        ruleSets: specs,
+      );
+      final file = File(
+        '${Directory.systemTemp.path}${Platform.pathSeparator}'
+        'xvpn-check-three.json',
+      );
+      addTearDown(() {
+        if (file.existsSync()) file.deleteSync();
+      });
+      file.writeAsStringSync(SingBoxConfigBuilder.encode(config));
+
+      final result = await Process.run(exe.absolute.path, <String>[
+        'check',
+        '-c',
+        file.path,
+      ]);
+      expect(
+        result.exitCode,
+        0,
+        reason: '内核拒绝了带三个域名类规则集的配置：\n${result.stdout}${result.stderr}',
+      );
+    });
+
+    test('用户关掉国内域名补充后仍能通过 sing-box check', () async {
+      // DNS 规则引用的 rule_set 少了之后不能再留下对它的引用——那是内核
+      // 直接拒绝启动的硬错误。这条覆盖「只启用原两份」这条回归路径。
+      final config = SingBoxConfigBuilder.build(
+        profile: VpnProtocolFactory.parse(_wireGuard, 'test.conf'),
+        splitMode: SplitMode.smart,
+        ruleSetDir: rulesets.absolute.path,
+        inboundMode: InboundMode.mixed,
+        ruleSets: SingBoxConfigBuilder.defaultRuleSets,
+      );
+      final file = File(
+        '${Directory.systemTemp.path}${Platform.pathSeparator}'
+        'xvpn-check-noextra.json',
+      );
+      addTearDown(() {
+        if (file.existsSync()) file.deleteSync();
+      });
+      file.writeAsStringSync(SingBoxConfigBuilder.encode(config));
+
+      final result = await Process.run(exe.absolute.path, <String>[
+        'check',
+        '-c',
+        file.path,
+      ]);
+      expect(
+        result.exitCode,
+        0,
+        reason: '内核拒绝了停用补充规则集后的配置：\n${result.stdout}${result.stderr}',
       );
     });
   }, skip: skipReason);

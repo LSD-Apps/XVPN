@@ -108,11 +108,15 @@ class _AutoRouteCardState extends State<AutoRouteCard> {
 
     final user = <AutoRouteEntry>[];
     final learned = <AutoRouteEntry>[];
+    final preset = <AutoRouteEntry>[];
     for (final entry in table.entries) {
-      if (entry.source == RouteRuleSource.user) {
-        user.add(entry);
-      } else {
-        learned.add(entry);
+      switch (entry.source) {
+        case RouteRuleSource.user:
+          user.add(entry);
+        case RouteRuleSource.learned:
+          learned.add(entry);
+        case RouteRuleSource.preset:
+          preset.add(entry);
       }
     }
     // 学到的按失败次数降序——证据越充分越值得先看。
@@ -120,7 +124,7 @@ class _AutoRouteCardState extends State<AutoRouteCard> {
       (AutoRouteEntry a, AutoRouteEntry b) =>
           b.directFailures.compareTo(a.directFailures),
     );
-    final total = user.length + learned.length;
+    final total = user.length + learned.length + preset.length;
 
     return XvCard(
       color: widget.compact ? XV.panel2 : XV.panel,
@@ -134,10 +138,12 @@ class _AutoRouteCardState extends State<AutoRouteCard> {
           const XvCardTitle('域名分流规则'),
           Text(
             table.isEmpty
-                ? '程序会观察「判为直连却失败」的连接，连续多次失败后自动把该域名改为'
-                      '走隧道。目前还没有需要纠正的域名。'
+                ? '程序会在两个方向上自动纠正分流：观察「判为直连却失败」的连接，'
+                      '连续多次失败后改为走隧道；观察走隧道的域名，若它的直连解析'
+                      '落在国内网段，则改为直连。目前还没有需要纠正的域名。'
                 : '已对 $total 个域名调整了分流。这些规则优先于规则集——规则集把某些'
-                      '域名判成直连时，靠它们拉回隧道。',
+                      '域名判成直连时靠它们拉回隧道，把能直连的域名判进隧道时靠它们'
+                      '拉出来。',
             style: XvText.caption,
           ),
           const SizedBox(height: 14),
@@ -154,6 +160,18 @@ class _AutoRouteCardState extends State<AutoRouteCard> {
             Text('还没有手工指定的域名。可在下面新增一条。', style: XvText.rowDesc)
           else
             for (final entry in user) _buildEntry(entry),
+          // 内置白名单单列一组：它由「直连白名单」卡片的开关驱动，
+          // 混进「程序学到」会让用户以为那也是程序自己判断出来的。
+          if (preset.isNotEmpty) ...<Widget>[
+            Divider(height: 25, thickness: 1, color: XV.line2),
+            _sectionLabel('内置白名单', count: preset.length),
+            Text(
+              '由「直连白名单」的开关安装。开关关闭后这些条目会一并移除；'
+              '要覆盖某一条，在下面手工新增同名域名即可。',
+              style: XvText.caption,
+            ),
+            for (final entry in preset) _buildEntry(entry),
+          ],
           const SizedBox(height: 10),
           _buildManualInput(),
           if (_inputError != null)
@@ -373,6 +391,10 @@ class _AutoRouteCardState extends State<AutoRouteCard> {
 
   Widget _buildEntry(AutoRouteEntry entry) {
     final isUser = entry.source == RouteRuleSource.user;
+    // 内置白名单的条目不给编辑/删除：它是开关的下游产物，删掉也会在下次启动
+    // 重新安装（安装时只跳过更高优先级的条目）。要覆盖它就在下面手工新增同名
+    // 域名——那条会成为「手工指定」，优先级高于白名单。
+    final isPreset = entry.source == RouteRuleSource.preset;
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 5),
       child: Row(
@@ -393,6 +415,8 @@ class _AutoRouteCardState extends State<AutoRouteCard> {
                     const SizedBox(width: 8),
                     if (isUser)
                       RouteTag.green('手工')
+                    else if (isPreset)
+                      RouteTag.green('白名单')
                     else
                       RouteTag.kind(RouteKind.proxy),
                   ],
@@ -403,12 +427,14 @@ class _AutoRouteCardState extends State<AutoRouteCard> {
             ),
           ),
           const SizedBox(width: 8),
-          TapAction(label: '编辑', onTap: () => _editEntry(entry)),
-          TapAction(
-            label: '删除',
-            danger: true,
-            onTap: () => _removeEntry(entry),
-          ),
+          if (!isPreset) ...<Widget>[
+            TapAction(label: '编辑', onTap: () => _editEntry(entry)),
+            TapAction(
+              label: '删除',
+              danger: true,
+              onTap: () => _removeEntry(entry),
+            ),
+          ],
         ],
       ),
     );
@@ -463,8 +489,24 @@ class _AutoRouteCardState extends State<AutoRouteCard> {
 
   /// 这条规则的证据。用户据此判断「撤销还是留着」。
   static String _evidence(AutoRouteEntry entry) {
-    if (entry.source == RouteRuleSource.user) {
-      return '手工指定为${entry.preference.label}';
+    switch (entry.source) {
+      case RouteRuleSource.user:
+        return '手工指定为${entry.preference.label}';
+      case RouteRuleSource.preset:
+        return '来自「直连白名单」·${entry.preference.label}';
+      case RouteRuleSource.learned:
+        break;
+    }
+    // 反方向学到的直连规则：依据是「直连解析落在国内网段」，
+    // 与下面那条「判为直连但失败」是完全不同的证据，必须分别说明——
+    // 否则界面会显示「判为直连但失败 0 次」这种自相矛盾的理由。
+    if (entry.preference == RoutePreference.forceDirect) {
+      final parts = <String>[
+        '直连解析落在国内网段 ${entry.domesticHits} 次',
+        if (entry.lastFailureReason != null) entry.lastFailureReason!,
+        if (entry.directSuccesses > 0) '直连已跑出流量 ${entry.directSuccesses} 次',
+      ];
+      return parts.join(' · ');
     }
     final parts = <String>[
       '判为直连但失败 ${entry.directFailures} 次',

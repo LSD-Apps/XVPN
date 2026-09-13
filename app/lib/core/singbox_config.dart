@@ -4,6 +4,7 @@ import '../models.dart';
 import '../protocols/parsed_profile.dart';
 import '../protocols/protocol_adapter.dart';
 import 'auto_route.dart';
+import 'outbound_tags.dart';
 
 /// 入站方式：决定内核如何接管流量。两端能力不同，因此按平台选择。
 enum InboundMode {
@@ -20,10 +21,21 @@ enum InboundMode {
 /// 配置生成只负责把决定翻译成 sing-box 语法。默认值是两份出厂规则集，
 /// 因此不传它时生成的配置与从前逐字节相同。
 class RuleSetSpec {
-  const RuleSetSpec({required this.tag, required this.fileName});
+  const RuleSetSpec({
+    required this.tag,
+    required this.fileName,
+    this.domainRuleSet = false,
+  });
 
   final String tag;
   final String fileName;
+
+  /// 是否**域名类**规则集，即能否参与 DNS 直连分流。
+  ///
+  /// 默认 false 是刻意的：把 IP 类规则集（如 `geoip-cn`）写进 DNS 规则没有
+  /// 意义（DNS 查询的是域名），自定义规则集的类型程序无从得知。只有明确知道
+  /// 是域名类的才置 true。
+  final bool domainRuleSet;
 }
 
 /// 把用户的 WireGuard .conf 翻译成 sing-box 配置。
@@ -46,21 +58,26 @@ class SingBoxConfigBuilder {
   SingBoxConfigBuilder._();
 
   /// 出站/端点的标签。路由规则与 route.final 都引用它。
-  static const String vpnTag = 'vpn';
+  ///
+  /// 唯一来源在 [OutboundTags]——同一个字符串还被 Clash API 解析与流量统计
+  /// 用来判断「这条连接走了隧道吗」，两边必须始终是同一个值。
+  static const String vpnTag = OutboundTags.vpn;
 
   /// 出厂规则集。这是不传 [build] 的 `ruleSets` 时的默认值。
   ///
   /// 顺序即内核 `rule_set` 列表的顺序，与历史上写死的两份保持一致，
   /// 这样「用户没有改动任何规则」时生成的配置不会发生变化。
   static const List<RuleSetSpec> defaultRuleSets = <RuleSetSpec>[
-    RuleSetSpec(tag: 'geosite-cn', fileName: 'geosite-cn.srs'),
+    RuleSetSpec(tag: 'geosite-cn', fileName: 'geosite-cn.srs', domainRuleSet: true),
     RuleSetSpec(tag: 'geoip-cn', fileName: 'geoip-cn.srs'),
   ];
 
-  /// 域名类规则集的标签：只有它参与 DNS 直连分流。
+  /// 域名类规则集的标签，供调用方在没有 spec 时回退使用。
   ///
-  /// geoip-cn 是 IP 类规则集，不参与域名 DNS 判定；自定义规则集是域名的还是
-  /// IP 的，程序从文件名无从得知，因此不猜——保持既有的 DNS 策略不变。
+  /// 真正参与 DNS 分流的标签由 [RuleSetSpec.domainRuleSet] 逐条声明——不要再
+  /// 用「标签等于 geosite-cn」这种硬编码判断：新增一个域名类规则集时它会
+  /// 静默地不参与 DNS 分流，而现象是「判定该直连的域名仍被境外解析器解析」，
+  /// 极难看出原因。
   static const String domainRuleSetTag = 'geosite-cn';
 
   /// 入站方式。两端能力不同，因此由调用方按平台选择。
@@ -118,6 +135,10 @@ class SingBoxConfigBuilder {
   /// **之前**，因此「学到的判断」优先于规则库——这一点是自动纠正能生效的前提：
   /// 需要纠正的恰恰是规则库判错的那一批域名。
   ///
+  /// [appPresets] 已并入 [autoRoute]（见 `AutoRouteTable.setPreset`）。保留这个
+  /// 说明是为了让后来者知道：**不要**在这里再插一段预置规则——两套平行机制会让
+  /// 匹配、优先级、界面与 DNS 策略各自为政。
+  ///
   /// 协议相关部分完全交给适配器：本方法只负责「所有协议都一样的部分」——
   /// DNS 分流、路由规则、入站与观测接口。
   static Map<String, Object?> build({
@@ -161,6 +182,7 @@ class SingBoxConfigBuilder {
         remoteDns: remoteDns,
         ruleSetDir: ruleSetDir,
         splitMode: splitMode,
+        autoRoute: autoRoute,
         ruleSets: ruleSets,
       ),
       if (isEndpoint) 'endpoints': <Object?>[endpoint],
@@ -177,7 +199,7 @@ class SingBoxConfigBuilder {
         // 顺带也解决了直连出站解析域名时的解析器问题。
         <String, Object?>{
           'type': 'direct',
-          'tag': 'direct',
+          'tag': OutboundTags.direct,
           'domain_resolver': <String, Object?>{'server': 'dns-cn'},
         },
       ],
@@ -313,14 +335,36 @@ class SingBoxConfigBuilder {
     required (String, bool, String) remoteDns,
     required String ruleSetDir,
     required SplitMode splitMode,
+    AutoRouteTable? autoRoute,
     required List<RuleSetSpec> ruleSets,
   }) {
     final (remoteAddress, _, remoteTag) = remoteDns;
     final remoteServers = remoteDnsServers(profile);
-    // geosite-cn 被用户删掉/停用后，DNS 规则不能再引用它：内核会因
-    // 「引用了未定义的 rule_set」直接拒绝启动。没有它时退回纯 final 策略，
-    // 与全局直连时的行为一致。
-    final hasDomainRuleSet = ruleSets.any((RuleSetSpec s) => s.tag == domainRuleSetTag);
+    // 参与 DNS 直连分流的**全部**域名类规则集。
+    //
+    // 必须按 spec 逐条声明来取，不能写死成某一个标签：`geosite-cn-extra`
+    // 同样是域名类，如果它不在这里，被它判为直连的域名仍会被**境外**解析器
+    // 解析——于是拿到境外 CDN 的地址再去直连，判定对了、结果仍错。
+    final domainRuleSetTags = <String>[
+      for (final spec in ruleSets)
+        if (spec.domainRuleSet) spec.tag,
+    ];
+    // 这些规则集被用户删掉/停用后，DNS 规则不能再引用：内核会因「引用了未定义
+    // 的 rule_set」直接拒绝启动。没有任何域名类规则集时退回纯 final 策略。
+    final hasDomainRuleSet = domainRuleSetTags.isNotEmpty;
+
+    // DNS 决策必须跟随**路由**决策，否则两者会互相矛盾。
+    //
+    // 这不是锦上添花：`route.default_domain_resolver` 与 `dns.final` 都指向隧道
+    // 解析器，因此任何需要内核解析的域名默认都要经隧道问一个境外解析器。于是
+    // 一个「已判定该直连」的域名会被境外解析器解析出境外 CDN 的地址，再照那个
+    // 地址直连——判定对了、结果仍然错。反过来，一个「因境内答案不可信而被改成
+    // 走隧道」的域名也不该继续被送去境内解析器。
+    //
+    // 因此这里从**同一个** [AutoRouteTable] 派生，而不是另写一份条件。
+    final decisions = splitMode == SplitMode.smart && autoRoute != null
+        ? autoRoute.domainSets()
+        : (directDomains: const <String>[], proxyDomains: const <String>[]);
 
     return <String, Object?>{
       'servers': <Object?>[
@@ -335,7 +379,7 @@ class SingBoxConfigBuilder {
             'type': 'udp',
             'tag': i == 0 ? 'dns-cn' : 'dns-cn-$i',
             'server': domesticDns[i],
-            'detour': 'direct',
+            'detour': OutboundTags.direct,
           },
         // 其余域名走隧道内的解析器：明文 UDP 也无所谓，
         // 它整条链路都在 WireGuard 里，不会被篡改。
@@ -351,16 +395,31 @@ class SingBoxConfigBuilder {
             // 与直连解析器的命名方式保持一致。
             'tag': i == 0 ? remoteTag : '$remoteTag-$i',
             'server': remoteServers[i],
-            'detour': 'vpn',
+            'detour': OutboundTags.vpn,
           },
       ],
       'rules': <Object?>[
+        // 已判定「该走隧道」的域名：DNS 也必须经隧道解析。
+        //
+        // 这一条正是「境内答案不可信」这个判断的一部分——既然直连解析给出过
+        // 可疑答案（或直连根本不通），就不该再让境内解析器来决定它连到哪。
+        // 必须排在下面 geosite-cn 那条之前：这些域名往往同时命中 geosite-cn，
+        // 而那条会把它们送去境内解析器，与判定的依据直接冲突。
+        ..._dnsDomainRule(decisions.proxyDomains, remoteTag),
+        // 命中**域名类**规则集的域名用直连 DNS：既快，又能拿到就近的 CDN 节点。
+        //
+        // 这里引用的是全部域名类规则集（`geosite-cn` 与 `geosite-cn-extra`），
+        // 而不是其中一个：内核的一条规则里多个 `rule_set` 之间是「或」，
+        // 因此一次就能表达「凡是被判为直连的域名都用直连解析器」。
         if (splitMode == SplitMode.smart && hasDomainRuleSet)
           <String, Object?>{
-            'rule_set': <String>[domainRuleSetTag],
+            'rule_set': domainRuleSetTags,
             'action': 'route',
             'server': 'dns-cn',
           },
+        // 已判定「该直连」的域名（直连白名单预置 + 反方向学到的）：
+        // 要用直连解析器，否则会拿到境外 CDN 的地址再去直连。
+        ..._dnsDomainRule(decisions.directDomains, 'dns-cn'),
       ],
       'final': switch (splitMode) {
         SplitMode.smart => remoteTag,
@@ -390,14 +449,19 @@ class SingBoxConfigBuilder {
     AutoRouteTable? autoRoute,
     required List<RuleSetSpec> ruleSets,
   }) {
-    // 自动纠正规则只在智能分流下注入。
+    // 域名决策只在智能分流下注入。规则来自 AutoRouteTable 这**一个**来源——
+    // 自动纠正（两个方向）与直连白名单预置都在那张表里，因此这里不需要为
+    // 任何一类机制单独拼规则。
     //
     // 「全局代理」「全局直连」是用户显式要求忽略分流的两种模式，
     // 往里注入域名规则会与用户的意图冲突——尤其是全局直连时，
     // 注入 force-proxy 会让「完全不使用隧道」这个承诺失效。
-    final learnedRules = splitMode == SplitMode.smart && autoRoute != null
+    final decided = splitMode == SplitMode.smart && autoRoute != null
         ? autoRoute.buildRouteRules()
-        : const <Map<String, Object?>>[];
+        : (
+            userRules: const <Map<String, Object?>>[],
+            otherRules: const <Map<String, Object?>>[],
+          );
 
     // 规则集标签按传入顺序排列。用户删掉某个规则集后，这里也不会再引用它，
     // 因此内核不会因为「rule_set 未定义」而拒绝启动。
@@ -413,22 +477,31 @@ class SingBoxConfigBuilder {
         <String, Object?>{'action': 'sniff'},
         // 本地 DNS 代理自身的解析请求交给内置 DNS 模块处理。
         <String, Object?>{'protocol': 'dns', 'action': 'hijack-dns'},
-        // 自动纠正学到的规则紧跟在嗅探之后。
+        // ① 用户手工指定的走向。最高优先级，**连内网直连都能覆盖**
+        // （用户可能为了排查问题故意把某个内网域名指向代理）。
+        ...decided.userRules,
+        // ② 私有地址段始终直连。
         //
-        // 位置很关键：它必须早于下面的 geosite-cn / geoip-cn，否则规则库会先把
-        // 域名判成直连，纠正永远不生效——而这正是需要纠正的场景
-        // （域名解析到 geoip-cn 内的地址时，规则集「正确地」命中）。
-        ...learnedRules,
-        // 局域网与本机地址始终直连。
-        //
-        // 放在自动纠正之后：用户如果显式把某个内网域名指向代理（例如为了
-        // 排查问题），应当尊重他的选择；但默认情况下内网地址绝不进隧道。
-        <String, Object?>{'ip_is_private': true, 'outbound': 'direct'},
+        // 位置很关键，且**不再是口头约定**：它必须早于程序学到与内置白名单的
+        // 规则（下一段），因为那两类都可能错误地指向内网——
+        //   * `nas.local` 这类内网主机名解析出 192.168.x.x 时会被 `geoip-cn`
+        //     命中，反方向学习会把它学成「直连」（无害）；
+        //   * 而它一旦临时不可达就会攒够「直连失败」被推成 forceProxy
+        //     （**有害**：内网流量进隧道，既费流量又必然连不上）。
+        // 私有地址段是确定的、可判定的边界，不该由推断出的证据去推翻它。
+        <String, Object?>{'ip_is_private': true, 'outbound': OutboundTags.direct},
+        // ③ 程序学到 + 内置白名单。它们必须早于规则库：
+        //   * 「直连失败→走隧道」的那一批需要被拉回隧道，而规则库会先把它们
+        //     判成直连（因为它们解析到 geoip-cn 内的地址）；
+        //   * 「该直连却被判进隧道」的那一批需要被拉出来，而规则库根本认不出它们。
+        ...decided.otherRules,
+        // ④ 规则库。
         if (splitMode == SplitMode.smart && ruleSetTags.isNotEmpty)
           <String, Object?>{
             'rule_set': ruleSetTags,
-            'outbound': 'direct',
+            'outbound': OutboundTags.direct,
           },
+        // ⑤ `route.final` 兜底（见下方）。
       ],
       'rule_set': <Object?>[
         for (final spec in ruleSets)
@@ -441,11 +514,23 @@ class SingBoxConfigBuilder {
       ],
       // 白名单式直连：命中规则才直连，其余一律走隧道。
       'final': switch (splitMode) {
-        SplitMode.smart => 'vpn',
-        SplitMode.globalProxy => 'vpn',
-        SplitMode.globalDirect => 'direct',
+        SplitMode.smart => OutboundTags.vpn,
+        SplitMode.globalProxy => OutboundTags.vpn,
+        SplitMode.globalDirect => OutboundTags.direct,
       },
       'auto_detect_interface': true,
+      // 内核自己需要解析域名时用哪个解析器。
+      //
+      // 默认指向**隧道**解析器，这是一个方向性选择，理由与代价都要说清楚：
+      //   * 方向：本程序是白名单式直连，未命中规则集的流量一律走隧道，因此
+      //     「内核要解析的域名」绝大多数也是要经隧道的目标。让它们跟着出口去
+      //     解析，才能拿到出口视角下的就近地址。
+      //   * 代价：若某个域名**只能**在直连下解析，这个默认值会让它必然失败。
+      //     已知的两类都不受影响——代理出站自己的服务器地址由适配器显式指定
+      //     `domain_resolver=dns-cn`（隧道建立在解析之后，走隧道会形成死锁），
+      //     而直连出站也带 `domain_resolver=dns-cn`。真正落到这个默认值的是
+      //     「已判定走隧道、且需要内核自己解析」的域名，那正是我们要的方向。
+      //   * 想改这里的默认值之前请先确认上面两类仍然成立。
       'default_domain_resolver': <String, Object?>{'server': resolveDnsTag},
     };
   }
@@ -457,5 +542,28 @@ class SingBoxConfigBuilder {
         ? normalized.substring(0, normalized.length - 1)
         : normalized;
     return '$trimmed/$fileName';
+  }
+
+  /// 把一组域名翻译成一条 sing-box 路由规则。空列表返回空片段。
+  ///
+  /// 与 `AutoRouteTable.buildRouteRules()` 用同一种写法：同时下发 `domain`
+  /// （精确）与 `domain_suffix`（后缀）。理由在那边写得更细——`cursor.sh`
+  /// 不写成后缀就匹配不到 `api2.cursor.sh`，而预置里的域名恰恰以后者为主。
+  ///
+  /// 只用于 **DNS** 规则：路由规则一律由 `AutoRouteTable.buildRouteRules()`
+  /// 生成，不再有第二条路径。
+  static List<Map<String, Object?>> _dnsDomainRule(
+    List<String> domains,
+    String server,
+  ) {
+    if (domains.isEmpty) return const <Map<String, Object?>>[];
+    return <Map<String, Object?>>[
+      <String, Object?>{
+        'domain': List<String>.of(domains),
+        'domain_suffix': List<String>.of(domains),
+        'action': 'route',
+        'server': server,
+      },
+    ];
   }
 }

@@ -20,7 +20,7 @@ const String buildVersion = String.fromEnvironment('XVPN_VERSION');
 ///
 /// 与 `pubspec.yaml` 同步维护。[version_test.dart] 会断言它不会与 pubspec
 /// 脱节——两处版本号不一致正是这次要修的问题，必须由测试守住。
-const String fallbackVersion = '1.0.0';
+const String fallbackVersion = '1.1.0';
 
 /// 用于界面展示的版本号（不含 build 号）。
 String get appVersion => buildVersion.isEmpty ? fallbackVersion : buildVersion;

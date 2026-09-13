@@ -132,10 +132,27 @@ CC0-1.0 / MPL-2.0 / Unlicense 各 1）与许可全文。
 | `app/assets/rulesets/geosite-cn.srs` | [SagerNet/sing-geosite](https://github.com/SagerNet/sing-geosite) `rule-set` 分支 | 域名规则集 |
 | `app/assets/rulesets/geoip-cn.srs` | [SagerNet/sing-geoip](https://github.com/SagerNet/sing-geoip) `rule-set` 分支 | IP 规则集 |
 | `app/assets/rulesets/cn-ip.bin` | 由 `geoip-cn.srs` 派生 | 见下 |
+| `app/assets/rulesets/geosite-cn-extra.srs` | 由 [felixonmars/dnsmasq-china-list](https://github.com/felixonmars/dnsmasq-china-list) 编译 | 国内域名补充（**默认不启用**） |
 
 `cn-ip.bin` 是本项目从 `geoip-cn.srs` 摊平出来的 `geoip-cn` 前缀索引
 （由 `app/tool/build_cn_ip_index.dart` 生成），属于对上游数据的**格式转换**，
 不是独立数据源。它同样按上游规则库的条款分发。
+
+`geosite-cn-extra.srs` 由 `scripts/build-cn-domain-ruleset.ps1` 从
+`accelerated-domains.china.conf` 编译而来（**格式转换**，不是独立数据源）。
+
+> **上游许可情况（本次已核实）**：`felixonmars/dnsmasq-china-list` 的
+> `LICENSE` 为 **WTFPL v2**（Do What The Fuck You Want To Public License，
+> 版本 2，零条件）——是本项目引入的规则数据里**最没有约束**的一份，
+> 与 GPL-3.0-or-later 不存在任何兼容性问题。归属信息保留在此处。
+> 重跑 `scripts/build-cn-domain-ruleset.ps1` 即可刷新该产物。
+
+> **为什么不内置覆盖更全的 ChinaMax 系**：`MetaCubeX/meta-rules-dat` 的
+> `geosite:cn` 覆盖更全（约 11.1 万条，实测零回退），但它来源是
+> `blackmatrix7/ios_rule_script` 的 ChinaMax，而后者许可是 **GPL-2.0
+> （非 or-later）**——GPL-2.0-only 不能单向升级到 GPL-3.0，再分发进本项目
+> 存在合规灰区。因此本项目**不再分发**它，只在「规则集」页提供地址，
+> 由用户自行添加（见 `RuleSetStore.suggested`）。
 
 > **上游许可情况（本次已核实）**：`SagerNet/sing-geosite` 与 `SagerNet/sing-geoip`
 > 的默认分支（`main`）根目录下**有** `LICENSE`，内容为 **GPL-3.0-or-later**

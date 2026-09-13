@@ -1,25 +1,39 @@
-/// 自动纠正表：把「观察到的失败」变成「内核里的高优先级分流规则」。
+/// 分流决策表：**域名走向的唯一决策来源**。
 ///
-/// 这是让「傻瓜式」真正闭环的一步。内置规则库覆盖不到的长尾情况有两类，
-/// 而这两类的表现都是「网站打不开，用户完全看不出原因」：
+/// 表里的每一条都是「这个域名走隧道还是直连」，来源有三类，优先级
+/// 用户 > 学到 > 预置（见 [RouteRuleSourceX.rank]）：
+///
+///   * **用户手工指定**（`user`）——用户的明确决定，永不被程序改写；
+///   * **程序学到**（`learned`）——从证据里自动纠正，两个方向都会学：
+///     直连失败 → 走隧道；直连解析落在国内网段 → 直连；
+///   * **内置白名单**（`preset`）——由「直连白名单」开关安装的静态清单
+///     （见 `app_presets.dart`）。
+///
+/// 把它做成**唯一**来源而不是让每条机制各插一段路由规则，是为了让匹配、
+/// 优先级、界面展示、DNS 策略、反向纠正的候选过滤全部一致。此前预置是绕过
+/// 本表、在配置生成时另插规则的，于是 `match()`、`domain_check`、自动纠正
+/// 都看不到它，优先级只能靠配置生成函数里的书写顺序表达——一被重排就是
+/// 静默的行为变更。
+///
+/// 双向学习的理由：内置规则库覆盖不到的长尾情况有两类，而它们都会表现为
+/// 「用户完全看不出原因」：
 ///
 ///   1. 判为直连的主机解析到 **geoip-cn 内的地址**、却并不真的可达（例如服务
-///      由规则集范围内的 CDN 承载）→ 判为直连 → 直连必然失败。规则库修不了，
+///      由规则集范围内的 CDN 承载）→ 判为直连 → 直连失败。规则库修不了，
 ///      因为它「正确地」命中了。
-///   2. 域名的直连解析结果与隧道解析结果不一致 → 直连/代理判定建立在一个
-///      不可信的地址之上。
-///
-/// 程序能观察到这两类的共同后果：**判为直连却失败**。内核日志里写明了失败的
-/// 出站（见 `core_log.dart`），DNS 监测能补充「这个域名的解析是否可信」
-/// （见 `dns_monitor.dart`）。把两者合起来，就足以在不打扰用户的前提下
-/// 自动把这个域名改成走隧道。
+///   2. **该直连的域名被判进了隧道**（不在 `geosite-cn` 内）→ 不失败、不报错，
+///      只白占隧道带宽、并把访问来源换成境外 IP。这一类的证据是 DNS 事实：
+///      该域名的直连解析落在国内网段内。
 ///
 /// 设计上刻意保守：
-///   * 只有**域名**会被学习，IP 目标一律不动——IP 失败与分流规则无关；
-///   * 需要**连续多次**失败才纠正，单次抖动不会改路由；
-///   * 只要出现过一次直连成功，连续失败计数就清零；
-///   * 纠正表有容量上限，且会随时间衰减，不会变成一个只增不减的黑名单。
+///   * 只有**域名**会被学习，IP 目标一律不动——IP 层面的失败与按域名的规则无关；
+///   * 需要**连续多次**独立证据才纠正，单次抖动不会改路由；
+///   * 两个方向互为反证：一次直连失败会清零「该直连」的连续计数；
+///   * 表有容量上限，且会随时间衰减，不会变成一个只增不减的黑名单。
 library;
+
+import 'app_presets.dart';
+import 'outbound_tags.dart';
 
 /// 分流倾向。
 enum RoutePreference {
@@ -45,8 +59,16 @@ enum RouteRuleSource {
   /// 用户手工指定。永远最高优先级，且不会被程序覆盖。
   user,
 
-  /// 程序从失败证据里学到的。
+  /// 程序从证据里学到的（两个方向：直连失败→走隧道，国内解析→直连）。
   learned,
+
+  /// 由「直连白名单」预置安装进来的域名（见 `app_presets.dart`）。
+  ///
+  /// 优先级**最低**：它是一份静态清单，而 [learned] 是运行中观察到的证据、
+  /// [user] 是用户的明确决定，两者都应当能推翻它。这一点必须落在代码里
+  /// （见 [AutoRouteTable.installPreset]），否则重启时重新安装预置会把学到的
+  /// 纠正悄悄抹掉。
+  preset,
 }
 
 extension RouteRuleSourceX on RouteRuleSource {
@@ -55,7 +77,21 @@ extension RouteRuleSourceX on RouteRuleSource {
   /// 把「谁定的这条规则」说清楚是必要的：用户手工指定的规则不会被程序改，
   /// 而程序学到的会随证据变化。两者在界面上长得一样的话，用户会怀疑
   /// 「我明明指定过，怎么又变了」。
-  String get label => this == RouteRuleSource.user ? '手工指定' : '程序学到';
+  String get label => switch (this) {
+    RouteRuleSource.user => '手工指定',
+    RouteRuleSource.learned => '程序学到',
+    RouteRuleSource.preset => '内置白名单',
+  };
+
+  /// 优先级序号，**越小越优先**。
+  ///
+  /// 用它排序而不是在生成规则时靠书写顺序表达，是因为后者一被重排就是静默的
+  /// 行为变更。这里定死：用户 > 学到 > 预置。
+  int get rank => switch (this) {
+    RouteRuleSource.user => 0,
+    RouteRuleSource.learned => 1,
+    RouteRuleSource.preset => 2,
+  };
 }
 
 /// 一条自动纠正规则 + 支撑它的证据。
@@ -70,6 +106,7 @@ class AutoRouteEntry {
     this.directSuccesses = 0,
     this.consecutiveFailures = 0,
     this.proxiedBytes = 0,
+    this.domesticHits = 0,
     this.dnsVerdict,
     this.lastFailureReason,
   });
@@ -99,6 +136,21 @@ class AutoRouteEntry {
   /// 走隧道时累计的字节数。用来判断「改成代理以后确实在用」。
   int proxiedBytes;
 
+  /// 直连解析结果落在国内网段（`geoip-cn` 前缀索引内）的次数。
+  ///
+  /// 这是**反方向**（把走隧道的域名改成直连）的证据，与 [directFailures] 方向相反。
+  /// 之所以需要它：本程序是白名单式直连，不在 `geosite-cn` 内的域名必然进隧道，
+  /// 而 `geoip-cn` 不参与域名目标的判定（见 `docs/RULES.md` 的实测）。因此
+  /// 「该直连却走了隧道」既不失败、也不报错，此前没有任何证据可用于发现它。
+  ///
+  /// 直连解析给出国内地址，是这个域名属于国内站点的一个确定性证据——它是 DNS
+  /// 事实，不是猜测。但仍然要求**连续多次**才改判：单一解析器的答案会随 CDN
+  /// 调度变化，而一次误判会把本该走隧道的流量推去直连。
+  ///
+  /// 任何一次直连失败都会把它清零（见 [recordDomesticAnswer] 的调用方约定与
+  /// [recordDirectFailure]）：反证优先，且能防止两个方向反复翻转。
+  int domesticHits;
+
   /// 最近一次 DNS 交叉校验的结论名（见 `DnsVerdict`）。
   String? dnsVerdict;
 
@@ -118,13 +170,14 @@ class AutoRouteEntry {
   Map<String, Object?> toJson() => <String, Object?>{
     'domain': domain,
     'preference': preference.storageKey,
-    'source': source == RouteRuleSource.user ? 'user' : 'learned',
+    'source': source.name,
     if (createdAt != null) 'createdAt': createdAt!.toIso8601String(),
     if (lastHitAt != null) 'lastHitAt': lastHitAt!.toIso8601String(),
     'directFailures': directFailures,
     'directSuccesses': directSuccesses,
     'consecutiveFailures': consecutiveFailures,
     'proxiedBytes': proxiedBytes,
+    'domesticHits': domesticHits,
     if (dnsVerdict != null) 'dnsVerdict': dnsVerdict,
     if (lastFailureReason != null) 'lastFailureReason': lastFailureReason,
   };
@@ -139,15 +192,21 @@ class AutoRouteEntry {
       preference: json['preference'] == 'direct'
           ? RoutePreference.forceDirect
           : RoutePreference.forceProxy,
-      source: json['source'] == 'user'
-          ? RouteRuleSource.user
-          : RouteRuleSource.learned,
+      // 预置是随代码分发的，不从存档恢复：它由「直连白名单」的开关驱动，
+      // 存档里出现 preset 来源（旧版本写入或手工编辑）一律降级成「程序学到」，
+      // 免得一条没有开关对应的条目永久留在表里。
+      source: switch (json['source']) {
+        'user' => RouteRuleSource.user,
+        'preset' => RouteRuleSource.learned,
+        _ => RouteRuleSource.learned,
+      },
       createdAt: _time(json['createdAt']),
       lastHitAt: _time(json['lastHitAt']),
       directFailures: (json['directFailures'] as num?)?.toInt() ?? 0,
       directSuccesses: (json['directSuccesses'] as num?)?.toInt() ?? 0,
       consecutiveFailures: (json['consecutiveFailures'] as num?)?.toInt() ?? 0,
       proxiedBytes: (json['proxiedBytes'] as num?)?.toInt() ?? 0,
+      domesticHits: (json['domesticHits'] as num?)?.toInt() ?? 0,
       dnsVerdict: json['dnsVerdict']?.toString(),
       lastFailureReason: json['lastFailureReason']?.toString(),
     );
@@ -188,6 +247,7 @@ class AutoRouteTable {
   AutoRouteTable({
     this.capacity = 400,
     this.promotionThreshold = 3,
+    this.domesticPromotionThreshold = 2,
     this.decayAfter = const Duration(days: 14),
   }) : assert(capacity > 0);
 
@@ -203,6 +263,13 @@ class AutoRouteTable {
   /// 多久没有任何新证据就淘汰。避免老规则一直留着。
   final Duration decayAfter;
 
+  /// 直连解析连续多少次落在国内网段，才把走隧道的域名改成直连。
+  ///
+  /// 取 2 而不是 1：这是**推断**而不是事实——「解析到国内地址」是事实，
+  /// 「所以该直连」是推断（该地址可能并不可达，比如服务由规则集范围内的 CDN
+  /// 承载却走不通）。也不需要 3：那会让一个明显在国内的站点白走两轮隧道。
+  final int domesticPromotionThreshold;
+
   /// 精确域名 → 条目。
   final Map<String, AutoRouteEntry> _exact = <String, AutoRouteEntry>{};
 
@@ -211,6 +278,15 @@ class AutoRouteTable {
   /// 例：规则 `example.com` 归档到键 `com`，规则 `example.co.uk` 归档到键 `co.uk`。
   final Map<String, List<AutoRouteEntry>> _suffixBuckets =
       <String, List<AutoRouteEntry>>{};
+
+  /// 尚未定性的「直连解析落在国内网段」连续计数。
+  ///
+  /// 与 [_exact] 分开是刻意的：这些还**不是规则**，只是证据。放进 [_exact]
+  /// 会立刻生成路由规则，而方向正好是反的（见 [recordDomesticAnswer]）。
+  final Map<String, int> _domesticStreak = <String, int>{};
+
+  /// 未定性证据的上界。超过就整表清空，理由见 [_rememberDomesticStreak]。
+  static const int maxPendingDomesticEvidence = 200;
 
   int get length => _exact.length;
 
@@ -255,6 +331,65 @@ class AutoRouteTable {
     return true;
   }
 
+  /// 安装或卸载一个「直连白名单」预置。
+  ///
+  /// 预置走的是**同一条**决策模型（而不是在配置生成时另插一段规则），因此
+  /// 匹配、优先级、界面展示、反向纠正的候选过滤全都自动一致。这是把两套平行
+  /// 机制收敛成一套的关键一步：此前预置绕过本表，导致
+  /// `match()` / `domain_check` / 自动纠正都看不到它们，优先级只能靠
+  /// 配置生成函数里的书写顺序表达。
+  ///
+  /// 唯一注意点：安装时**不覆盖**优先级更高的条目。否则每次重启重新安装预置，
+  /// 都会把运行中学到的纠正（例如某个预置域名直连连不通、已被改成走隧道）
+  /// 悄悄抹掉——那是「学一次、以后都记得」这个承诺的反例。
+  void setPreset(AppPreset preset, {required bool enabled}) {
+    if (!enabled) {
+      for (final domain in <String>[
+        ...preset.directDomains,
+        ...preset.tunnelExceptions,
+      ]) {
+        final normalized = normalizeDomain(domain);
+        final entry = _exact[normalized];
+        if (entry != null && entry.source == RouteRuleSource.preset) {
+          _uninstall(normalized);
+        }
+      }
+      return;
+    }
+
+    void install(String domain, RoutePreference preference) {
+      final normalized = normalizeDomain(domain);
+      if (normalized.isEmpty) return;
+      final existing = _exact[normalized];
+      // 学到/手工指定的条目优先，预置不覆盖它们。
+      if (existing != null && existing.source != RouteRuleSource.preset) {
+        return;
+      }
+      _install(
+        AutoRouteEntry(
+          domain: normalized,
+          preference: preference,
+          source: RouteRuleSource.preset,
+          createdAt: existing?.createdAt ?? DateTime.now(),
+          directFailures: existing?.directFailures ?? 0,
+          directSuccesses: existing?.directSuccesses ?? 0,
+          consecutiveFailures: existing?.consecutiveFailures ?? 0,
+          proxiedBytes: existing?.proxiedBytes ?? 0,
+          domesticHits: existing?.domesticHits ?? 0,
+        ),
+      );
+    }
+
+    // 例外先装：它最终会排在直连规则之前（生成规则时所有走隧道的规则在前），
+    // 这里先装只是为了让两条都进表，顺序由 [buildRouteRules] 决定。
+    for (final domain in preset.tunnelExceptions) {
+      install(domain, RoutePreference.forceProxy);
+    }
+    for (final domain in preset.directDomains) {
+      install(domain, RoutePreference.forceDirect);
+    }
+  }
+
   /// 记录一次「判为直连却失败」。
   ///
   /// [dnsVerdict] 来自 DNS 交叉校验（`DnsVerdict.name`）。为
@@ -273,6 +408,12 @@ class AutoRouteTable {
         AutoRouteEntry(domain: domain, createdAt: DateTime.now());
     entry.directFailures++;
     entry.consecutiveFailures++;
+    // 反证优先：一次直连失败就把「直连解析落在国内」的连续计数清零。
+    //
+    // 不做这一步会来回翻转——被 3 次失败改成 forceProxy 之后，残留的计数会让
+    // 下一次正面解析立刻又把它改回 forceDirect，用户看到的是分流「时好时坏」，
+    // 而这正是本文件开头说要避免的。
+    _domesticStreak.remove(domain);
     entry.lastFailureReason = reason;
     if (dnsVerdict != null) entry.dnsVerdict = dnsVerdict;
 
@@ -356,9 +497,93 @@ class AutoRouteTable {
     return true;
   }
 
+  /// 记录一次「直连解析结果落在国内网段」。
+  ///
+  /// 这是**反方向**的自动纠正：把「本该直连却走了隧道」的域名拉出来。它补的是
+  /// 本文件开头那条设计缺口——原来只有「判为直连却失败」这一种证据，于是程序
+  /// 只能往隧道里推，永远不能往回拉，而误入隧道的流量既不失败也不报错。
+  ///
+  /// 证据的性质要说清楚：调用方给出的是**DNS 事实**（该域名的直连解析答案落在
+  /// `geoip-cn` 覆盖的网段内），不是猜测；而「因此该走直连」是推断。因此这里
+  /// 要求连续 [domesticPromotionThreshold] 次，且任何一次直连失败都会清零。
+  ///
+  /// [reason] 用于界面展示，说明这条规则为什么出现。
+  AutoRouteDecision recordDomesticAnswer(String host, {String? reason}) {
+    final domain = normalizeDomain(host);
+    if (domain.isEmpty) {
+      return AutoRouteDecision(domain: host, added: false, reason: '目标不是域名');
+    }
+    final existing = _exact[domain];
+    // 用户已经明确指定过走向：只记证据，不改写他的决定。
+    if (existing != null && existing.source == RouteRuleSource.user) {
+      return AutoRouteDecision(
+        domain: domain,
+        added: false,
+        reason: '已有用户规则（${existing.preference.label}），仅记录解析结果',
+        entry: existing,
+      );
+    }
+
+    final streak = (_domesticStreak[domain] ?? 0) + 1;
+    if (streak < domesticPromotionThreshold) {
+      // **不建表项**。这一点很关键：一条 preference 为 forceProxy 的新条目
+      // 会变成一条「强制走隧道」的规则并注入到规则库之前，而本方法的证据方向
+      // 恰好相反——它说明这个域名**可能**该直连。单次证据不足以改路由，
+      // 更不足以把它钉死在隧道里。
+      _rememberDomesticStreak(domain, streak);
+      return AutoRouteDecision(
+        domain: domain,
+        added: false,
+        reason: '直连解析落在国内网段 $streak/$domesticPromotionThreshold 次，继续观察',
+      );
+    }
+
+    final current =
+        existing ??
+        AutoRouteEntry(domain: domain, createdAt: DateTime.now());
+    final promoted = AutoRouteEntry(
+      domain: domain,
+      preference: RoutePreference.forceDirect,
+      source: RouteRuleSource.learned,
+      createdAt: current.createdAt ?? DateTime.now(),
+      lastHitAt: DateTime.now(),
+      directFailures: current.directFailures,
+      directSuccesses: current.directSuccesses,
+      consecutiveFailures: current.consecutiveFailures,
+      proxiedBytes: current.proxiedBytes,
+      // 计数留在规则上：它既是这条规则的依据，也是界面上的证据。
+      domesticHits: streak,
+      dnsVerdict: current.dnsVerdict,
+      lastFailureReason: reason ?? current.lastFailureReason,
+    );
+    _install(promoted);
+    _domesticStreak.remove(domain);
+    return AutoRouteDecision(
+      domain: domain,
+      added: true,
+      reason: '连续 $streak 次直连解析落在国内网段，已自动改为直连',
+      entry: promoted,
+    );
+  }
+
+  /// 记录「还不足以改路由」的正向证据。
+  ///
+  /// 刻意只放在内存里，不进 [_exact]：它不是一条规则，因此不该出现在
+  /// `buildRouteRules()` 的结果里，也不该被界面当成规则列出来。代价是重启后
+  /// 要重新数两次——而这个代价是刻意的：把未定性的证据持久化，会让程序在
+  /// 用户看不到的地方积累状态，而它对应不上任何一条可见的规则。
+  void _rememberDomesticStreak(String domain, int streak) {
+    _domesticStreak[domain] = streak;
+    // 上界：绝大多数条目会在下一次探测就定性（阈值只有 2），留下的是
+    // 「只被看到一次就再没出现过」的域名。整表清掉比做 LRU 更简单，
+    // 而它只影响「再数两次」的成本。
+    if (_domesticStreak.length > maxPendingDomesticEvidence) {
+      _domesticStreak.clear();
+    }
+  }
+
   /// 记录一次走隧道的流量，用于判断自动纠正是否真的起作用。
-  void recordProxiedBytes(String host, int bytes) {
-    if (bytes <= 0) return;
+  void recordProxiedBytes(String host, int bytes) {    if (bytes <= 0) return;
     final domain = normalizeDomain(host);
     if (domain.isEmpty) return;
     final entry = _exact[domain];
@@ -410,6 +635,12 @@ class AutoRouteTable {
       if (reference.difference(last) < decayAfter) continue;
       // 走隧道确实跑过流量说明这条规则有用，保留。
       if (entry.proxiedBytes > 0) continue;
+      // 直连规则「有用」的证据是直连真的跑出了流量——按 proxiedBytes 判断
+      // 会让一条正常工作的直连规则被当成没用的规则淘汰掉。
+      if (entry.preference == RoutePreference.forceDirect &&
+          entry.directSuccesses > 0) {
+        continue;
+      }
       removed.add(entry.domain);
     }
     for (final domain in removed) {
@@ -479,11 +710,12 @@ class AutoRouteTable {
     }
   }
 
-  /// 移除**全部程序学到**的规则，保留用户手工指定的。返回被移除的域名。
+  /// 移除**全部程序学到**的规则，保留用户手工指定与内置白名单预置。返回被移除的域名。
   ///
   /// 用于「恢复内置规则」：用户要的是回到出厂时的判断，而程序在运行中观察到的
   /// 结论应当被丢弃。手工指定的规则是用户明确的决定，不在清理范围内——
   /// 把两者一起清掉会让用户手动配置的例外被悄悄抹掉，那比不清理更糟。
+  /// 预置同理：它的开关在「直连白名单」卡片上，「恢复内置规则」不该顺带改动它。
   List<String> removeLearned() {
     final removed = _exact.values
         .where((AutoRouteEntry e) => e.source == RouteRuleSource.learned)
@@ -498,9 +730,16 @@ class AutoRouteTable {
   void clear() {
     _exact.clear();
     _suffixBuckets.clear();
+    _domesticStreak.clear();
   }
 
+  /// 需要落盘的条目。
+  ///
+  /// **预置不落盘**：它随代码分发、由开关驱动、每次启动重新安装。写进存档会留下
+  /// 一份会过期的副本（域名清单属于程序版本），而且用户关掉开关后旧的域名还会
+  /// 留在文件里。这与 `AppSettings.enabledAppPresets` 只存 id 是同一个理由。
   List<Map<String, Object?>> toJson() => _exact.values
+      .where((AutoRouteEntry e) => e.source != RouteRuleSource.preset)
       .map((AutoRouteEntry e) => e.toJson())
       .toList(growable: false);
 
@@ -518,34 +757,68 @@ class AutoRouteTable {
   /// 单条规则里最多带多少个域名。超过就分成多条规则，避免单条规则过长。
   static const int domainsPerRule = 512;
 
-  /// 生成 sing-box 路由规则片段。
+  /// 生成 sing-box 路由规则片段，**按优先级分成两段**。
   ///
-  /// 规则顺序即优先级。调用方需要把它插在 `geosite-cn` / `geoip-cn` **之前**，
-  /// 这样就实现了「学到的判断优先于规则库」——这正是本功能的意义所在：
-  /// 规则库把某个域名判成直连（因为它解析到 geoip-cn 内的地址），
-  /// 而这里的规则要能把它拉回隧道。
+  /// 分成两段而不是一段，是为了让「内网地址始终直连」这条规则有一个确定的位置。
+  /// 完整的优先级契约（从前到后，内核按**首次命中**生效）：
+  ///
+  /// | 顺序 | 规则 | 谁能覆盖它 |
+  /// | --- | --- | --- |
+  /// | 1 | [`userRules`] 用户手工指定 | ——（最高） |
+  /// | 2 | `ip_is_private` 内网直连（在 `_route()` 里） | 只有用户规则 |
+  /// | 3 | [`otherRules`] 程序学到 + 内置白名单 | 1、2 |
+  /// | 4 | 规则库 `geosite-cn` / `geoip-cn`（在 `_route()` 里） | 1、2、3 |
+  /// | 5 | `route.final` 兜底 | 全部 |
+  ///
+  /// 为什么把 [otherRules] 放在 `ip_is_private` **之后**：程序学到的规则来自
+  /// 「直连失败」或「解析落在国内网段」这两类证据，而**内网主机名同样会落在
+  /// 这两类里**——`nas.local` 解析出 `192.168.x.x` 会被 `geoip-cn` 命中（于是
+  /// 反方向学成直连，无害），而它一旦临时不可达就会攒够「直连失败」被推成
+  /// `forceProxy`（**有害**：内网流量被送进隧道，既费流量又必然连不上，而且
+  /// 用户完全看不出原因）。私有地址段是确定的、可判定的边界，不该由推断出的
+  /// 证据去推翻它。用户显式指定则不同——那是人的明确意图，保留它的最高优先级。
   ///
   /// 之所以同时下发 `domain` 与 `domain_suffix`：sing-box 的 `domain` 是
   /// **精确匹配**，`example.com` 不会命中 `www.example.com`；
   /// 学习者手里拿到的却往往是子域。两者都下发才符合直觉。
   ///
-  /// 多条规则按 `proxy 精确 → proxy 后缀 → direct 精确 → direct 后缀` 排列。
-  List<Map<String, Object?>> buildRouteRules() {
+  /// 每段内按 `proxy 精确 → proxy 后缀 → direct 精确 → direct 后缀` 排列。
+  ({
+    List<Map<String, Object?>> userRules,
+    List<Map<String, Object?>> otherRules,
+  })
+  buildRouteRules() {
+    final user = <AutoRouteEntry>[];
+    final others = <AutoRouteEntry>[];
+    for (final entry in _exact.values) {
+      if (entry.source == RouteRuleSource.user) {
+        user.add(entry);
+      } else {
+        others.add(entry);
+      }
+    }
+    return (
+      userRules: _rulesFor(user),
+      otherRules: _rulesFor(others),
+    );
+  }
+
+  /// 把一批条目翻译成路由规则片段。
+  ///
+  /// 段内排序：按域名长度降序，这样更具体的子域规则先命中父域规则
+  /// （父域规则在同一个 `domain_suffix` 列表里会覆盖它）。
+  static List<Map<String, Object?>> _rulesFor(List<AutoRouteEntry> entries) {
+    if (entries.isEmpty) return const <Map<String, Object?>>[];
+    final sorted = entries.toList(growable: false)
+      ..sort((AutoRouteEntry a, AutoRouteEntry b) {
+        final byLength = b.domain.length.compareTo(a.domain.length);
+        return byLength != 0 ? byLength : a.domain.compareTo(b.domain);
+      });
+
     final proxyExact = <String>[];
     final proxySuffix = <String>[];
     final directExact = <String>[];
     final directSuffix = <String>[];
-
-    // 排序保证「最具体的优先」：用户规则在最前，其余按域名长度降序，
-    // 这样被学到的子域规则会先于父域规则命中。
-    final sorted = _exact.values.toList(growable: false)
-      ..sort((AutoRouteEntry a, AutoRouteEntry b) {
-        if (a.source != b.source) {
-          return a.source == RouteRuleSource.user ? -1 : 1;
-        }
-        final byLength = b.domain.length.compareTo(a.domain.length);
-        return byLength != 0 ? byLength : a.domain.compareTo(b.domain);
-      });
 
     for (final entry in sorted) {
       final hasSuffixForm = entry.domain.contains('.');
@@ -560,9 +833,35 @@ class AutoRouteTable {
     }
 
     return <Map<String, Object?>>[
-      ..._chunkedRule(proxyExact, proxySuffix, 'vpn'),
-      ..._chunkedRule(directExact, directSuffix, 'direct'),
+      ..._chunkedRule(proxyExact, proxySuffix, OutboundTags.vpn),
+      ..._chunkedRule(directExact, directSuffix, OutboundTags.direct),
     ];
+  }
+
+  /// 按走向分组的域名集合。供 DNS 规则复用**同一份决策**。
+  ///
+  /// 存在的理由是本项目一处真实的不一致：`dns.rules` 原先只认 `geosite-cn`，
+  /// 而路由决策来自三个来源（规则库、自动纠正、直连白名单）。两者会互相矛盾——
+  /// 「已判定该直连」的域名仍被境外解析器解析（于是拿到境外 CDN 的地址再去直连），
+  /// 「因境内答案不可信而强制代理」的域名却仍被送去境内解析器。
+  ///
+  /// 因此 DNS 决策必须从**同一个** `_exact` 派生，而不是另写一份条件。
+  ({
+    List<String> directDomains,
+    List<String> proxyDomains,
+  })
+  domainSets() {
+    final direct = <String>[];
+    final proxy = <String>[];
+    for (final entry in _exact.values) {
+      switch (entry.preference) {
+        case RoutePreference.forceDirect:
+          direct.add(entry.domain);
+        case RoutePreference.forceProxy:
+          proxy.add(entry.domain);
+      }
+    }
+    return (directDomains: direct, proxyDomains: proxy);
   }
 
   static List<Map<String, Object?>> _chunkedRule(
