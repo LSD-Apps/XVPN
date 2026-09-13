@@ -145,7 +145,28 @@ static void tray_api_load(TrayApi* api) {
 // 扩展）用 org.kde.*，早期 ayatana 实现注册 org.ayatana.*。
 static gboolean bus_name_has_owner(const char* name) {
   g_autoptr(GError) error = nullptr;
-  return g_bus_name_has_owner(G_BUS_TYPE_SESSION, name, &error);
+  g_autoptr(GDBusConnection) bus =
+      g_bus_get_sync(G_BUS_TYPE_SESSION, nullptr, &error);
+  if (bus == nullptr) {
+    return FALSE;
+  }
+  // GIO 没有「这个名字有没有主」的便捷函数，直接问 D-Bus 守护进程本身：
+  // org.freedesktop.DBus 的 NameHasOwner 就是为此存在的标准接口。
+  //
+  // 这里曾写成 `g_bus_name_has_owner(...)`——那个标识符在 GIO 里并不存在
+  // （函数来自别的语言绑定），本机没有 GTK 工具链时编译不出来，直到
+  // release 流水线首次真正编译 Linux runner 才暴露：
+  //   error: use of undeclared identifier 'g_bus_name_has_owner'
+  g_autoptr(GVariant) reply = g_dbus_connection_call_sync(
+      bus, "org.freedesktop.DBus", "/org/freedesktop/DBus",
+      "org.freedesktop.DBus", "NameHasOwner", g_variant_new("(s)", name),
+      G_VARIANT_TYPE("(b)"), G_DBUS_CALL_FLAGS_NONE, -1, nullptr, &error);
+  if (reply == nullptr) {
+    return FALSE;
+  }
+  gboolean has_owner = FALSE;
+  g_variant_get(reply, "(b)", &has_owner);
+  return has_owner;
 }
 
 static gboolean tray_host_available(void) {

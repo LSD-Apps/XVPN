@@ -185,6 +185,11 @@ BSD-3-Clause。
 
 - **图标**：`Material Icons`，随 Flutter 分发（Apache-2.0）。
   构建时 Flutter 会做 tree-shaking，只保留实际用到的字形。
+- **GitHub 标记**：标题栏的仓库入口使用 GitHub 官方的 octicon `mark-github-16`，
+  取自 <https://github.com/primer/octicons>（**MIT**）。代码中只内联了该图标的
+  路径数据（`lib/widgets/title_bar.dart` 的 `buildGitHubMarkPath`），
+  未引入任何图标字体或图形依赖。该标记是 GitHub, Inc. 的商标，
+  此处仅用于指向本项目的 GitHub 仓库，属指名性使用。
 - **品牌标识**：`design/brand/` 下的母版与导出物为本项目自有，
   由 `scripts/export-icons.py` 从 `logo.svg` 生成。
 

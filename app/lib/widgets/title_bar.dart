@@ -358,12 +358,105 @@ class _GitHubButtonState extends State<_GitHubButton> {
               color: _hover ? XV.panel3 : Colors.transparent,
               borderRadius: BorderRadius.circular(8),
             ),
-            child: Icon(Icons.code, size: 15, color: XV.muted),
+            child: SizedBox(
+              width: 15,
+              height: 15,
+              child: CustomPaint(painter: _GitHubMarkPainter(XV.muted)),
+            ),
           ),
         ),
       ),
     );
   }
+}
+
+/// GitHub 标记（官方 octicon 的 `mark-github`，MIT 许可）。
+///
+/// 为什么不直接用 `Icons.code`：那是通用的代码符号，和 GitHub 没有关系；
+/// 用户看到的是一个「代码」图标，认不出这是仓库入口。
+///
+/// 为什么不引入图标字体包（如 font_awesome_flutter）：那会为一个图标新增一个
+/// 依赖，而本项目对「非必要依赖」一向是拒绝的（例如为了不加 `crypto`，SHA-256
+/// 是自己实现的）。这里沿用与窗口按钮同一套做法——自绘。
+///
+/// 路径由脚本从 SVG path 数据换算生成（含椭圆弧 → 三次贝塞尔的标准转换），
+/// 不是手抄的：那段路径是压缩过的，含相对命令与隐式重复，手工转写极易出错。
+/// 坐标系是 16×16 的视口。
+/// 构建 GitHub 标记的路径（16×16 视口）。
+///
+/// 数据取自官方的 octicon `mark-github-16`：
+/// `https://raw.githubusercontent.com/primer/octicons/main/icons/mark-github-16.svg`
+/// （MIT）。由脚本从该 SVG 的 `d` 属性直接换算成 Flutter 的 Path 调用，**没有手抄**：
+/// 这段路径是压缩过的，含相对命令与隐式重复，凭记忆或手写都会出错——实际上第一版
+/// 就是照记忆写的，结果画出来是个空心的环（已用光栅化对照发现并纠正）。
+///
+/// 单独作为顶层函数暴露，是为了让测试能直接断言**形状**：椭圆弧换算或任何一段
+/// 控制点写错，图标都会歪掉，而那从代码上完全看不出来。
+@visibleForTesting
+Path buildGitHubMarkPath() {
+  final path = Path();
+  path.moveTo(6.766, 11.328);
+  path.cubicTo(4.703, 11.078, 3.25, 9.594, 3.25, 7.672);
+  path.cubicTo(3.25, 6.891, 3.531, 6.047, 4, 5.484);
+  path.cubicTo(3.797, 4.969, 3.828, 3.875, 4.063, 3.422);
+  path.cubicTo(4.688, 3.344, 5.531, 3.672, 6.031, 4.125);
+  path.cubicTo(6.625, 3.938, 7.25, 3.844, 8.016, 3.844);
+  path.cubicTo(8.781, 3.844, 9.406, 3.938, 9.969, 4.109);
+  path.cubicTo(10.453, 3.672, 11.313, 3.344, 11.938, 3.422);
+  path.cubicTo(12.156, 3.844, 12.188, 4.937, 11.984, 5.469);
+  path.cubicTo(12.484, 6.062, 12.75, 6.859, 12.75, 7.672);
+  path.cubicTo(12.75, 9.594, 11.297, 11.047, 9.203, 11.312);
+  path.cubicTo(9.734, 11.656, 10.093, 12.406, 10.093, 13.266);
+  path.lineTo(10.093, 14.891);
+  path.cubicTo(10.093, 15.359, 10.484, 15.625, 10.953, 15.438);
+  path.cubicTo(13.781, 14.359, 16, 11.53, 16, 8.03);
+  path.cubicTo(16, 3.61, 12.406, 0, 7.984, 0);
+  path.cubicTo(3.563, 0, 0, 3.61, 0, 8.031);
+  path.cubicTo(-0.009, 11.347, 2.058, 14.314, 5.172, 15.453);
+  path.cubicTo(5.594, 15.609, 6, 15.328, 6, 14.906);
+  path.lineTo(6, 13.656);
+  path.cubicTo(5.781, 13.75, 5.5, 13.812, 5.25, 13.812);
+  path.cubicTo(4.219, 13.812, 3.61, 13.25, 3.172, 12.203);
+  path.cubicTo(3, 11.781, 2.812, 11.531, 2.453, 11.484);
+  path.cubicTo(2.266, 11.469, 2.203, 11.391, 2.203, 11.297);
+  path.cubicTo(2.203, 11.109, 2.516, 10.969, 2.828, 10.969);
+  path.cubicTo(3.281, 10.969, 3.672, 11.25, 4.078, 11.829);
+  path.cubicTo(4.391, 12.281, 4.718, 12.484, 5.109, 12.484);
+  path.cubicTo(5.5, 12.484, 5.75, 12.344, 6.109, 11.984);
+  path.cubicTo(6.375, 11.719, 6.579, 11.484, 6.766, 11.328);
+  path.close();
+  return path;
+}
+
+/// 只构建一次；顶层 final 由 Dart 惰性初始化。
+final Path _githubMarkPath = buildGitHubMarkPath();
+
+/// 把 16×16 视口里的 GitHub 标记缩放到给定尺寸后填充。
+class _GitHubMarkPainter extends CustomPainter {
+  const _GitHubMarkPainter(this.color);
+
+  final Color color;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = color
+      ..isAntiAlias = true
+      ..style = PaintingStyle.fill;
+    canvas.save();
+    // 等比缩放并居中：调用方给的是正方形，这里仍按短边算，避免非正方形时被拉扁。
+    final scale = size.shortestSide / 16.0;
+    canvas.translate(
+      (size.width - 16 * scale) / 2,
+      (size.height - 16 * scale) / 2,
+    );
+    canvas.scale(scale);
+    canvas.drawPath(_githubMarkPath, paint);
+    canvas.restore();
+  }
+
+  @override
+  bool shouldRepaint(_GitHubMarkPainter old) => old.color != color;
 }
 
 /// 最小化 / 最大化 / 关闭。图标为自绘，比默认图标更粗更大，便于点击辨认。
