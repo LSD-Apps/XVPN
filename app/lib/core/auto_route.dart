@@ -80,6 +80,33 @@ class _PendingSetback {
   String? dnsVerdict;
 }
 
+/// 一个域名的交付速率证据（尚未定性，因此还不是规则）。
+///
+/// 单独存放而不是挂在 [AutoRouteEntry] 上，理由见
+/// [AutoRouteTable.recordDeliveryRate]：条目的默认倾向是 `forceProxy`，
+/// 为了记证据而建条目会立刻生成一条强制代理规则。
+class _RateEvidence {
+  _RateEvidence({required this.createdAt});
+
+  /// 首次观察到它的时间。提升成规则时沿用，让规则的「存在多久」如实反映观察起点。
+  final DateTime createdAt;
+
+  /// 直连路径上的速率窗口。
+  final RollingMedian direct = RollingMedian();
+
+  /// 隧道路径上的速率窗口。
+  final RollingMedian proxy = RollingMedian();
+
+  /// 连续「直连偏慢」的次数。
+  int directSlowStreak = 0;
+
+  /// 连续「隧道偏慢」的次数。
+  int proxySlowStreak = 0;
+
+  /// 最近一次的可读摘要，供界面展示。
+  String? note;
+}
+
 /// 一条自动纠正规则 + 支撑它的证据。
 class AutoRouteEntry {
   AutoRouteEntry({
@@ -95,6 +122,8 @@ class AutoRouteEntry {
     this.consecutiveSuccesses = 0,
     this.proxiedBytes = 0,
     this.domesticHits = 0,
+    this.byRate = false,
+    this.rateNote,
     this.dnsVerdict,
     this.lastFailureReason,
   });
@@ -148,8 +177,26 @@ class AutoRouteEntry {
   /// 走隧道时累计的字节数。用来判断「改成代理以后确实在用」。
   int proxiedBytes;
 
-  /// 直连解析结果落在国内网段（`geoip-cn` 前缀索引内）的次数。
+  /// 这条强制代理规则是**因为交付速率偏慢**而学到的。
   ///
+  /// 必须与「因为直连失败而学到」区分开，因为两者的**回滚条件不同**：
+  ///
+  ///   * 失败学到的：直连**连不上**，因此绝不能因为隧道也慢就把它放回直连；
+  ///   * 速率学到的：直连**能连但慢**，所以若隧道同样慢，说明问题不在路径上，
+  ///     应当放回直连（省下隧道带宽）并进入冷却。
+  ///
+  /// 若不做这个区分，一次「隧道也慢」的回滚会把那些本来就连不上的域名放回直连，
+  /// 那是明确的错误。
+  bool byRate;
+
+  /// 最近一次速率判定的可读摘要，供界面展示。
+  ///
+  /// 与 [lastFailureReason] 分开：速率偏慢**不是失败**（连接成功交付了内容），
+  /// 把它记成失败原因会让界面上出现「判为直连但失败 0 次 · 速率偏慢」这种
+  /// 自相矛盾的说法。
+  String? rateNote;
+
+  /// 直连解析结果落在国内网段（`geoip-cn` 前缀索引内）的次数。  ///
   /// 这是**反方向**（把走隧道的域名改成直连）的证据，与 [directFailures] 方向相反。
   /// 之所以需要它：本程序是白名单式直连，不在 `geosite-cn` 内的域名必然进隧道，
   /// 而 `geoip-cn` 不参与域名目标的判定（见 `docs/RULES.md` 的实测）。因此
@@ -192,6 +239,8 @@ class AutoRouteEntry {
     'consecutiveSuccesses': consecutiveSuccesses,
     'proxiedBytes': proxiedBytes,
     'domesticHits': domesticHits,
+    if (byRate) 'byRate': true,
+    if (rateNote != null) 'rateNote': rateNote,
     if (dnsVerdict != null) 'dnsVerdict': dnsVerdict,
     if (lastFailureReason != null) 'lastFailureReason': lastFailureReason,
   };
@@ -226,6 +275,11 @@ class AutoRouteEntry {
       consecutiveSuccesses: (json['consecutiveSuccesses'] as num?)?.toInt() ?? 0,
       proxiedBytes: (json['proxiedBytes'] as num?)?.toInt() ?? 0,
       domesticHits: (json['domesticHits'] as num?)?.toInt() ?? 0,
+      // 旧存档没有这个键：按「不是因为速率学到的」处理。宁可让一条速率规则
+      // 享受不到回滚（最坏只是白走隧道），也不要凭一个不存在的标记把一条
+      // **因为直连失败**而学到的规则放回直连——那是明确的功能回退。
+      byRate: json['byRate'] as bool? ?? false,
+      rateNote: json['rateNote']?.toString(),
       dnsVerdict: json['dnsVerdict']?.toString(),
       lastFailureReason: json['lastFailureReason']?.toString(),
     );
@@ -621,6 +675,199 @@ class AutoRouteTable {
     }
   }
 
+  /// 记录一次交付速率观测，并在证据足够时改判路由。
+  ///
+  /// 这是继「失效」与「挂死」之后的第三种证据，补的是**「能通但很慢」**——
+  /// 前两者都是二值判据，抓不住「交付了 50 KB 却用了 30 秒」。
+  ///
+  /// ## 为什么基准是「本机整体水平」
+  ///
+  /// 绝对速率没有意义：实测本机国内基线只有 337 KB/s，而同一批测量里
+  /// github.com 的成功样本是 125–760 KB/s。因此判据是相对值——该域名相对
+  /// **全session 所有实质连接的中位数**。
+  ///
+  /// 刻意**不做**「同一域名直连 vs 隧道的跨时对比」：实测 github.com 在 40 分钟内
+  /// 从 40% 成功率变成 100%，两次测量根本不在同一条件下，那种对比得到的是
+  /// 「当时网络好不好」而不是「哪条路更适合这个域名」。
+  ///
+  /// ## 两个方向
+  ///
+  /// * 直连偏慢 → 学到 `forceProxy`（试走隧道），并标上 [AutoRouteEntry.byRate]；
+  /// * 隧道同样偏慢 → 说明问题**不在路径上**，撤销并进入冷却，
+  ///   省下隧道带宽。只有 [AutoRouteEntry.byRate] 的规则会走这一步——
+  ///   因为直连失败而学到的规则**绝不能**放回直连。
+  ///
+  /// [now] 可注入，便于测试冷却与窗口语义。
+  AutoRouteDecision? recordDeliveryRate(
+    String host, {
+    required bool direct,
+    required int bytes,
+    required Duration duration,
+    DateTime? now,
+  }) {
+    // 样本不够格：不计入统计也不下结论。
+    if (!policy.isRateSampleMeaningful(bytes)) return null;
+    final rate = LearningPolicy.bytesPerSecond(bytes, duration);
+    if (rate == null) return null;
+
+    final domain = normalizeDomain(host);
+    if (domain.isEmpty) return null;
+    final at = now ?? DateTime.now();
+
+    // 本机整体水平：全session、两条路径都算。用中位数以抗住单次异常样本。
+    _linkRates.add(rate);
+
+    final evidence = _rateEvidence.putIfAbsent(
+      domain,
+      () => _RateEvidence(createdAt: at),
+    );
+    final window = direct ? evidence.direct : evidence.proxy;
+    window.add(rate);
+
+    final existing = _exact[domain];
+
+    // 用户已经指定过走向：只记证据，不改写。
+    if (existing != null && existing.source == RouteRuleSource.user) {
+      return null;
+    }
+
+    final verdict = policy.judgeDeliveryRate(
+      domainMedian: window.median,
+      linkMedian: _linkRates.median,
+      linkSamples: _linkRates.length,
+    );
+    // 连续计数：只有**连续**偏慢或**连续**正常才改变状态，
+    // 中间插进一个正常样本就清零（与失败/成功的连续计数同一套迟滞思想）。
+    if (verdict == RateVerdict.slow) {
+      if (direct) {
+        evidence.directSlowStreak++;
+      } else {
+        evidence.proxySlowStreak++;
+      }
+    } else if (verdict == RateVerdict.healthy) {
+      if (direct) {
+        evidence.directSlowStreak = 0;
+      } else {
+        evidence.proxySlowStreak = 0;
+      }
+    }
+
+    final linkMedian = _linkRates.median;
+    final domainMedian = window.median;
+    final note = _rateNote(
+      direct: direct,
+      domainMedian: domainMedian,
+      linkMedian: linkMedian,
+    );
+    evidence.note = note;
+
+    // 方向一：隧道上同样偏慢 → 问题不在路径上，放回直连并冷却。
+    // 只对**因为速率**学到的规则这样做：因为直连失败而学到的规则放回直连
+    // 是明确的错误（它在那里连不上）。
+    if (!direct &&
+        existing != null &&
+        existing.byRate &&
+        existing.preference == RoutePreference.forceProxy &&
+        evidence.proxySlowStreak >= policy.slowSamplesNeeded) {
+      _uninstall(domain);
+      _rateRetryAt[domain] = at;
+      _pruneRateRetry(now: at);
+      return AutoRouteDecision(
+        domain: domain,
+        added: false,
+        reason: '隧道上交付速率同样偏慢，已放回直连（问题不在路径上）',
+      );
+    }
+
+    // 方向二：直连持续偏慢 → 试走隧道。
+    if (direct &&
+        evidence.directSlowStreak >= policy.slowSamplesNeeded &&
+        policy.rateTrialAllowed(
+          now: at,
+          lastTrialAt: _rateRetryAt[domain],
+        )) {
+      final promoted = AutoRouteEntry(
+        domain: domain,
+        preference: RoutePreference.forceProxy,
+        source: RouteRuleSource.learned,
+        createdAt: existing?.createdAt ?? evidence.createdAt,
+        lastHitAt: at,
+        directFailures: existing?.directFailures ?? 0,
+        directSuccesses: existing?.directSuccesses ?? 0,
+        stalls: existing?.stalls ?? 0,
+        consecutiveFailures: existing?.consecutiveFailures ?? 0,
+        consecutiveSuccesses: existing?.consecutiveSuccesses ?? 0,
+        proxiedBytes: existing?.proxiedBytes ?? 0,
+        domesticHits: existing?.domesticHits ?? 0,
+        byRate: true,
+        rateNote: note,
+        dnsVerdict: existing?.dnsVerdict,
+        lastFailureReason: existing?.lastFailureReason,
+      );
+      _install(promoted);
+      return AutoRouteDecision(
+        domain: domain,
+        added: true,
+        reason:
+            '连续 ${evidence.directSlowStreak} 次直连交付速率明显偏低，已试走隧道',
+        entry: promoted,
+      );
+    }
+
+    // 证据还不够：只更新展示用的摘要，**不建规则**。
+    if (existing != null) {
+      existing.rateNote = note;
+      _install(existing);
+    }
+    return null;
+  }
+
+  /// 速率判定的可读摘要，供界面展示。
+  static String? _rateNote({
+    required bool direct,
+    required double? domainMedian,
+    required double? linkMedian,
+  }) {
+    if (domainMedian == null || linkMedian == null) return null;
+    final path = direct ? '直连' : '隧道';
+    // 显示时换算成 KB/s：内部用字节/秒，而界面上的量级用 KB 更好读。
+    return '$path交付速率 ≈ ${(domainMedian / 1024).round()} KB/s'
+        '（本机中位 ${(linkMedian / 1024).round()} KB/s）';
+  }
+
+  /// 冷却表：某个域名上次「试走隧道后回滚」的时刻。
+  ///
+  /// 只在内存里：它的唯一用途是防止短时间内的来回横跳，跨重启保留没有意义
+  /// （重启本身就是一次重置，而用户也不会在几秒内重启）。
+  final Map<String, DateTime> _rateRetryAt = <String, DateTime>{};
+
+  /// 尚未定性、也还不是规则的交付速率证据。
+  ///
+  /// 与 [_pendingSetbacks] 同一个理由单独存放：`AutoRouteEntry` 的默认
+  /// `preference` 是 `forceProxy`，为了记证据而建条目会立刻生成一条强制代理规则，
+  /// 于是「连续 3 次偏慢才试走隧道」就变成了「1 次就生效」。
+  final Map<String, _RateEvidence> _rateEvidence = <String, _RateEvidence>{};
+
+  /// 冷却表的容量上限。达到上限时清掉已过冷期的条目。
+  static const int maxRateRetryEntries = 200;
+
+  /// 清掉已经过了冷期的条目，避免只增不减。
+  void _pruneRateRetry({required DateTime now}) {
+    if (_rateRetryAt.length < maxRateRetryEntries) return;
+    _rateRetryAt.removeWhere(
+      (String _, DateTime at) => now.difference(at) >= policy.rateRetryCooldown,
+    );
+  }
+
+  /// 本机整体交付速率水平（全session、两条路径的中位数）。
+  ///
+  /// 这是「偏慢」的基准。用中位数而不是均值：一次 3 秒超时能把均值拉低一倍以上，
+  /// 而中位数几乎不受影响——与 DNS 监测的耗时统计同一条理由。
+  final RollingMedian _linkRates = RollingMedian(capacity: 64);
+
+  /// 当前的基准值（字节/秒）。尚未建立时为 null。
+  double? get linkRateReference => _linkRates.median;
+
   /// 记录一次「判为直连且**确实交付了内容**」。
   ///
   /// 返回 bool 而不是 void 是为了让上层能正确地去重：只有**确实记录成功**时
@@ -913,6 +1160,9 @@ class AutoRouteTable {
     // 未定性的证据也是程序学来的，一并丢弃——「恢复内置规则」的意思是回到出厂
     // 判断，而不是保留一半观察。
     _pendingSetbacks.clear();
+    _rateEvidence.clear();
+    _rateRetryAt.clear();
+    _linkRates.clear();
     return removed;
   }
 
@@ -921,6 +1171,10 @@ class AutoRouteTable {
     _suffixBuckets.clear();
     _domesticStreak.clear();
     _pendingSetbacks.clear();
+    // 速率证据与基准也是运行中观察到的，一并清掉。
+    _rateEvidence.clear();
+    _rateRetryAt.clear();
+    _linkRates.clear();
   }
 
   /// 需要落盘的条目。

@@ -730,6 +730,26 @@ class CoreMonitor {
         case DirectOutcome.pending:
           break;
       }
+
+      // 交付速率是**独立的第三种证据**：它回答「能通，但够快吗」。
+      // 与上面三种质量判定并列而不是替代——一条连接可以「确实交付了」却
+      // 慢到用户能察觉（实测有 448 KB 用了 12 秒的样本）。
+      //
+      // 不走限流：速率要看的是同一路径上的多次采样，把它们折成一次反而
+      // 让中位数失去意义。样本够不够格由策略的字节/时长下限把关。
+      final alive = trace.alive;
+      if (alive > Duration.zero) {
+        final decision = table.recordDeliveryRate(
+          trace.host,
+          direct: trace.direct,
+          bytes: trace.bytes,
+          duration: alive,
+          now: now,
+        );
+        if (decision != null && decision.added) {
+          hooks.listener.onAutoRouteLearned(decision);
+        }
+      }
     }
   }
 

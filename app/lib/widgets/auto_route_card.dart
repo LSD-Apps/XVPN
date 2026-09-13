@@ -514,6 +514,9 @@ class _AutoRouteCardState extends State<AutoRouteCard> {
     final parts = <String>[
       if (entry.directFailures > 0) '判为直连但失败 ${entry.directFailures} 次',
       if (entry.stalls > 0) '握手成功但没有数据 ${entry.stalls} 次',
+      // 速率证据单独成句：它**不是失败**（连接成功交付了内容），
+      // 只是慢。混进「失败」那句会让界面自相矛盾。
+      if (entry.rateNote != null) entry.rateNote!,
       if (entry.lastFailureReason != null) entry.lastFailureReason!,
       if (entry.proxiedBytes > 0)
         '已走隧道 ${(entry.proxiedBytes / 1024).round()} KB',

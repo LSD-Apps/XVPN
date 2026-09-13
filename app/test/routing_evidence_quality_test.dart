@@ -515,6 +515,200 @@ void main() {
       expect(entry.consecutiveFailures, 0);
     });
   });
+  group('交付速率：提升、回滚与冷却', () {
+    /// 造一次速率观测。1 MB / 1 秒 = 1 MB/s（健康）；200 KB / 20 秒 = 10 KB/s（偏慢）。
+    /// 两者都远超 64 KB 的字节下限，因此都会计入统计。
+    void feed(
+      AutoRouteTable table,
+      String host, {
+      required bool direct,
+      required int bytes,
+      required int seconds,
+      DateTime? now,
+    }) {
+      table.recordDeliveryRate(
+        host,
+        direct: direct,
+        bytes: bytes,
+        duration: Duration(seconds: seconds),
+        now: now,
+      );
+    }
+
+    void feedHealthyLink(AutoRouteTable table, {int count = 8}) {
+      for (var i = 0; i < count; i++) {
+        feed(table, 'healthy-$i.example', direct: true, bytes: 1024 * 1024, seconds: 1);
+      }
+    }
+
+    test('只有速率证据时不建规则（阈值不能被绕过）', () {
+      final table = AutoRouteTable();
+      feed(table, 'slow.example', direct: true, bytes: 200 * 1024, seconds: 20);
+
+      expect(
+        table.match('slow.example'),
+        isNull,
+        reason: '一次偏慢不该产生规则——否则「连续 3 次」形同虚设',
+      );
+      expect(table.toJson(), isEmpty, reason: '配置文件里也不该出现它');
+    });
+
+    test('基准未建立时不下结论', () {
+      final table = AutoRouteTable();
+      // 只喂 2 个基准样本（阈值是 5），再给目标 5 次偏慢。
+      for (var i = 0; i < 2; i++) {
+        feed(table, 'h-$i.example', direct: true, bytes: 1024 * 1024, seconds: 1);
+      }
+      for (var i = 0; i < 5; i++) {
+        feed(table, 'slow.example', direct: true, bytes: 200 * 1024, seconds: 20);
+      }
+      expect(
+        table.match('slow.example'),
+        isNull,
+        reason: '拿几个样本当基准，会把「今天没跑过大传输」误判成「所有站点都慢」',
+      );
+    });
+
+    test('直连连续偏慢达到阈值 → 试走隧道，且标记为速率证据', () {
+      final table = AutoRouteTable();
+      feedHealthyLink(table);
+      for (var i = 0; i < 3; i++) {
+        feed(table, 'slow.example', direct: true, bytes: 200 * 1024, seconds: 20);
+      }
+
+      final entry = table.match('slow.example');
+      expect(entry, isNotNull);
+      expect(entry!.preference, RoutePreference.forceProxy);
+      expect(
+        entry.byRate,
+        isTrue,
+        reason: '必须与「因为直连失败而学到」区分开：两者的回滚条件不同',
+      );
+      expect(entry.rateNote, contains('KB/s'));
+    });
+
+    test('偏慢与健康交替时不提升（迟滞由「连续」提供）', () {
+      final table = AutoRouteTable();
+      feedHealthyLink(table);
+      for (var round = 0; round < 3; round++) {
+        feed(table, 'mixed.example', direct: true, bytes: 200 * 1024, seconds: 20);
+        feed(table, 'mixed.example', direct: true, bytes: 1024 * 1024, seconds: 1);
+      }
+      expect(
+        table.match('mixed.example'),
+        isNull,
+        reason: '中途插进一个正常样本就清零，因此攒不满阈值',
+      );
+    });
+
+    test('隧道上同样偏慢 → 放回直连并进入冷却', () {
+      final table = AutoRouteTable();
+      feedHealthyLink(table);
+      for (var i = 0; i < 3; i++) {
+        feed(table, 'both-slow.example', direct: true, bytes: 200 * 1024, seconds: 20);
+      }
+      expect(table.match('both-slow.example')!.preference, RoutePreference.forceProxy);
+
+      // 隧道上三次同样偏慢 → 说明问题不在路径上。
+      AutoRouteDecision? revert;
+      for (var i = 0; i < 3; i++) {
+        revert = table.recordDeliveryRate(
+          'both-slow.example',
+          direct: false,
+          bytes: 200 * 1024,
+          duration: const Duration(seconds: 20),
+        );
+      }
+      expect(
+        table.match('both-slow.example'),
+        isNull,
+        reason: '两条路都慢说明不是路径问题，应放回直连（省下隧道带宽）',
+      );
+      expect(revert!.reason, contains('问题不在路径上'));
+    });
+
+    test('冷却期内不会立刻又试一次（防止来回横跳）', () {
+      final table = AutoRouteTable();
+      final t0 = DateTime(2026, 9, 13, 12);
+      for (var i = 0; i < 8; i++) {
+        feed(table, 'h-$i.example', direct: true, bytes: 1024 * 1024, seconds: 1, now: t0);
+      }
+      for (var i = 0; i < 3; i++) {
+        feed(table, 'churn.example', direct: true, bytes: 200 * 1024, seconds: 20, now: t0);
+      }
+      expect(table.match('churn.example')!.byRate, isTrue);
+
+      for (var i = 0; i < 3; i++) {
+        feed(table, 'churn.example', direct: false, bytes: 200 * 1024, seconds: 20, now: t0);
+      }
+      expect(table.match('churn.example'), isNull, reason: '已回滚');
+
+      // 冷却期内：即使直连仍偏慢，也不该马上再上隧道。
+      feed(table, 'churn.example', direct: true, bytes: 200 * 1024, seconds: 20, now: t0);
+      expect(
+        table.match('churn.example'),
+        isNull,
+        reason: '没有冷却就会「直连慢→上隧道→隧道也慢→回直连→又上隧道」',
+      );
+
+      // 冷却期满后允许重试。
+      final later = t0.add(const Duration(minutes: 31));
+      feed(table, 'churn.example', direct: true, bytes: 200 * 1024, seconds: 20, now: later);
+      expect(table.match('churn.example')!.byRate, isTrue);
+    });
+
+    test('因为直连失败而学到的规则绝不被「隧道偏慢」放回直连', () {
+      // 这是 byRate 这个标记存在的唯一理由。若不做区分，一个在直连上
+      // **连不上**的域名会因为隧道也慢而被放回直连——那是明确的功能回退。
+      final table = AutoRouteTable();
+      for (var i = 0; i < 3; i++) {
+        table.recordDirectFailure('unreachable.example', reason: '连接超时');
+      }
+      final entry = table.match('unreachable.example')!;
+      expect(entry.preference, RoutePreference.forceProxy);
+      expect(entry.byRate, isFalse);
+
+      feedHealthyLink(table);
+      for (var i = 0; i < 5; i++) {
+        feed(table, 'unreachable.example', direct: false, bytes: 200 * 1024, seconds: 20);
+      }
+      expect(
+        table.match('unreachable.example')?.preference,
+        RoutePreference.forceProxy,
+        reason: '它在直连上连不上，绝不能因为隧道慢就放回去',
+      );
+    });
+
+    test('用户指定的走向不被速率证据改写', () {
+      final table = AutoRouteTable()
+        ..setUserRule('mine.example', RoutePreference.forceDirect);
+      feedHealthyLink(table);
+      for (var i = 0; i < 5; i++) {
+        feed(table, 'mine.example', direct: true, bytes: 200 * 1024, seconds: 20);
+      }
+      final entry = table.match('mine.example')!;
+      expect(entry.preference, RoutePreference.forceDirect);
+      expect(entry.source, RouteRuleSource.user);
+    });
+
+    test('「恢复内置规则」会清掉速率证据与基准', () {
+      final table = AutoRouteTable();
+      feedHealthyLink(table);
+      for (var i = 0; i < 3; i++) {
+        feed(table, 'slow.example', direct: true, bytes: 200 * 1024, seconds: 20);
+      }
+      expect(table.match('slow.example'), isNotNull);
+      expect(table.linkRateReference, isNotNull);
+
+      table.removeLearned();
+      expect(table.match('slow.example'), isNull);
+      expect(
+        table.linkRateReference,
+        isNull,
+        reason: '基准也是运行中观察到的，应当一并丢弃',
+      );
+    });
+  });
 }
 
 /// 按顺序返回一批响应体，用来模拟「连接先出现、后关闭」这种跨轮次变化。

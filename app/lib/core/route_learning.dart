@@ -119,6 +119,65 @@ enum EvidenceKind {
   delivery,
 }
 
+/// 一个域名的交付速率相对本机整体水平的结论。
+enum RateVerdict {
+  /// 样本不足或基准未建立，不下结论。
+  ///
+  /// 与 [DirectOutcome.pending] 同一条原则：拿不准时不下结论，
+  /// 比下错结论安全。
+  insufficient,
+
+  /// 与该域名自身的其他观测处在同一水平：没有理由改路由。
+  healthy,
+
+  /// 明显偏慢（低于基准的 [LearningPolicy.slowFraction]）。
+  slow,
+}
+
+/// 滚动窗口的中位数。
+///
+/// 与 `dns_monitor.dart` 的 `LatencyWindow` 是同一个思路（**中位数而不是均值**：
+/// 一次 3 秒超时能把均值从 20ms 拉到 100ms 以上，而中位数几乎不受影响），
+/// 但刻意不复用那个类——它属于 DNS 监测的词汇，而学习模块不该依赖 DNS 层。
+///
+/// 容量取小（默认 16）：这里要回答的是「这个域名**现在**快不快」，
+/// 而不是「它历史上平均多快」。窗口过大时，一个已经变慢的域名会因为
+/// 旧的好样本而迟迟不被判定。
+class RollingMedian {
+  RollingMedian({this.capacity = 16}) : assert(capacity > 0);
+
+  final int capacity;
+
+  final List<double> _samples = <double>[];
+
+  int get length => _samples.length;
+
+  bool get isEmpty => _samples.isEmpty;
+
+  bool get isNotEmpty => _samples.isNotEmpty;
+
+  void add(double value) {
+    if (value.isNaN || value.isInfinite || value < 0) return;
+    _samples.add(value);
+    while (_samples.length > capacity) {
+      _samples.removeAt(0);
+    }
+  }
+
+  /// 中位数。窗口为空时返回 null。
+  double? get median {
+    if (_samples.isEmpty) return null;
+    final sorted = List<double>.of(_samples)..sort();
+    final mid = sorted.length ~/ 2;
+    return sorted.length.isOdd
+        ? sorted[mid]
+        : (sorted[mid - 1] + sorted[mid]) / 2;
+  }
+
+  void clear() => _samples.clear();
+}
+
+
 /// 学习策略：所有阈值、判据与限流参数都在这里。
 ///
 /// 集中在一处是本模块的主要目的——在此之前它们横跨两个文件。
@@ -134,6 +193,11 @@ class LearningPolicy {
     this.decayAfter = const Duration(days: 14),
     this.maxPendingEvidence = 200,
     this.maxOutcomeLog = 2000,
+    this.minRateSampleBytes = 64 * 1024,
+    this.minReferenceSamples = 5,
+    this.slowFraction = 0.25,
+    this.slowSamplesNeeded = 3,
+    this.rateRetryCooldown = const Duration(minutes: 30),
   }) : assert(capacity > 0),
        assert(promotionThreshold > 0),
        assert(revokeSuccessThreshold > 0);
@@ -203,6 +267,107 @@ class LearningPolicy {
 
   /// 限流表的容量上限。超出即整体清空，理由同上。
   final int maxOutcomeLog;
+
+  // ---------------------------------------------------------------- 交付速率
+  //
+  // 为什么需要「速率」这一维度：**二值判据抓不住「能通但很慢」**。
+  // 一条连接交付了 50 KB 却用了 30 秒，在 [classifyDirectConnection] 里
+  // 算「确实交付」——它确实交付了，只是慢到用户能察觉。
+  //
+  // 为什么阈值必须是**相对**的：绝对速率没有意义。实测本机国内基线也只有
+  // 337 KB/s，而同一批测量里 github.com 的成功样本是 125–760 KB/s。
+  // 因此判据是「相对本机整体水平」而不是「相对某个绝对值」。
+
+  /// 一条连接要被计入速率统计，至少需交付这么多字节。
+  ///
+  /// 取 64 KB 的依据：更小的传输由 TCP 慢启动与往返时延主导，算出来的速率反映的是
+  /// 握手过程而不是链路水平。实测里 270 字节的响应（raw 的完整文件）因此被排除在
+  /// 外——那是正确行为，不是损失。
+  ///
+  /// **只需要字节下限，不需要时长下限。** 一开始我加了「至少存活 1 秒」，但测试
+  /// 立刻暴露出它的问题：实测里 github.com 的一个**好样本**是 577 KB / 764 ms
+  /// （755 KB/s），它会被那道时长下限滤掉——而它正是应该用来**清除偏慢计数**的
+  /// 正面证据。而它的保护作用是多余的：速率低本身就蕴含了时长长
+  /// （2 KB/s 传 64 KB 必然用了 32 秒），不需要另设门槛。
+  final int minRateSampleBytes;
+
+  /// 建立「本机整体水平」这个基准至少需要多少个样本。
+  ///
+  /// 基准没建立之前不下任何结论：拿几个样本当基准，会把「今天恰好没跑过
+  /// 大传输」误判成「所有站点都慢」。
+  final int minReferenceSamples;
+
+  /// 低于基准的这个比例即视为「偏慢」。
+  ///
+  /// 取 1/4：实测里同一次 github.com 的两次成功交付相差 20 倍
+  /// （0.76 秒/577 KB 与 12.0 秒/448 KB），因此阈值必须留出足够宽的间隔，
+  /// 否则正常的抖动就会被判成偏慢。
+  ///
+  /// **这是本次引入里最需要现场校准的一个数**：它决定「多慢算慢」，
+  /// 而我没有条件在真实坏窗口里标定它。宁可取保守（偏大间隔、偏慢才触发）。
+  final double slowFraction;
+
+  /// 直连路径上**连续**多少次偏慢才改判走隧道。
+  ///
+  /// 与 [promotionThreshold] 同一个理由：单次偏慢可能只是那一次传输的偶然，
+  /// 而一次误判会把域名推上隧道、白耗隧道带宽。
+  final int slowSamplesNeeded;
+
+  /// 一次「试走隧道但隧道同样慢」之后，多久内不再重试。
+  ///
+  /// 这个冷却期的存在是为了**防止来回横跳**：若没有它，直连偏慢 → 上隧道 →
+  /// 隧道也偏慢 → 回直连 → 直连仍偏慢 → 又上隧道……用户看到的是分流反复变化。
+  ///
+  /// 用时间而不是「次数」做冷却，是因为它天然衰减、不需要额外的清理逻辑——
+  /// 与本项目其它衰减策略（`decayAfter`）保持一致。
+  final Duration rateRetryCooldown;
+
+  /// 一条连接的交付速率（字节/秒）。时长非正时返回 null。
+  static double? bytesPerSecond(int bytes, Duration duration) {
+    if (bytes <= 0) return null;
+    final seconds = duration.inMicroseconds / Duration.microsecondsPerSecond;
+    if (seconds <= 0) return null;
+    return bytes / seconds;
+  }
+
+  /// 这次观测是否够格计入速率统计。见 [minRateSampleBytes]。
+  bool isRateSampleMeaningful(int bytes) => bytes >= minRateSampleBytes;
+
+  /// 判断一个域名的交付速率相对本机整体水平是否偏慢。
+  ///
+  /// 纯函数：两个中位数与基准样本数进，结论出。因此阈值语义可以逐条直测，
+  /// 不需要构造路由表、也不需要伪造网络。
+  ///
+  /// **刻意不设「该域名至少要有 N 个样本」这道门槛。** 一开始我加了它（要求
+  /// `domainSamples >= slowSamplesNeeded`），结果与调用方的**连续计数**重复计了
+  /// 一遍「3 次」：判据要 3 个样本才肯给结论，而连续计数又要 3 次偏慢，于是实际
+  /// 需要 5 次样本才提升，与文档写的「连续 3 次」不符。测试当场撞出来了。
+  ///
+  /// 现在样本数量的要求由连续计数**独自**承担——「连续 3 次偏慢」必然意味着
+  /// 至少 3 个样本。判据只负责回答「这一次看起来偏慢吗」。
+  RateVerdict judgeDeliveryRate({
+    required double? domainMedian,
+    required double? linkMedian,
+    required int linkSamples,
+  }) {
+    // 基准未建立，或该域名还没有任何样本 → 不下结论。
+    if (linkSamples < minReferenceSamples) return RateVerdict.insufficient;
+    if (domainMedian == null || linkMedian == null) {
+      return RateVerdict.insufficient;
+    }
+    if (linkMedian <= 0) return RateVerdict.insufficient;
+    return domainMedian < linkMedian * slowFraction
+        ? RateVerdict.slow
+        : RateVerdict.healthy;
+  }
+
+  /// 此刻是否允许发起一次「试走隧道」。
+  ///
+  /// 冷却期的唯一用途是防止直连/隧道之间来回横跳，见 [rateRetryCooldown]。
+  bool rateTrialAllowed({required DateTime now, required DateTime? lastTrialAt}) {
+    if (lastTrialAt == null) return true;
+    return now.difference(lastTrialAt) >= rateRetryCooldown;
+  }
 
   /// 一次「直连没有交付」适用的阈值。
   ///
