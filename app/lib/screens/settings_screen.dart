@@ -4,9 +4,9 @@ import 'package:flutter/material.dart';
 import '../app_state.dart';
 import '../theme.dart';
 import '../theme_controller.dart';
-import '../version.dart';
 import '../widgets/common.dart';
 import '../widgets/update_card.dart';
+import 'licenses_dialog.dart';
 import 'profiles_screen.dart';
 
 /// 设置页。每一项都有合理默认值，不改也能正常用。
@@ -251,12 +251,13 @@ class SettingsScreen extends StatelessWidget {
   /// 关于：应用内读到许可全文的唯一入口。
   ///
   /// 此前分发物里一直带着 LICENSE / NOTICE.md，但应用内没有任何入口，用户
-  /// 实际上读不到——「随包分发」不等于「可见」。这里用 Material 的
-  /// [showLicensePage]：它会聚合 Flutter 自动生成的依赖许可，以及
-  /// `registerBundledLicenses()` 注册的本项目许可、第三方声明与内核静态依赖。
+  /// 实际上读不到——「随包分发」不等于「可见」。
   ///
-  /// 版本号取自 `version.dart`，与「设置页侧栏底部」显示的是同一个值，
-  /// 因此许可页不会出现与安装包对不上的版本。
+  /// 这里打开的是本项目的自绘许可视图（`licenses_dialog.dart`），不是 Material
+  /// 的 `showLicensePage`：后者自带 AppBar 与 Material 配色，而本应用是无 AppBar
+  /// 的自绘标题栏界面，放进来像另一个程序。条目来源仍是 `LicenseRegistry`，即
+  /// Flutter 自动聚合的依赖许可，加上 `registerBundledLicenses()` 注册的本项目
+  /// 许可、第三方声明与内核静态依赖——仍然是**一份动态清单**，没有任何硬编码。
   Widget _buildAboutCard(BuildContext context, {required bool compact}) {
     return XvCard(
       color: compact ? XV.panel2 : XV.panel,
@@ -283,14 +284,7 @@ class SettingsScreen extends StatelessWidget {
   }
 
   void _openLicenses(BuildContext context) {
-    showLicensePage(
-      context: context,
-      applicationName: 'XVPN',
-      applicationVersion: appVersion,
-      applicationLegalese:
-          'Copyright (C) 2026 LUSIDA（Start）\n'
-          'SPDX-License-Identifier: GPL-3.0-or-later',
-    );
+    showLicensesDialog(context);
   }
 
   // ---------------------------------------------------------------- 移动端
