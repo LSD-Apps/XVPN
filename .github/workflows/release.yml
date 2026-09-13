@@ -536,11 +536,40 @@ jobs:
           # “failed to run git: fatal: not a git repository”）。
           # 这里显式用 GITHUB_REPOSITORY 指定，避免为此多做一次完整检出。
           REPO="$GITHUB_REPOSITORY"
+
+          # GitHub 的 releases 接口会偶发 5xx。本项目首次发布时就撞上了：
+          # 三端产物全部构建成功，最后创建 release 时返回 `HTTP 500`，整个发布
+          # 因此失败——而这是**服务端瞬时错误**，重试即可。前面几十分钟的构建
+          # 不该被一次 5xx 白白抵掉，因此这里对网络类失败做退避重试。
+          #
+          # 只重试、不吞错：重试次数用尽仍然失败，脚本以非零退出，发布照样是红的，
+          # 不会被伪装成成功。
+          retry() {
+            local attempt=1
+            local max=4
+            while true; do
+              if "$@"; then
+                return 0
+              fi
+              if [ "$attempt" -ge "$max" ]; then
+                echo "::error::重试 $max 次后仍失败：$*"
+                return 1
+              fi
+              local wait_secs=$((attempt * 10))
+              echo "第 $attempt 次失败，${wait_secs}s 后重试：$*"
+              sleep "$wait_secs"
+              attempt=$((attempt + 1))
+            done
+          }
+
           # 幂等：已存在只覆盖附件，不存在才新建。--clobber 让重跑不会失败。
           if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
             echo "Release $TAG 已存在，更新附件。"
           else
-            gh release create "$TAG" --repo "$REPO" \
+            # --verify-tag：要求 tag **已存在**，避免 gh 尝试创建 tag（本任务没有
+            # checkout 仓库、工作区里没有 .git，创建 tag 会需要 git 上下文）。
+            # tag 由推送触发本流水线的那一步创建，因此它必然已存在。
+            retry gh release create "$TAG" --repo "$REPO" --verify-tag \
               --title "XVPN $VER" \
               --notes "XVPN $VER
 
@@ -561,4 +590,4 @@ jobs:
 
           应用内「检查更新」读取本 Release 的附件，因此请勿重命名。"
           fi
-          gh release upload "$TAG" dist/*.zip dist/*.apk dist/SHA256SUMS.txt --clobber --repo "$REPO"
+          retry gh release upload "$TAG" dist/*.zip dist/*.apk dist/SHA256SUMS.txt --clobber --repo "$REPO"
