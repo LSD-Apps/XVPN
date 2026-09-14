@@ -816,6 +816,9 @@ String buildWindowsRelaunchScript({
 function Write-Log(\$message) {
   "\$(Get-Date -Format o) \$message" | Out-File -LiteralPath ${_psQuote(log)} -Append -Encoding utf8
 }
+# 成功与否决定 finally 里清什么。初值 false：任何未走到「重新启动」的路径都按
+# 失败处理——宁可多留一个安装包，也不要让用户以为已经更新好了。
+\$ok = \$false
 try {
   Write-Log '等待主程序退出'
   Wait-Process -Id $pid -ErrorAction SilentlyContinue
@@ -834,6 +837,7 @@ try {
 $copyStep
   Write-Log '重新启动'
   Start-Process -FilePath ${_psQuote(launchPath)} -WorkingDirectory ${_psQuote(installDir)}
+  \$ok = \$true
 } catch {
   Write-Log "更新失败：\$_"
   # 失败也不能让用户没有程序可用：至少把旧版本重新拉起来。
@@ -841,11 +845,20 @@ $copyStep
     Start-Process -FilePath ${_psQuote(launchPath)} -WorkingDirectory ${_psQuote(installDir)}
   } catch { }
 } finally {
-  # 只清中间产物，**保留日志**：提权那条路上用户点了「否」时，日志是他事后
-  # 唯一能查到原因的入口（`UpdateInstallStarted.logPath` 指向的就是它）。
+  # 解压目录是中间产物，两种结果下都没有保留价值。
   Remove-Item -LiteralPath ${_psQuote(extract)} -Recurse -Force -ErrorAction SilentlyContinue
-  Remove-Item -LiteralPath ${_psQuote(archivePath)} -Force -ErrorAction SilentlyContinue
-  Remove-Item -LiteralPath \$PSCommandPath -Force -ErrorAction SilentlyContinue
+  if (\$ok) {
+    # 成功：安装包与脚本都已无用。（脚本自己也一并删掉。）
+    Remove-Item -LiteralPath ${_psQuote(archivePath)} -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath \$PSCommandPath -Force -ErrorAction SilentlyContinue
+  } else {
+    # 失败：**保留安装包与日志**。
+    #   * 安装包已下载并校验过，用户还能在更新界面点「重试安装」，或按界面显示的
+    #     路径自行解压覆盖——删掉它等于把唯一的出路一起删了；
+    #   * 日志是事后唯一能查到原因的入口（提权那条路上用户点了「否」时尤其如此）。
+    ${_psLogWithPath('已保留安装包：', archivePath)}
+    ${_psLogWithPath('日志：', log)}
+  }
 }
 ''';
 }
@@ -903,6 +916,13 @@ List<String> windowsRelaunchCommand(String scriptPath) => <String>[
 /// 与 Windows 同样的顺序要求；解压交给系统自带的 `unzip`（脚本所在的暂存
 /// 目录是应用自己创建的，因此不需要任何特权）。
 ///
+/// **每一步都必须检查退出码**。`cp` 失败（只读挂载、文件被占用、磁盘满）若不
+/// 检查就会继续往下走、并声称「重新启动」成功——把失败当成功是这一类脚本最坏
+/// 的形态：用户以为已经更新，而安装目录可能正被替换成一半。
+///
+/// **失败时保留安装包与日志**：包已下载并校验过，用户还能重试或自行解压覆盖；
+/// 日志是事后唯一能查到原因的入口。只有成功才清理。
+///
 /// **已知限制**：如果应用被安装在只读的系统目录（`/usr/bin`、`/usr/lib`……），
 /// 覆盖会失败；[DesktopUpdateInstaller] 在启动脚本前会先做写权限探测并如实
 /// 拒绝，而不是留下一个坏掉的安装。
@@ -920,6 +940,20 @@ String buildLinuxRelaunchScript({
 LOG=${_shQuote(log)}
 log() { printf '%s %s\\n' "\$(date '+%Y-%m-%dT%H:%M:%S')" "\$1" >> "\$LOG"; }
 
+ARCHIVE=${_shQuote(archivePath)}
+INSTALL=${_shQuote(installDir)}
+
+# 统一的中止路径：记日志、保留安装包、把旧版本拉起来，然后以非零码退出。
+# 抽成函数是因为它有四五个调用点，而其中任何一处漏掉「保留安装包」都会让用户
+# 在更新失败后既没有新版本、也找不到可手动安装的包。
+fail() {
+  log "更新失败：\$1"
+  log "已保留安装包：\$ARCHIVE"
+  log "日志：\$LOG"
+  ${_shQuote(launchPath)} >/dev/null 2>&1 &
+  exit 1
+}
+
 log '等待主程序退出'
 while kill -0 $pid 2>/dev/null; do
   sleep 1
@@ -932,26 +966,27 @@ mkdir -p "\$EXTRACT"
 
 log '解压安装包'
 if command -v unzip >/dev/null 2>&1; then
-  unzip -o -q ${_shQuote(archivePath)} -d "\$EXTRACT" >> "\$LOG" 2>&1
+  unzip -o -q "\$ARCHIVE" -d "\$EXTRACT" >> "\$LOG" 2>&1 \\
+    || fail 'unzip 解压失败（详见日志）'
 else
-  log '系统里没有 unzip，无法自动解压；请手动解压安装包并覆盖安装目录'
+  fail '系统里没有 unzip，无法自动解压；请手动解压安装包并覆盖安装目录'
 fi
 
 if [ ! -f "\$EXTRACT/xvpn" ]; then
-  log '解压结果里没有 xvpn，已取消替换'
-  ${_shQuote(launchPath)} >/dev/null 2>&1 &
-  exit 1
+  fail '解压结果里没有 xvpn，已取消替换'
 fi
 
 log '覆盖安装目录'
-cp -a "\$EXTRACT/." ${_shQuote(installDir)}/ >> "\$LOG" 2>&1
-chmod +x ${_shQuote(installDir)}/xvpn 2>/dev/null || true
-chmod +x ${_shQuote(installDir)}/sing-box 2>/dev/null || true
+cp -a "\$EXTRACT/." "\$INSTALL/" >> "\$LOG" 2>&1 \\
+  || fail '覆盖安装目录失败（权限、只读挂载或文件被占用）'
+chmod +x "\$INSTALL/xvpn" 2>/dev/null || true
+chmod +x "\$INSTALL/sing-box" 2>/dev/null || true
 
 log '重新启动'
 ${_shQuote(launchPath)} >/dev/null 2>&1 &
 
-rm -f ${_shQuote(archivePath)}
+# 走到这里才算成功：清理中间产物与安装包。
+rm -f "\$ARCHIVE"
 rm -rf "\$EXTRACT"
 rm -f "\$0"
 ''';

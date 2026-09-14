@@ -1022,6 +1022,27 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
     // 预置只在存档里存了 id，域名清单属于程序版本，因此每次启动重新安装。
     // 必须在 initAutoRoute 之后：安装时不能覆盖刚恢复的「学到 / 用户指定」条目。
     _syncAppPresets();
+    // 规则集大小不在这里量：真实目录要问内核（安卓是 APK 解包目录，不是桌面
+    // 路径规则），因此交给 `refreshRuleSetSizes()`——它在启动时被调用。见那里的
+    // 说明。
+  }
+
+  /// 按磁盘上的真实文件刷新每个规则集的大小。
+  ///
+  /// 为什么需要它：[BuiltinRuleSet.toEntry] 是无 IO 的纯转换，因此**内置**规则集
+  /// 起初的 `sizeBytes` 一律是 0——于是「分流规则」页里那条「大小」永远显示
+  /// 「尚未量过」，尽管程序刚刚亲手把这份文件解包到了磁盘。
+  ///
+  /// 目录必须问内核（`ruleSetUpdateDir`），不能用 [RuleSetStore.writableDir]：
+  /// 安卓的真实落点是 APK 资源解包出来的私有目录，桌面路径规则在那边是错的。
+  /// 「检查更新」走的也是同一个来源，两处因此不会分叉。
+  Future<void> refreshRuleSetSizes() async {
+    final Directory? dir = await _core.ruleSetUpdateDir();
+    if (dir == null || _disposed) return;
+    if (RuleSetStore.refreshSizes(_ruleSets, targetDir: dir)) {
+      notifyListeners();
+      _persist();
+    }
   }
 
   /// 解析存档里的已启用预置 id。
@@ -1509,6 +1530,11 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
       case VpnStatus.connected:
         _connectedSince = DateTime.now();
         _startTicker();
+        // 首次连接会把出厂规则集解包到可写目录（`RuleSetStore.ensure` 在内核
+        // 解析运行路径时执行）。解包之后才量得到大小，因此这里再补一次——否则
+        // 新装的机器要等到用户点过一次「检查更新」，「大小」那行才会有值。
+        // 「找文件」是磁盘操作且安卓要过平台通道，因此不阻塞状态机。
+        unawaited(refreshRuleSetSizes());
       case VpnStatus.disconnected:
       case VpnStatus.connecting:
       case VpnStatus.warmingUp:

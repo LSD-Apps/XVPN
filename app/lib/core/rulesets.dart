@@ -400,6 +400,42 @@ class RuleSetStore {
     return target;
   }
 
+  /// 用磁盘上的真实文件刷新这些条目的 [RuleSetEntry.sizeBytes]。
+  ///
+  /// 为什么需要它：[BuiltinRuleSet.toEntry] 是无 IO 的纯转换，因此**内置**规则集
+  /// 起初的 `sizeBytes` 一律是 0——于是「分流规则」页里那条「大小」永远显示
+  /// 「尚未量过」，尽管程序刚刚亲手把这份文件解包到了磁盘（见 [ensure]）。
+  /// 一行只用来展示、却永远拿不到值的字段，与「界面承诺了、代码没兑现」是同一类
+  /// 问题，只是更安静。
+  ///
+  /// 只更新**磁盘上确实存在**的条目：不存在的保持 0，界面据此显示「尚未量过」
+  /// 才是诚实的（首次连接前可写目录里还没有副本）。
+  ///
+  /// 返回是否有条目的值发生了变化，调用方据此决定要不要重绘/落盘。
+  static bool refreshSizes(
+    Iterable<RuleSetEntry> entries, {
+    Directory? targetDir,
+  }) {
+    final dir = resolveTargetDir(targetDir: targetDir);
+    var changed = false;
+    for (final entry in entries) {
+      final file = File('${dir.path}${Platform.pathSeparator}${entry.fileName}');
+      if (!file.existsSync()) continue;
+      final int size;
+      try {
+        size = file.lengthSync();
+      } on Object {
+        // 读不到大小只是少一行信息，不该影响其它条目。
+        continue;
+      }
+      if (size > 0 && size != entry.sizeBytes) {
+        entry.sizeBytes = size;
+        changed = true;
+      }
+    }
+    return changed;
+  }
+
   /// 从上游更新**出厂**规则库。
   ///
   /// 保留这个入口是为了兼容既有调用方；实现已收敛到 [updateMany]，

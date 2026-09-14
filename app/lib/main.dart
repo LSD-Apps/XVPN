@@ -169,6 +169,9 @@ class _XvpnAppState extends State<XvpnApp> {
     // 服务里，界面被回收后它仍然在运行），否则按用户离开时的意图重新拨号。
     // 走启动参数的分支不做这件事——那说明用户刚导入了一份新配置。
     unawaited(_state.restoreConnection());
+    // 盘上的规则集大小与存档里记的可能不一致（首次解包、手动替换过文件等）。
+    // 与连接恢复并行做，互不依赖；它只影响「分流规则」页那一行展示。
+    unawaited(_state.refreshRuleSetSizes());
   }
 
   /// 处理安卓从文件管理器「打开 / 分享」进来的配置。

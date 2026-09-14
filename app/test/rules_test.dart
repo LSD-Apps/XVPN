@@ -91,6 +91,46 @@ void main() {
       state.ruleSets.firstWhere((RuleSetEntry e) => e.name == name);
 
   group('规则集状态与持久化', () {
+    test('会按磁盘上的真实文件补上大小，而不是永远「尚未量过」', () async {
+      // 「大小」那一行只用来展示，而内置规则集起初的 sizeBytes 是 0（`toEntry`
+      // 是无 IO 的纯转换）。一行永远拿不到值的字段与「界面承诺了、代码没兑现」
+      // 是同一类问题，只是更安静——这条断言把它钉住。
+      const String name = 'geosite-cn';
+      final state = newState();
+      addTearDown(state.dispose);
+
+      // 先解包到可写目录（真实路径上由内核启动时的 RuleSetStore.ensure 完成）。
+      final Uint8List bytes = validSrs();
+      File(
+        '${dir.path}${Platform.pathSeparator}$name.srs',
+      ).writeAsBytesSync(bytes);
+
+      expect(
+        entryOf(state, name).sizeBytes,
+        0,
+        reason: '量之前应当是「尚未量过」——不猜一个数字',
+      );
+
+      await state.refreshRuleSetSizes();
+
+      expect(
+        entryOf(state, name).sizeBytes,
+        bytes.length,
+        reason: '磁盘上就有这个文件，界面不该说「尚未量过」',
+      );
+    });
+
+    test('磁盘上没有的条目保持「尚未量过」，不写 0 以外的假值', () async {
+      final state = newState();
+      addTearDown(state.dispose);
+
+      await state.refreshRuleSetSizes();
+
+      // 临时目录里一个 .srs 都没有：保持 0 是诚实的（首次连接前就是这个状态）。
+      expect(entryOf(state, 'geosite-cn').sizeBytes, 0);
+      expect(entryOf(state, 'geoip-cn').sizeBytes, 0);
+    });
+
     test('默认规则集清单是一份显式的、可复核的出厂清单', () {
       final state = newState();
       addTearDown(state.dispose);

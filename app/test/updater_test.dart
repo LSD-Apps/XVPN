@@ -924,9 +924,15 @@ void main() {
       );
 
       expect(script, contains('while kill -0 777'));
-      expect(script, contains("unzip -o -q '/tmp/xvpn update/XVPN-1.1.0-linux-x64.zip'"));
+      // 安装包与安装目录都收进变量：它们在脚本里出现多次（解压、保留提示、
+      // 成功后的清理），逐处硬编码引号迟早会出现某处漏转义。
+      expect(
+        script,
+        contains("ARCHIVE='/tmp/xvpn update/XVPN-1.1.0-linux-x64.zip'"),
+      );
+      expect(script, contains('unzip -o -q "\$ARCHIVE" -d "\$EXTRACT"'));
       // 安装目录里的单引号按 POSIX 规则以 '\'' 脱出。
-      expect(script, contains(r"'/opt/My VPN'\''s dir'"));
+      expect(script, contains(r"INSTALL='/opt/My VPN'\''s dir'"));
       expect(script, contains('cp -a'));
 
       final waitIndex = script.indexOf('while kill -0 777');
@@ -936,6 +942,54 @@ void main() {
       expect(waitIndex, lessThan(extractIndex));
       expect(extractIndex, lessThan(copyIndex));
       expect(copyIndex, lessThan(relaunchIndex));
+
+      // 每一步失败都要中止：`cp` 失败若被放过，脚本会继续「重新启动」并声称
+      // 成功，而安装目录可能正被替换成一半——把失败当成功是最坏的一种形态。
+      expect(script, contains("|| fail 'unzip 解压失败"));
+      expect(script, contains("|| fail '覆盖安装目录失败"));
+
+      // 只有**成功**才清理安装包；失败路径必须留着它，否则用户既没有新版本，
+      // 也找不到可手动解压的包。
+      expect(script, contains('log "已保留安装包：\$ARCHIVE"'));
+      final failBody = script.substring(
+        script.indexOf('fail() {'),
+        script.indexOf("\n}", script.indexOf('fail() {')),
+      );
+      expect(
+        failBody,
+        isNot(contains('rm -f "\$ARCHIVE"')),
+        reason: '中止路径绝不能删安装包',
+      );
+      final successTail = script.substring(script.indexOf("log '重新启动'"));
+      expect(successTail, contains('rm -f "\$ARCHIVE"'));
+    });
+
+    test('Windows：成功才删安装包，失败必须留着它', () {
+      const archive = r'C:\stage\pkg.zip';
+      const staging = r'C:\stage';
+      final script = buildWindowsRelaunchScript(
+        pid: 5,
+        archivePath: archive,
+        stagingDir: staging,
+        installDir: r'C:\Program Files\XVPN',
+        launchPath: r'C:\Program Files\XVPN\xvpn.exe',
+      );
+
+      // 只有走到「重新启动」之后才把 ok 置真；清理逻辑据此分流。
+      final relaunchIndex = script.indexOf("Write-Log '重新启动'");
+      final okIndex = script.indexOf(r'$ok = $true');
+      expect(relaunchIndex, lessThan(okIndex), reason: '成功标志必须在重启之后才置位');
+
+      final finallyBlock = script.substring(script.indexOf('} finally {'));
+      expect(
+        finallyBlock,
+        contains(r'if ($ok) {'),
+        reason: '清理必须按成功/失败分流',
+      );
+      // 失败分支要保留安装包并记下它，让用户还能重试或自行解压覆盖。
+      expect(finallyBlock, contains('已保留安装包：'));
+      // 提权路径上用户点「否」时，日志是事后唯一能查到原因的入口。
+      expect(finallyBlock, contains('日志：'));
     });
 
     test('Linux：没有 unzip 时给出可操作提示而不是静默失败', () {
