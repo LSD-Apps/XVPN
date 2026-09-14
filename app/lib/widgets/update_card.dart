@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../core/links.dart';
 import '../core/update_center.dart';
@@ -31,6 +32,7 @@ class UpdateCard extends StatefulWidget {
     this.updater,
     this.updateCenter,
     this.openExternalUrl = launchInBrowser,
+    this.revealFile = revealInFileManager,
     this.exitProcess = exit,
   });
 
@@ -51,6 +53,13 @@ class UpdateCard extends StatefulWidget {
 
   /// 打开发布页的实现。默认交给系统浏览器；测试注入记录器断言点了哪个地址。
   final ExternalUrlLauncher openExternalUrl;
+
+  /// 在文件管理器里定位安装包。默认交给系统；测试注入记录器断言定位了哪个文件。
+  ///
+  /// 为什么需要它：自动替换失败时（权限、杀毒软件、目录只读），用户手里其实
+  /// 已经有一个**校验通过**的安装包，把它找出来手动解压覆盖就够了。前提是
+  /// 他知道那个文件在哪——这是「自行取安装」这条路的关键一步。
+  final FileRevealer revealFile;
 
   /// **仅供测试注入**的退出实现。
   ///
@@ -190,7 +199,9 @@ class _UpdateCardState extends State<UpdateCard> {
   }
 
   /// 用户已经在确认步骤里点了「安装更新」——这是唯一的安装入口。
-  Future<void> _install() async {
+  ///
+  /// [elevate] 为 true 表示用户已在上一步同意用管理员权限完成写入（Windows）。
+  Future<void> _install({bool elevate = false}) async {
     final info = _info;
     final file = _downloadedFile;
     if (info == null || file == null || _busy) return;
@@ -198,7 +209,7 @@ class _UpdateCardState extends State<UpdateCard> {
       _installing = true;
       _installResult = null;
     });
-    final result = await _updater.install(info, file);
+    final result = await _updater.install(info, file, elevate: elevate);
     if (!mounted) return;
     setState(() {
       _installing = false;
@@ -227,10 +238,47 @@ class _UpdateCardState extends State<UpdateCard> {
       }
     }
     if (opened || !mounted) return;
+    _snack(messenger, '无法打开浏览器，请手动访问 ${info.releaseUrl}', warn: true);
+  }
+
+  /// 复制安装包路径。用户拿它去文件管理器粘贴、或发给另一台机器都行。
+  Future<void> _copyPath(File file) async {
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    try {
+      await Clipboard.setData(ClipboardData(text: file.path));
+    } on Object catch (error) {
+      // 剪贴板也可能不可用（无 X11 剪贴板服务等）。路径就在上面的可选中文本里，
+      // 如实告诉用户这一步没成功即可。
+      debugPrint('复制安装包路径失败：$error');
+      _snack(messenger, '复制失败，请手动选中上面的路径。', warn: true);
+      return;
+    }
+    _snack(messenger, '已复制安装包路径。');
+  }
+
+  /// 在文件管理器里定位安装包。
+  Future<void> _revealFile(File file) async {
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    var opened = false;
+    try {
+      opened = await widget.revealFile(file);
+    } on Object catch (error) {
+      debugPrint('打开文件管理器失败：$error');
+      opened = false;
+    }
+    if (opened || !mounted) return;
+    _snack(messenger, '没能打开文件管理器，可复制路径后自行打开。', warn: true);
+  }
+
+  /// 一条浮动提示。
+  ///
+  /// 抽出来是因为这里已经有三处提示（打不开浏览器 / 复制不了 / 打不开文件
+  /// 管理器），各写一份 SnackBar 样式迟早会走形。
+  void _snack(ScaffoldMessengerState? messenger, String message, {bool warn = false}) {
     messenger?.showSnackBar(
       SnackBar(
         content: Text(
-          '无法打开浏览器，请手动访问 ${info.releaseUrl}',
+          message,
           style: TextStyle(fontSize: 12.5, color: XV.text),
         ),
         backgroundColor: XV.panel3,
@@ -238,7 +286,9 @@ class _UpdateCardState extends State<UpdateCard> {
         margin: const EdgeInsets.all(16),
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(XV.rCtl),
-          side: BorderSide(color: XV.red.withValues(alpha: 0.35)),
+          side: BorderSide(
+            color: warn ? XV.red.withValues(alpha: 0.35) : XV.line,
+          ),
         ),
         duration: const Duration(seconds: 4),
       ),
@@ -505,7 +555,88 @@ class _UpdateCardState extends State<UpdateCard> {
         XvButton(label: '稍后', onPressed: _dismissDownload),
       ],
     ),
+    ..._manualInstallSection(),
   ];
+
+  /// 安装包落在哪，以及「拿它自己装」的两个动作。
+  ///
+  /// 存在的理由是自动替换**不是唯一出路**：它可能因为权限、杀毒软件或只读目录
+  /// 失败，而这时用户手里已经有一个**校验通过**的安装包——解压覆盖安装目录就行，
+  /// 或者拷到另一台机器上用。前提是他知道那个文件在哪，因此路径以**可选中的
+  /// 明文**呈现，而不是只写进日志文件里让人去翻。
+  ///
+  /// 安卓不显示：APK 落在应用私有缓存（`updates/`，靠 FileProvider 交给系统
+  /// 安装器），那个路径对用户既没有意义也打不开。
+  List<Widget> _manualInstallSection() {
+    final file = _downloadedFile;
+    if (file == null || !_isDesktop) return const <Widget>[];
+
+    final String? size = _fileSize(file);
+    return <Widget>[
+      const SizedBox(height: 12),
+      Divider(height: 1, thickness: 1, color: XV.line2),
+      const SizedBox(height: 10),
+      Text('也可以自行安装：解压覆盖安装目录，或拷贝到另一台机器上使用。', style: XvText.caption),
+      const SizedBox(height: 8),
+      Container(
+        width: double.infinity,
+        padding: const EdgeInsets.fromLTRB(10, 8, 10, 9),
+        decoration: BoxDecoration(
+          color: XV.field,
+          border: Border.all(color: XV.line),
+          borderRadius: BorderRadius.circular(XV.rCtl),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            Row(
+              children: <Widget>[
+                Icon(Icons.folder_outlined, size: 13, color: XV.muted2),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    size == null ? '安装包位置' : '安装包位置（$size）',
+                    style: TextStyle(fontSize: 11, color: XV.muted2),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            // 可选中：即便剪贴板不可用，用户也能用鼠标把路径抄走。
+            SelectableText(
+              file.path,
+              style: TextStyle(
+                fontSize: 11,
+                height: 1.45,
+                color: XV.text,
+                fontFamilyFallback: XV.monoFallback,
+              ),
+            ),
+          ],
+        ),
+      ),
+      const SizedBox(height: 8),
+      Wrap(
+        spacing: 8,
+        runSpacing: 8,
+        children: <Widget>[
+          XvButton(label: '复制路径', onPressed: () => _copyPath(file)),
+          XvButton(label: '打开所在文件夹', onPressed: () => _revealFile(file)),
+        ],
+      ),
+    ];
+  }
+
+  /// 从磁盘读安装包大小。读不到时返回 null 而不是抛异常——文件可能已被用户
+  /// 清理或挪走，而那不该让整个更新卡片崩掉。
+  static String? _fileSize(File file) {
+    try {
+      if (!file.existsSync()) return null;
+      return _formatSize(file.lengthSync());
+    } on Object {
+      return null;
+    }
+  }
 
   List<Widget> _buildInstalling() => <Widget>[
     Row(
@@ -544,6 +675,38 @@ class _UpdateCardState extends State<UpdateCard> {
               child: Text('日志：$logPath', style: XvText.monoSmall),
             ),
         ];
+      case UpdateInstallElevationRequired(:final message, :final suggestedDir):
+        // Windows：安装目录受保护。下一步会弹 UAC。这里可以把「取消不会损坏
+        // 任何东西」说死——助手在拿到授权之前一条文件都还没复制。
+        return <Widget>[
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              RouteTag.warn('需要管理员授权'),
+              const SizedBox(width: 8),
+              Expanded(child: Text(message, style: XvText.rowDesc)),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Text(
+            '点「以管理员身份更新」后会弹出系统授权窗口；'
+            '取消则不会改动任何文件。'
+            '${suggestedDir == null ? '' : '若想以后不再需要授权，可把 XVPN 解压到 $suggestedDir。'}',
+            style: XvText.caption,
+          ),
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: <Widget>[
+              XvButton(
+                label: '以管理员身份更新',
+                kind: XvButtonKind.primary,
+                onPressed: () => _install(elevate: true),
+              ),
+            ],
+          ),
+        ];
       case UpdateInstallPermissionRequired(:final message):
         // 安卓：原生已经把人送去「安装未知应用」设置页。允许在这里重试安装。
         return <Widget>[
@@ -576,6 +739,9 @@ class _UpdateCardState extends State<UpdateCard> {
                 XvButton(label: '重试安装', onPressed: _install),
               ],
             ),
+            // 自动安装失败正是最需要这条退路的时候：安装包已经下载并校验过、就
+            // 在磁盘上，把位置与两个动作直接摆在这里，用户不必再去别处翻。
+            ..._manualInstallSection(),
           ],
         ];
     }

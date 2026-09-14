@@ -122,6 +122,14 @@ Org-issued files: skip server install; go to Step 3.
 
 Download from [Releases](https://github.com/LSD-Apps/XVPN/releases/latest), install, launch. No account.
 
+**Unzip it into a per-user directory** — for example
+`%LOCALAPPDATA%\Programs\XVPN` on Windows, `~/.local/opt/xvpn` on Linux.
+The app updates itself in place; if it lives under a protected directory such as
+`C:\Program Files`, every update has to go through a UAC prompt (the updater
+will ask for it, and you can also move the folder to a per-user location to stop
+needing it). On Linux an install owned by the package manager is never
+auto-updated — in that case update through the package manager.
+
 ### Step 4 — Import
 
 | Platform | How |
@@ -230,6 +238,9 @@ A: Official WireGuard / OpenVPN / Hysteria2 docs, not this repo.
 
 **Q: I changed a rule but behaviour is unchanged?**  
 A: Many domain pins hot-reload within ~10s while connected; **mode** changes often need a reconnect. Check Split records for the rule that actually matched.
+
+**Q: The in-app update failed, or I would rather install it myself?**  
+A: The confirmation step shows the **path of the downloaded package**, with **Copy path** and **Open containing folder**. Auto-replace can fail on permissions, antivirus or a read-only directory — the package is already downloaded and checksum-verified, so unzipping it over the install folder is enough (or copy it to another machine). The same path is shown when an install attempt fails.
 
 **Q: Relation to sing-box?**  
 A: Independent project; no affiliation. See [`NOTICE.md`](../NOTICE.md).

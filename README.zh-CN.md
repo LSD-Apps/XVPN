@@ -33,12 +33,16 @@
 
 1. 准备合法可用的对端（自建服务器，或机构发放的客户端配置）。
 2. 导出客户端配置（`.conf` / `.ovpn` / Hysteria2 YAML 或分享链接）。
-3. 从 [Releases](https://github.com/LSD-Apps/XVPN/releases/latest) 安装。
+3. 从 [Releases](https://github.com/LSD-Apps/XVPN/releases/latest) 安装 ——
+   解压到**用户目录**（`%LOCALAPPDATA%\Programs\XVPN`、`~/.local/opt/xvpn`），
+   这样应用内更新不需要管理员权限。
 4. 导入 → 连接 → 看状态与速率（界面地图与排障见使用指南）。
 
 桌面端用**系统代理**（免管理员）；安卓用 **VpnService**。  
 真正退出请用托盘「退出 XVPN」，以还原系统代理。Linux 说明与依赖见
 [`docs/USER_GUIDE.zh-CN.md`](docs/USER_GUIDE.zh-CN.md)「日常使用」。
+自动更新与「装在受保护目录时会请求管理员授权」见
+[`docs/USER_GUIDE.zh-CN.md`](docs/USER_GUIDE.zh-CN.md)「安装」。
 
 **协议**（按内容识别）：WireGuard、OpenVPN、Hysteria2 — 细节
 [`docs/PROTOCOLS.md`](docs/PROTOCOLS.md)。

@@ -91,6 +91,59 @@ Directory defaultUpdateStagingDir(TargetPlatform platform, {String? tempPath}) {
   return Directory('$temp${separator}xvpn-update');
 }
 
+/// 探测某个目录当前是否**可写**：落一个探针文件再删掉。
+///
+/// 用真实写入而不是查 ACL：ACL 说「可写」却在不少情况下仍写不进去（受保护
+/// 目录、只读卷、被安全软件拦住），而**写入**恰恰是更新真正要做的事。探针写
+/// 不进去，更新就一定做不成——早一点、并且以一句人能读懂的话告诉用户，好过
+/// 让他看着一个复制到一半的安装目录。
+bool probeDirWritable(Directory dir) {
+  final String separator = Platform.pathSeparator;
+  final probe = File('${dir.path}$separator.xvpn-update-probe');
+  try {
+    probe.writeAsStringSync('', flush: true);
+  } on Object {
+    return false;
+  }
+  try {
+    probe.deleteSync();
+  } on Object {
+    // 探针删不掉不影响结论：写入已经成功了。
+  }
+  return true;
+}
+
+/// 推荐的**用户目录**安装位置。
+///
+/// 「装在受保护目录」是自动更新需要管理员授权的唯一原因。绿色分发的应用只要
+/// 解压到这里，更新就永远不需要提权——VS Code 的 user setup、Chrome 这类自更新
+/// 应用走的都是这条路。因此每次拒绝或要求提权时都把这条出路一并给出来，让用户
+/// 有机会一次摆脱它，而不是每次更新都要点一次 UAC。
+String suggestedUserInstallDir(
+  TargetPlatform platform, {
+  Map<String, String>? environment,
+}) {
+  final Map<String, String> env = environment ?? Platform.environment;
+  if (platform == TargetPlatform.windows) {
+    final String? localAppData = env['LOCALAPPDATA'];
+    if (localAppData != null && localAppData.trim().isNotEmpty) {
+      return '$localAppData\\Programs\\XVPN';
+    }
+    final String? profile = env['USERPROFILE'];
+    if (profile != null && profile.trim().isNotEmpty) {
+      return '$profile\\AppData\\Local\\Programs\\XVPN';
+    }
+    return '本地应用数据目录（%LOCALAPPDATA%）\\Programs\\XVPN';
+  }
+  // Linux：~/.local/opt 在 FHS 之外，但已是「用户级第三方应用」的通行落点，
+  // 且一定可写（不像 /usr/bin、/usr/lib 归包管理器所有）。
+  final String? home = env['HOME'];
+  if (home != null && home.trim().isNotEmpty) {
+    return '$home/.local/opt/xvpn';
+  }
+  return '~/.local/opt/xvpn';
+}
+
 // ---------------------------------------------------------------- 版本比较
 
 /// 解析后的版本号。比较规则遵循 SemVer 2.0.0 的主干部分。
@@ -598,6 +651,24 @@ class UpdateInstallPermissionRequired extends UpdateInstallResult {
   final String message;
 }
 
+/// 安装目录受保护，需要管理员授权才能写入（仅 Windows 桌面）。
+///
+/// 与安卓的 [UpdateInstallPermissionRequired] 语义相近——都要求用户先授权再
+/// 重试——但触发的动作完全不同：安卓会把人送去系统设置里允许「安装未知应用」，
+/// 这里会弹 Windows 的 UAC 同意框。因此必须是两种结果：合成一种会让界面把
+/// 用户指向一个在本平台并不存在的设置项。
+class UpdateInstallElevationRequired extends UpdateInstallResult {
+  const UpdateInstallElevationRequired(this.message, {this.suggestedDir});
+
+  final String message;
+
+  /// 建议改用的**用户目录**安装位置，见 [suggestedUserInstallDir]。
+  ///
+  /// 提权能让这一次更新成功，但装在受保护目录会让**每一次**更新都要过 UAC。
+  /// 给出这个路径是为了让用户有机会一次性摆脱它。
+  final String? suggestedDir;
+}
+
 /// 安装无法进行，[message] 说明原因与手动替代方案。
 class UpdateInstallFailure extends UpdateInstallResult {
   const UpdateInstallFailure(this.message);
@@ -612,10 +683,13 @@ class UpdateInstallFailure extends UpdateInstallResult {
 abstract class UpdateInstaller {
   const UpdateInstaller();
 
+  /// [elevate] 表示用户已同意用管理员权限完成写入；**只有 Windows 桌面**会
+  /// 用到它，其余实现忽略（安卓的授权走系统安装器，Linux 不自行提权）。
   Future<UpdateInstallResult> install({
     required UpdateInfo info,
     required File archive,
     required Directory stagingDir,
+    bool elevate = false,
   });
 }
 
@@ -657,14 +731,41 @@ class RealProcessStarter implements ProcessStarter {
 /// 重启助手脚本的文件名（不含扩展名）。写在暂存目录里，**不落进安装目录**。
 const String relaunchScriptName = 'xvpn-relaunch';
 
+/// 提权复制脚本的文件名（不含扩展名）。只在安装目录写不进去时才生成。
+const String elevatedCopyScriptName = 'xvpn-elevate-copy';
+
+/// 解压目录。两个 Windows 脚本（助手与提权复制）必须指向同一个地方，因此
+/// 路径只在这里算一次——分头去拼字符串迟早会分叉，而分叉的表现是「提权复制
+/// 报找不到文件」，很难从现象想到原因。
+String _windowsExtractDir(String stagingDir) => '$stagingDir\\extract';
+
 /// PowerShell 单引号字面量。
 ///
 /// 用单引号而不是双引号：PowerShell 的双引号会做变量展开，路径里出现 `$`
 /// 时会被悄悄改写；单引号里只有 `'` 需要转义（写成两个）。
 String _psQuote(String value) => "'${value.replaceAll("'", "''")}'";
 
+/// `Start-Process -ArgumentList` 的一个元素：单引号字面量，里面再套一层双引号。
+///
+/// 这个参数最后是要**拼成命令行**的，因此路径里的空格必须由双引号保护，否则
+/// `C:\Users\Zhang San\AppData\...` 会被拆成两个参数，被启动的 PowerShell 会
+/// 把后半截当成另一个选项。单引号内的双引号是字面量，不必转义。
+String _psQuotedArg(String value) => "'\"${value.replaceAll("'", "''")}\"'";
+
 /// POSIX shell 单引号字面量：`'` 以 `'\''` 脱出。
 String _shQuote(String value) => "'${value.replaceAll("'", "'\\''")}'";
+
+/// 一条「带路径」的 PowerShell 日志调用。
+///
+/// 路径**必须**经 [_psQuote] 处理后用字符串相加拼进去，不能直接塞进
+/// `Write-Log '...'`：那个单引号字符串会被路径里的 `'` 提前结束，从这一行开始
+/// 整份脚本语法就是坏的——表现为「Try 语句缺少 Catch/Finally」，而真正的原因
+/// 在几十行之前。只有安装路径里恰好含单引号时才会出现（例如
+/// `C:\Program Files\Bob's VPN`），因此很容易一直不被发现。
+///
+/// [prefix] 是固定文案，不能含 `"` 或 `$`。
+String _psLogWithPath(String prefix, String path) =>
+    'Write-Log ("$prefix" + ${_psQuote(path)})';
 
 /// 生成 Windows 重启助手（PowerShell 脚本）。
 ///
@@ -672,15 +773,43 @@ String _shQuote(String value) => "'${value.replaceAll("'", "'\\''")}'";
 /// 可执行文件 → 覆盖安装目录 → 重新启动**。先等待再替换，是因为运行中的
 /// `xvpn.exe` 被占用时覆盖会失败；先确认再覆盖，是为了解压失败时保持原安装
 /// 完好——绝不能把用户留在一个被替换了一半、无法启动的目录里。
+///
+/// [elevatedCopyScriptPath] 不为 null 时，「覆盖安装目录」那一步改由该脚本以
+/// 管理员身份执行（会弹一次 UAC）。**只有这一步被提权**：助手自身仍是普通
+/// 权限，因此最后重启的 XVPN 也是普通权限。
 String buildWindowsRelaunchScript({
   required int pid,
   required String archivePath,
   required String stagingDir,
   required String installDir,
   required String launchPath,
+  String? elevatedCopyScriptPath,
 }) {
   final log = '$stagingDir\\xvpn-update.log';
-  final extract = '$stagingDir\\extract';
+  final extract = _windowsExtractDir(stagingDir);
+  // 提权是把整个复制动作交给一个管理员进程，而不是让助手自己变成管理员。
+  //
+  // 这一点是这套流程里最要紧的决定。若反过来让助手以管理员运行，它 `Start-Process`
+  // 出来的 XVPN 也会是管理员：一旦 UAC 是由**另一个**管理员账户确认的（标准用户
+  // + 管理员凭据是常见配置），提权进程读的是那个账户的 `%LOCALAPPDATA%`，用户看
+  // 到的就是「配置与凭据全部不见了」。把权限收窄到一条 `Copy-Item`，这一切都不会
+  // 发生，也顺带不必去用「从提权进程降权启动」那种依赖 explorer 的取巧办法。
+  final String copyStep = elevatedCopyScriptPath == null
+      ? '''
+  ${_psLogWithPath('覆盖安装目录 ', installDir)}
+  Copy-Item -Path (Join-Path ${_psQuote(extract)} '*') -Destination ${_psQuote(installDir)} -Recurse -Force
+'''
+      : '''
+  ${_psLogWithPath('以管理员身份覆盖安装目录 ', installDir)}
+  # -Wait 让助手等到复制真正结束（并拿到退出码）；-PassThru 才能读到它。
+  # 用户点「否」时 Start-Process 会抛异常（\$ErrorActionPreference = 'Stop' 已把
+  # 它变成终止错误），由外层 catch 记进日志并重新拉起旧版本——不会留下一个
+  # 复制到一半的安装目录，因为这时一条文件都还没复制。
+  \$copy = Start-Process -FilePath 'powershell.exe' -Verb RunAs -Wait -PassThru `
+    -ArgumentList @('-NoProfile','-NonInteractive','-WindowStyle','Hidden','-ExecutionPolicy','Bypass','-File',${_psQuotedArg(elevatedCopyScriptPath)})
+  if (\$copy.ExitCode -ne 0) { throw ('以管理员身份复制失败（退出码 ' + \$copy.ExitCode + '）') }
+''';
+
   return '''
 # XVPN 自动更新重启助手。由应用在运行时生成到暂存目录，仓库里没有这个文件。
 \$ErrorActionPreference = 'Stop'
@@ -702,10 +831,7 @@ try {
   if (-not (Test-Path -LiteralPath (Join-Path ${_psQuote(extract)} 'xvpn.exe'))) {
     throw '解压结果里没有 xvpn.exe，已取消替换'
   }
-
-  Write-Log '覆盖安装目录 $installDir'
-  Copy-Item -Path (Join-Path ${_psQuote(extract)} '*') -Destination ${_psQuote(installDir)} -Recurse -Force
-
+$copyStep
   Write-Log '重新启动'
   Start-Process -FilePath ${_psQuote(launchPath)} -WorkingDirectory ${_psQuote(installDir)}
 } catch {
@@ -715,7 +841,44 @@ try {
     Start-Process -FilePath ${_psQuote(launchPath)} -WorkingDirectory ${_psQuote(installDir)}
   } catch { }
 } finally {
-  Remove-Item -LiteralPath ${_psQuote(stagingDir)} -Recurse -Force -ErrorAction SilentlyContinue
+  # 只清中间产物，**保留日志**：提权那条路上用户点了「否」时，日志是他事后
+  # 唯一能查到原因的入口（`UpdateInstallStarted.logPath` 指向的就是它）。
+  Remove-Item -LiteralPath ${_psQuote(extract)} -Recurse -Force -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath ${_psQuote(archivePath)} -Force -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath \$PSCommandPath -Force -ErrorAction SilentlyContinue
+}
+''';
+}
+
+/// 生成 Windows 提权复制脚本（以管理员身份运行）。
+///
+/// 只做一件事：把解压结果覆盖到安装目录。**不重启应用**——重启交给那个非提权的
+/// 助手，这样 XVPN 不会以管理员身份运行（原因见 [buildWindowsRelaunchScript]）。
+///
+/// 失败必须以**非零退出码**收场：助手据此判定「复制没成功」，从而不去假装更新
+/// 成功。
+String buildWindowsElevatedCopyScript({
+  required String stagingDir,
+  required String installDir,
+}) {
+  final log = '$stagingDir\\xvpn-update.log';
+  final extract = _windowsExtractDir(stagingDir);
+  return '''
+# XVPN 提权复制脚本。由更新助手以管理员身份启动（会弹一次 UAC）。
+\$ErrorActionPreference = 'Stop'
+function Write-Log(\$message) {
+  "\$(Get-Date -Format o) \$message" | Out-File -LiteralPath ${_psQuote(log)} -Append -Encoding utf8
+}
+try {
+  ${_psLogWithPath('以管理员身份覆盖安装目录 ', installDir)}
+  # \$ErrorActionPreference = 'Stop' 让单个文件复制失败也中止整步：宁可整体失败
+  # 并报错，也不要留下一个半新半旧的安装目录。
+  Copy-Item -Path (Join-Path ${_psQuote(extract)} '*') -Destination ${_psQuote(installDir)} -Recurse -Force
+  Write-Log '管理员复制完成'
+  exit 0
+} catch {
+  Write-Log "提权复制失败：\$_"
+  exit 1
 }
 ''';
 }
@@ -814,7 +977,7 @@ class DesktopUpdateInstaller implements UpdateInstaller {
     required this.launchPath,
     this.processStarter = const RealProcessStarter(),
     int? hostPid,
-    this.skipWritabilityCheck = false,
+    this.writabilityProbe = probeDirWritable,
   }) : hostPid = hostPid ?? pid;
 
   final TargetPlatform platform;
@@ -831,20 +994,27 @@ class DesktopUpdateInstaller implements UpdateInstaller {
   /// 当前进程号，助手据此等待退出。
   final int hostPid;
 
-  /// 仅测试用：跳过写权限探测。测试目录一定可写，但探测会真的落一个临时文件。
-  final bool skipWritabilityCheck;
+  /// 「安装目录是否可写」的探测实现。
+  ///
+  /// 抽成注入点是因为它决定用户最终走哪条路（直接更新 / 提权更新 / 拒绝），
+  /// 而真实的受保护目录在测试里造不出来：Windows 上要管理员才能改 ACL，CI 的
+  /// Linux runner 也不是以 root 跑的。测试传 `(_) => true` 表示可写、
+  /// `(_) => false` 表示装在受保护目录。
+  final bool Function(Directory dir) writabilityProbe;
 
   @override
   Future<UpdateInstallResult> install({
     required UpdateInfo info,
     required File archive,
     required Directory stagingDir,
+    bool elevate = false,
   }) async {
     if (!archive.existsSync()) {
       return UpdateInstallFailure('更新包不存在：${archive.path}');
     }
-    final blocked = _preflight();
-    if (blocked != null) return UpdateInstallFailure(blocked);
+    final (blocked: UpdateInstallResult? blocked, elevate: bool elevated) =
+        _preflight(elevate: elevate);
+    if (blocked != null) return blocked;
 
     try {
       stagingDir.createSync(recursive: true);
@@ -861,6 +1031,27 @@ class DesktopUpdateInstaller implements UpdateInstaller {
     // 名为 `staging\xvpn-relaunch.ps1` 的文件（反斜杠成了文件名的一部分），
     // 实际路径 `staging/xvpn-relaunch.ps1` 并不存在——CI 上跑双平台测试时抓到。
     final String separator = Platform.pathSeparator;
+
+    // 提权复制脚本只在需要提权时才生成：它存在的意义就是被 Start-Process
+    // -Verb RunAs 拉起来。多写一个用不上的脚本会让人以为提权路径被走过了。
+    File? copyScript;
+    if (elevated && isWindows) {
+      copyScript = File(
+        '${stagingDir.path}$separator$elevatedCopyScriptName.ps1',
+      );
+      // 与主脚本同样的理由要加 UTF-8 BOM：PowerShell 5.1 没有它就会按 ANSI
+      // 读，脚本里的中文日志会变成乱码——而用户要读的正是这些中文。
+      final String copySource = buildWindowsElevatedCopyScript(
+        stagingDir: stagingDir.path,
+        installDir: installDir.path,
+      );
+      try {
+        copyScript.writeAsStringSync('\uFEFF$copySource', flush: true);
+      } on Object catch (e) {
+        return UpdateInstallFailure('无法写入提权复制脚本：$e');
+      }
+    }
+
     final File script = File(
       '${stagingDir.path}$separator$relaunchScriptName.${isWindows ? 'ps1' : 'sh'}',
     );
@@ -871,6 +1062,7 @@ class DesktopUpdateInstaller implements UpdateInstaller {
             stagingDir: stagingDir.path,
             installDir: installDir.path,
             launchPath: launchPath,
+            elevatedCopyScriptPath: copyScript?.path,
           )
         : buildLinuxRelaunchScript(
             pid: hostPid,
@@ -902,31 +1094,63 @@ class DesktopUpdateInstaller implements UpdateInstaller {
         '无法启动更新程序。请手动解压 ${archive.path} 并覆盖安装目录 ${installDir.path}。',
       );
     }
+    // 提权那次要在文案里说清楚「授权才会动手」：脚本确实已经跑起来了，但真正
+    // 的复制要等用户在 UAC 上点「是」——否则用户会以为更新已经在进行。
+    final String message = copyScript == null
+        ? '更新程序已启动。请退出 XVPN，它会在应用退出后自动替换文件并重新启动。'
+        : '更新程序已启动。请退出 XVPN；它会在应用退出后弹出一次管理员授权，'
+              '获得授权才会替换文件（取消则不做任何改动），随后自动重新启动。';
     return UpdateInstallStarted(
-      '更新程序已启动。请退出 XVPN，它会在应用退出后自动替换文件并重新启动。',
+      message,
       logPath: '${stagingDir.path}${separator}xvpn-update.log',
     );
   }
 
-  /// 安装前的可行性检查。返回 null 表示可以继续。
-  String? _preflight() {
+  /// 安装前的可行性检查。
+  ///
+  /// 返回 `(blocked, elevate)`：`blocked` 非空表示直接把这个结果回给界面；
+  /// 否则继续，并用 `elevate` 决定「覆盖安装目录」这一步是否交给管理员执行。
+  ({UpdateInstallResult? blocked, bool elevate}) _preflight({
+    required bool elevate,
+  }) {
     if (!installDir.existsSync()) {
-      return '找不到安装目录（${installDir.path}），无法自动更新。请手动下载新版本解压覆盖。';
+      return (
+        blocked: UpdateInstallFailure(
+          '找不到安装目录（${installDir.path}），无法自动更新。请手动下载新版本解压覆盖。',
+        ),
+        elevate: false,
+      );
     }
-    if (skipWritabilityCheck) return null;
-    // 探针文件同样写在本机磁盘上：分隔符按宿主平台取，理由与脚本路径相同。
-    final String separator = Platform.pathSeparator;
-    final probe = File('${installDir.path}$separator.xvpn-update-probe');
-    try {
-      probe.writeAsStringSync('', flush: true);
-      probe.deleteSync();
-    } on Object {
-      // 只读安装（系统目录、包管理器安装）下唯一诚实的做法是拒绝，
-      // 而不是尝试覆盖一半再留下无法启动的安装。
-      return '当前安装在只读位置（${installDir.path}），自动更新需要写权限。'
-          '请用系统包管理器更新，或手动下载新版本解压覆盖。';
+    if (writabilityProbe(installDir)) {
+      // 目录可写：即便界面传了 elevate 也不要提权。用户点过一次「以管理员身份
+      // 更新」之后重试，而目录其实已经可写（例如他顺手把安装目录搬到了用户
+      // 目录），这时弹 UAC 是纯粹的打扰。
+      return (blocked: null, elevate: false);
     }
-    return null;
+
+    if (platform == TargetPlatform.windows) {
+      // 受保护目录 + 用户已同意授权：把复制那一步交给管理员进程。
+      if (elevate) return (blocked: null, elevate: true);
+      return (
+        blocked: UpdateInstallElevationRequired(
+          '当前安装在受保护目录（${installDir.path}），写入它需要管理员权限。',
+          suggestedDir: suggestedUserInstallDir(platform),
+        ),
+        elevate: false,
+      );
+    }
+
+    // Linux 不自行提权。`/usr/bin`、`/usr/lib` 这些路径归包管理器所有：绕过
+    // dpkg/rpm 直接覆盖文件会破坏包数据库，而且下一次包升级又会把它们改回去。
+    // 唯一诚实的做法是拒绝，并给出两条真实可走的路。
+    return (
+      blocked: UpdateInstallFailure(
+        '当前安装在只读位置（${installDir.path}），自动更新需要写权限。'
+        '请用系统包管理器更新；或把 XVPN 解压到用户目录'
+        '（${suggestedUserInstallDir(platform)}）后即可自动更新。',
+      ),
+      elevate: false,
+    );
   }
 }
 
@@ -976,6 +1200,7 @@ class AndroidUpdateInstaller implements UpdateInstaller {
     required UpdateInfo info,
     required File archive,
     required Directory stagingDir,
+    bool elevate = false,
   }) async {
     if (!archive.existsSync()) {
       return UpdateInstallFailure('安装包不存在：${archive.path}');
@@ -1010,6 +1235,7 @@ class UnsupportedUpdateInstaller implements UpdateInstaller {
     required UpdateInfo info,
     required File archive,
     required Directory stagingDir,
+    bool elevate = false,
   }) async => const UpdateInstallFailure('当前平台不支持自动安装，请到发布页手动下载。');
 }
 
@@ -1306,8 +1532,19 @@ class Updater {
 
   /// 启动安装流程。桌面端会生成重启助手并返回 [UpdateInstallStarted]，
   /// 调用方收到后应退出应用；安卓端会唤起系统安装器。
-  Future<UpdateInstallResult> install(UpdateInfo info, File artifact) =>
-      installer.install(info: info, archive: artifact, stagingDir: stagingRoot);
+  ///
+  /// [elevate] 只在 Windows 桌面有意义：安装目录受保护时，界面会先收到
+  /// [UpdateInstallElevationRequired]，用户确认后再带着 `elevate: true` 重试。
+  Future<UpdateInstallResult> install(
+    UpdateInfo info,
+    File artifact, {
+    bool elevate = false,
+  }) => installer.install(
+    info: info,
+    archive: artifact,
+    stagingDir: stagingRoot,
+    elevate: elevate,
+  );
 
   /// 释放内部 HTTP 客户端。
   ///

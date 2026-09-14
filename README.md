@@ -35,12 +35,16 @@ accounts, and does **not** implement cryptography (that is sing-box).
 
 1. Prepare a lawful endpoint (your server, or an org-issued client profile).
 2. Export a client config (`.conf` / `.ovpn` / Hysteria2 YAML or share link).
-3. Install from [Releases](https://github.com/LSD-Apps/XVPN/releases/latest).
+3. Install from [Releases](https://github.com/LSD-Apps/XVPN/releases/latest) —
+   unzip into a per-user directory (`%LOCALAPPDATA%\Programs\XVPN`,
+   `~/.local/opt/xvpn`) so in-app updates need no admin rights.
 4. Import → connect → confirm rates / status (see the user guide for UI map & troubleshooting).
 
 Desktop uses the **system proxy** (no admin); Android uses **VpnService**.  
 Quit via tray **Quit XVPN** so the proxy is restored. Linux notes and package
 dependencies: [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md) (Day-to-day / Linux).
+Auto-update details and the UAC prompt when it is installed in a protected
+directory: [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md) (Install).
 
 **Protocols** (detected by content): WireGuard, OpenVPN, Hysteria2 — details in
 [`docs/PROTOCOLS.md`](docs/PROTOCOLS.md).

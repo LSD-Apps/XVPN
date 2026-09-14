@@ -822,8 +822,80 @@ void main() {
       expect(copyIndex, lessThan(startIndex));
     });
 
-    test('Windows：解压结果里没有 xvpn.exe 时不动原安装', () {
+    test('Windows：不提权时不出现任何 UAC 痕迹', () {
       final script = buildWindowsRelaunchScript(
+        pid: 7,
+        archivePath: r'C:\a b\x.zip',
+        stagingDir: r'C:\a b\stage',
+        installDir: r'C:\Program Files\XVPN',
+        launchPath: r'C:\Program Files\XVPN\xvpn.exe',
+      );
+
+      expect(script, isNot(contains('RunAs')));
+      expect(
+        script,
+        contains('Copy-Item -Path'),
+        reason: '不需要提权时，复制仍由助手自己完成',
+      );
+    });
+
+    test('Windows：提权时只把复制交给管理员，重启仍是普通权限', () {
+      const staging = r'C:\Users\Zhang San\AppData\Local\Temp\xvpn-update';
+      const install = r'C:\Program Files\XVPN';
+      const launch = r'C:\Program Files\XVPN\xvpn.exe';
+      const copyScript =
+          r'C:\Users\Zhang San\AppData\Local\Temp\xvpn-update\xvpn-elevate-copy.ps1';
+
+      final script = buildWindowsRelaunchScript(
+        pid: 99,
+        archivePath: r'C:\Users\Zhang San\AppData\Local\Temp\xvpn-update\pkg.zip',
+        stagingDir: staging,
+        installDir: install,
+        launchPath: launch,
+        elevatedCopyScriptPath: copyScript,
+      );
+
+      expect(script, contains('-Verb RunAs'));
+      // -Wait 才能等到复制结束并拿到退出码；-PassThru 才能读到它。
+      expect(script, contains('-Wait -PassThru'));
+      // 提权复制脚本的路径带空格，必须被双引号保护，否则会被拆成两个参数。
+      expect(script, contains('"$copyScript"'));
+      expect(
+        script,
+        isNot(contains('Copy-Item -Path')),
+        reason: '复制已经交给管理员进程，助手自己不做',
+      );
+
+      // 最关键的一条：**重启那一步不能带 RunAs**。带了的话用户拿到的 XVPN 是
+      // 管理员身份；若 UAC 是由另一个管理员账户确认的，读到的就是那个账户的
+      // 配置目录，看起来像「所有配置都不见了」。
+      final restartBlock = script.substring(
+        script.indexOf("Write-Log '重新启动'"),
+      );
+      expect(restartBlock, isNot(contains('RunAs')));
+      expect(restartBlock, contains("Start-Process -FilePath '$launch'"));
+      expect(restartBlock, contains("'$install'"));
+    });
+
+    test('Windows：提权复制脚本只复制、不重启', () {
+      final script = buildWindowsElevatedCopyScript(
+        stagingDir: r'C:\a b\stage',
+        installDir: r'C:\Program Files\XVPN',
+      );
+
+      expect(script, contains('Copy-Item -Path'));
+      expect(script, contains(r"'C:\Program Files\XVPN'"));
+      // 失败必须以非零退出码收场：助手据此判定「没成功」，不装作更新好了。
+      expect(script, contains('exit 0'));
+      expect(script, contains('exit 1'));
+      expect(
+        script,
+        isNot(contains('Start-Process')),
+        reason: '它必须只做复制：重启由非提权的助手负责，否则 XVPN 会以管理员身份运行',
+      );
+    });
+
+    test('Windows：解压结果里没有 xvpn.exe 时不动原安装', () {      final script = buildWindowsRelaunchScript(
         pid: 1,
         archivePath: r'C:\a b\x.zip',
         stagingDir: r'C:\a b\stage',
@@ -991,6 +1063,108 @@ void main() {
       expect(script.readAsStringSync(), contains('kill -0 99'));
     });
 
+    // 字符串断言只能证明「该有的片段在」，证明不了整份脚本**能被解析**。而一段
+    // 语法错误的更新脚本，只会在用户的机器上、更新进行到一半时才暴露——那时
+    // 应用已经退出、安装目录可能正被改写。因此这里把生成的脚本交给真正的解释器
+    // 做语法检查。两个平台各覆盖一半：Windows 用 PowerShell 的解析器，Linux 用
+    // `sh -n`。
+    test('Windows：生成的脚本能被 PowerShell 解析', () async {
+      if (!Platform.isWindows) return; // Linux runner 上没有 PowerShell。
+      final separator = Platform.pathSeparator;
+      final dir = Directory.systemTemp.createTempSync('xvpn-ps1-syntax');
+      addTearDown(() {
+        if (dir.existsSync()) dir.deleteSync(recursive: true);
+      });
+
+      // 路径刻意带空格与单引号：这两者最容易把引号拼错（单引号要翻倍、带空格的
+      // 参数要再套一层双引号）。
+      final staging = "${dir.path}${separator}Bob's update scripts";
+      final install = '$staging${separator}Program Files';
+      final copy = File('$staging$separator$elevatedCopyScriptName.ps1');
+      Directory(staging).createSync(recursive: true);
+
+      final relaunch = File('$staging$separator$relaunchScriptName.ps1')
+        ..writeAsStringSync(
+          '\uFEFF${buildWindowsRelaunchScript(
+            pid: 1234,
+            archivePath: "$staging${separator}pkg.zip",
+            stagingDir: staging,
+            installDir: install,
+            launchPath: '$install${separator}xvpn.exe',
+            elevatedCopyScriptPath: copy.path,
+          )}',
+          flush: true,
+        );
+      copy.writeAsStringSync(
+        '\uFEFF${buildWindowsElevatedCopyScript(stagingDir: staging, installDir: install)}',
+        flush: true,
+      );
+
+      for (final script in <File>[relaunch, copy]) {
+        final result = await Process.run(
+          'powershell.exe',
+          <String>[
+            '-NoProfile',
+            '-NonInteractive',
+            '-Command',
+            // 只用解析器，不执行任何东西。
+            r'$errors = $null;'
+            r'[System.Management.Automation.Language.Parser]::ParseFile('
+            r'$env:XVPN_PARSE_PATH, [ref]$null, [ref]$errors) | Out-Null;'
+            r'if ($errors.Count -gt 0) { $errors | ForEach-Object { $_.Message }; exit 1 }',
+          ],
+          // 路径经环境变量传进去，而不是拼进命令串：路径里可能有单引号
+          // （`Bob's`），拼进去会先把这个检查自己写坏——第一次就是这么错的。
+          environment: <String, String>{'XVPN_PARSE_PATH': script.path},
+        );
+        expect(
+          result.exitCode,
+          0,
+          reason: '${script.path} 解析失败：${result.stdout}${result.stderr}',
+        );
+      }
+
+      // 顺带确认「提权复制脚本被真的指向了」，并把引号规则写清楚：
+      // 单引号内的单引号按 PowerShell 规则翻倍，整体再套一层双引号保护空格。
+      // 少任何一层，Start-Process 都会收到一个截断的路径。
+      final quotedCopyPath = '"${copy.path.replaceAll("'", "''")}"';
+      expect(
+        relaunch.readAsStringSync(),
+        contains("-File','$quotedCopyPath'"),
+      );
+    });
+
+    test('Linux：生成的脚本能被 sh -n 解析', () async {
+      if (Platform.isWindows) return; // Windows 上的 sh 不是 POSIX 目标环境。
+      final separator = Platform.pathSeparator;
+      final dir = Directory.systemTemp.createTempSync('xvpn-sh-syntax');
+      addTearDown(() {
+        if (dir.existsSync()) dir.deleteSync(recursive: true);
+      });
+      final staging = "${dir.path}${separator}Bob's update scripts";
+      final install = '$staging${separator}opt';
+      Directory(staging).createSync(recursive: true);
+
+      final script = File('$staging$separator$relaunchScriptName.sh')
+        ..writeAsStringSync(
+          buildLinuxRelaunchScript(
+            pid: 1234,
+            archivePath: '$staging${separator}pkg.zip',
+            stagingDir: staging,
+            installDir: install,
+            launchPath: '$install${separator}xvpn',
+          ),
+          flush: true,
+        );
+
+      final result = await Process.run('/bin/sh', <String>['-n', script.path]);
+      expect(
+        result.exitCode,
+        0,
+        reason: '${script.path} 解析失败：${result.stdout}${result.stderr}',
+      );
+    });
+
     test('更新包不存在时直接失败', () async {
       final separator = Platform.pathSeparator;
       final installDir = Directory('${root.path}${separator}install')
@@ -1057,6 +1231,215 @@ void main() {
       );
       expect(result, isA<UpdateInstallFailure>());
       expect((result as UpdateInstallFailure).message, contains('手动解压'));
+    });
+
+    // ---------------------------------------------------------- 受保护安装目录
+    //
+    // 「装在 C:\Program Files」是自动更新唯一需要提权的场景。真实的受保护目录
+    // 在测试里造不出来（Windows 上要管理员才能改 ACL），因此用探测替身表达。
+
+    /// 造一个「安装目录写不进去」的安装器。
+    DesktopUpdateInstaller protectedInstaller({
+      required Directory installDir,
+      required _RecordingStarter starter,
+      TargetPlatform platform = TargetPlatform.windows,
+    }) => DesktopUpdateInstaller(
+      platform: platform,
+      installDir: installDir,
+      launchPath: '${installDir.path}${Platform.pathSeparator}xvpn.exe',
+      processStarter: starter,
+      hostPid: 1,
+      writabilityProbe: (Directory _) => false,
+    );
+
+    File archiveIn(String separator) =>
+        File('${root.path}${separator}a.zip')..writeAsBytesSync(<int>[1]);
+
+    test('Windows：受保护目录先征求同意，未经同意不启动任何东西', () async {
+      final separator = Platform.pathSeparator;
+      final installDir = Directory('${root.path}${separator}install')
+        ..createSync(recursive: true);
+      final starter = _RecordingStarter();
+      final installer = protectedInstaller(
+        installDir: installDir,
+        starter: starter,
+      );
+
+      final result = await installer.install(
+        info: _infoFor('XVPN-1.1.0-windows-x64.zip', 'https://example.net/win.zip'),
+        archive: archiveIn(separator),
+        stagingDir: root,
+      );
+
+      expect(result, isA<UpdateInstallElevationRequired>());
+      final required = result as UpdateInstallElevationRequired;
+      expect(required.message, contains('管理员权限'));
+      expect(
+        required.suggestedDir,
+        isNotNull,
+        reason: '要给出一条「以后不必再授权」的出路，而不是每次都弹 UAC',
+      );
+      expect(
+        starter.calls,
+        isEmpty,
+        reason: '用户还没同意，一个进程都不该启动（UAC 更不能自己弹）',
+      );
+      expect(
+        File('${root.path}${separator}xvpn-relaunch.ps1').existsSync(),
+        isFalse,
+      );
+    });
+
+    test('Windows：同意后写出两个脚本，助手带上提权复制', () async {
+      final separator = Platform.pathSeparator;
+      final installDir = Directory('${root.path}${separator}install')
+        ..createSync(recursive: true);
+      final starter = _RecordingStarter();
+      final installer = protectedInstaller(
+        installDir: installDir,
+        starter: starter,
+      );
+
+      final result = await installer.install(
+        info: _infoFor('XVPN-1.1.0-windows-x64.zip', 'https://example.net/win.zip'),
+        archive: archiveIn(separator),
+        stagingDir: root,
+        elevate: true,
+      );
+
+      expect(result, isA<UpdateInstallStarted>());
+      expect(
+        (result as UpdateInstallStarted).message,
+        contains('管理员授权'),
+        reason: '文案必须说清楚「授权后才会动手」，否则用户以为更新已经在跑',
+      );
+
+      final relaunch = File('${root.path}${separator}xvpn-relaunch.ps1');
+      final copy = File('${root.path}${separator}xvpn-elevate-copy.ps1');
+      expect(relaunch.existsSync(), isTrue);
+      expect(copy.existsSync(), isTrue);
+      expect(relaunch.readAsStringSync(), contains('-Verb RunAs'));
+      // 提权复制脚本同样要带 BOM：PowerShell 5.1 没有它会按 ANSI 读，中文日志
+      // 会变成乱码——而用户要读的正是那些中文。
+      expect(copy.readAsBytesSync().sublist(0, 3), <int>[0xEF, 0xBB, 0xBF]);
+      expect(starter.calls.single, contains('-File'));
+      expect(starter.calls.single.last, contains('xvpn-relaunch.ps1'));
+    });
+
+    test('Windows：目录其实可写时，用户点过同意也不弹 UAC', () async {
+      // 场景：上一次点了「以管理员身份更新」，之后把安装目录搬到了用户目录。
+      // 此时仍然提权就是纯粹的打扰——探测说可写就走普通路径。
+      final separator = Platform.pathSeparator;
+      final installDir = Directory('${root.path}${separator}install')
+        ..createSync(recursive: true);
+      final starter = _RecordingStarter();
+      final installer = DesktopUpdateInstaller(
+        platform: TargetPlatform.windows,
+        installDir: installDir,
+        launchPath: '${installDir.path}${separator}xvpn.exe',
+        processStarter: starter,
+        hostPid: 1,
+        writabilityProbe: (Directory _) => true,
+      );
+
+      final result = await installer.install(
+        info: _infoFor('XVPN-1.1.0-windows-x64.zip', 'https://example.net/win.zip'),
+        archive: archiveIn(separator),
+        stagingDir: root,
+        elevate: true,
+      );
+
+      expect(result, isA<UpdateInstallStarted>());
+      final relaunch = File('${root.path}${separator}xvpn-relaunch.ps1');
+      expect(relaunch.readAsStringSync(), isNot(contains('RunAs')));
+      expect(
+        File('${root.path}${separator}xvpn-elevate-copy.ps1').existsSync(),
+        isFalse,
+        reason: '一个用不上的提权脚本会让人以为提权路径被走过了',
+      );
+    });
+
+    test('Linux：只读安装拒绝自动更新，并给出用户目录这条出路', () async {
+      // Linux 不自行提权：/usr/bin、/usr/lib 归包管理器所有，绕过 dpkg/rpm
+      // 覆盖文件会破坏包数据库，而且下一次包升级又会把它们改回去。
+      final separator = Platform.pathSeparator;
+      final installDir = Directory('${root.path}${separator}install')
+        ..createSync(recursive: true);
+      final starter = _RecordingStarter();
+      final installer = protectedInstaller(
+        installDir: installDir,
+        starter: starter,
+        platform: TargetPlatform.linux,
+      );
+
+      final result = await installer.install(
+        info: _infoFor('XVPN-1.1.0-linux-x64.zip', 'https://example.net/lin.zip'),
+        archive: archiveIn(separator),
+        stagingDir: root,
+        elevate: true,
+      );
+
+      expect(
+        result,
+        isA<UpdateInstallFailure>(),
+        reason: 'Linux 上即便用户要求提权也不做——那是包管理器的地盘',
+      );
+      final message = (result as UpdateInstallFailure).message;
+      expect(message, contains('只读'));
+      expect(
+        message,
+        contains('.local/opt/xvpn'),
+        reason: '只说「不行」没有用，要给出真实可走的出路',
+      );
+      expect(starter.calls, isEmpty);
+    });
+  });
+
+  // -------------------------------------------------------------- 建议安装位置
+
+  group('建议的用户目录安装位置', () {
+    test('Windows：优先 %LOCALAPPDATA%，拿不到时退回用户主目录', () {
+      expect(
+        suggestedUserInstallDir(
+          TargetPlatform.windows,
+          environment: <String, String>{
+            'LOCALAPPDATA': r'C:\Users\me\AppData\Local',
+          },
+        ),
+        r'C:\Users\me\AppData\Local\Programs\XVPN',
+      );
+      expect(
+        suggestedUserInstallDir(
+          TargetPlatform.windows,
+          environment: <String, String>{'USERPROFILE': r'C:\Users\me'},
+        ),
+        r'C:\Users\me\AppData\Local\Programs\XVPN',
+      );
+      expect(
+        suggestedUserInstallDir(
+          TargetPlatform.windows,
+          environment: const <String, String>{},
+        ),
+        contains('%LOCALAPPDATA%'),
+        reason: '一个变量都拿不到时也要说清是哪个目录，而不是给一条空路径',
+      );
+    });
+
+    test('Linux：用 ~/.local/opt 下的用户级位置', () {
+      expect(
+        suggestedUserInstallDir(
+          TargetPlatform.linux,
+          environment: <String, String>{'HOME': '/home/me'},
+        ),
+        '/home/me/.local/opt/xvpn',
+      );
+      expect(
+        suggestedUserInstallDir(
+          TargetPlatform.linux,
+          environment: const <String, String>{},
+        ),
+        '~/.local/opt/xvpn',
+      );
     });
   });
 

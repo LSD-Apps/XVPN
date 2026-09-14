@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:xvpn/app_state.dart';
 import 'package:xvpn/core/updater.dart';
@@ -83,9 +84,18 @@ class _FakeUpdater extends Updater {
     );
   }
 
+  /// 最近一次安装是否带提权请求，用来断言「以管理员身份更新」真的把 elevate
+  /// 传下去了——只测到「按钮点了会发起安装」不够，那条路径的意义全在这个参数。
+  bool lastElevate = false;
+
   @override
-  Future<UpdateInstallResult> install(UpdateInfo info, File artifact) {
+  Future<UpdateInstallResult> install(
+    UpdateInfo info,
+    File artifact, {
+    bool elevate = false,
+  }) {
     installCalls++;
+    lastElevate = elevate;
     return Future<UpdateInstallResult>.value(installResult);
   }
 
@@ -126,6 +136,8 @@ Future<void> _pumpCard(
   bool compact = false,
   List<int>? exits,
   List<Uri>? opened,
+  List<File>? revealed,
+  bool revealSucceeds = true,
 }) async {
   tester.view.physicalSize = const Size(720, 900);
   tester.view.devicePixelRatio = 1.0;
@@ -142,6 +154,10 @@ Future<void> _pumpCard(
               opened?.add(uri);
               return true;
             },
+            revealFile: (File file) async {
+              revealed?.add(file);
+              return revealSucceeds;
+            },
             exitProcess: (int code) => exits?.add(code),
           ),
         ),
@@ -149,6 +165,43 @@ Future<void> _pumpCard(
     ),
   );
   await tester.pump();
+}
+
+/// 记录写进剪贴板的文本。
+///
+/// 与 `kernel_log_ui_test` 等处同一套做法：`Clipboard` 走平台通道，测试里没有
+/// 真实剪贴板，只能拦下通道调用来断言「复制了什么」。
+List<String> _captureClipboard(WidgetTester tester) {
+  final captured = <String>[];
+  tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+    SystemChannels.platform,
+    (MethodCall call) async {
+      if (call.method == 'Clipboard.setData') {
+        captured.add(
+          (call.arguments as Map<Object?, Object?>)['text'] as String,
+        );
+      }
+      return null;
+    },
+  );
+  addTearDown(
+    () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      SystemChannels.platform,
+      null,
+    ),
+  );
+  return captured;
+}
+
+/// 走完「检查 → 下载」两步，停在下载完成的确认步骤。
+Future<void> _downloadToConfirmStep(
+  WidgetTester tester,
+  _FakeUpdater updater,
+) async {
+  await tester.tap(find.text('检查更新'));
+  await tester.pumpAndSettle();
+  await tester.tap(find.text('下载更新'));
+  await tester.pumpAndSettle();
 }
 
 void main() {
@@ -309,6 +362,175 @@ void main() {
       <int>[0],
       reason: '桌面端重启助手在等进程退出，确认安装后必须退出应用',
     );
+  });
+
+  testWidgets('目录受保护时给出提权入口，且授权请求真的传下去', (
+    WidgetTester tester,
+  ) async {
+    final separator = Platform.pathSeparator;
+    final file = File('${Directory.systemTemp.path}${separator}xvpn-test.zip');
+    final updater = _FakeUpdater(platform: TargetPlatform.windows)
+      ..checkResult = UpdateAvailable(_info())
+      ..onDownload = ((_) => UpdateDownloaded(file, 'a' * 64))
+      ..installResult = const UpdateInstallElevationRequired(
+        '当前安装在受保护目录（C:\\Program Files\\XVPN），写入它需要管理员权限。',
+        suggestedDir: r'C:\Users\me\AppData\Local\Programs\XVPN',
+      );
+    final exits = <int>[];
+    await _pumpCard(tester, updater, exits: exits);
+
+    await tester.tap(find.text('检查更新'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('下载更新'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('安装更新'));
+    await tester.pump();
+    await tester.pump();
+
+    // 第一次尝试不带提权：应用绝不自己弹 UAC，必须先问过用户。
+    expect(updater.installCalls, 1);
+    expect(updater.lastElevate, isFalse);
+    expect(exits, isEmpty, reason: '还没拿到授权，应用不能退出');
+
+    expect(find.text('需要管理员授权'), findsOneWidget);
+    final hint = tester.widget<Text>(
+      find.textContaining('取消则不会改动任何文件'),
+    );
+    expect(
+      hint.data,
+      contains('Programs\\XVPN'),
+      reason: '要顺带给出「以后不必再授权」的出路',
+    );
+
+    await tester.tap(find.text('以管理员身份更新'));
+    await tester.pump();
+    await tester.pump();
+
+    expect(updater.installCalls, 2);
+    expect(
+      updater.lastElevate,
+      isTrue,
+      reason: '这个按钮的全部意义就是把 elevate 传下去',
+    );
+  });
+
+  testWidgets('下载完成后给出安装包路径，并能复制它', (WidgetTester tester) async {
+    final clipboard = _captureClipboard(tester);
+    final separator = Platform.pathSeparator;
+    // 路径刻意带空格与中文：这两者最容易在「显示给别人看 / 复制出去」时出问题。
+    final file = File(
+      '${Directory.systemTemp.path}${separator}Bob 的更新包${separator}xvpn.zip',
+    );
+    final updater = _FakeUpdater(platform: TargetPlatform.windows)
+      ..checkResult = UpdateAvailable(_info())
+      ..onDownload = ((_) => UpdateDownloaded(file, 'a' * 64));
+    await _pumpCard(tester, updater);
+
+    await _downloadToConfirmStep(tester, updater);
+
+    // 路径必须是**可选中的明文**：即便剪贴板不可用，用户也能自己抄走。
+    final shown = tester.widget<SelectableText>(find.byType(SelectableText));
+    expect(shown.data, file.path);
+    expect(find.text('也可以自行安装：解压覆盖安装目录，或拷贝到另一台机器上使用。'), findsOneWidget);
+
+    await tester.tap(find.text('复制路径'));
+    await tester.pumpAndSettle();
+
+    expect(clipboard, <String>[file.path], reason: '复制的必须是完整路径');
+    expect(find.text('已复制安装包路径。'), findsOneWidget, reason: '要给一个明确的反馈');
+  });
+
+  testWidgets('可以打开安装包所在文件夹；打不开时给出退路而不是静默', (
+    WidgetTester tester,
+  ) async {
+    final separator = Platform.pathSeparator;
+    final file = File('${Directory.systemTemp.path}${separator}xvpn.zip');
+    final updater = _FakeUpdater(platform: TargetPlatform.windows)
+      ..checkResult = UpdateAvailable(_info())
+      ..onDownload = ((_) => UpdateDownloaded(file, 'a' * 64));
+    final revealed = <File>[];
+    await _pumpCard(tester, updater, revealed: revealed);
+
+    await _downloadToConfirmStep(tester, updater);
+    await tester.tap(find.text('打开所在文件夹'));
+    await tester.pumpAndSettle();
+
+    expect(revealed, <File>[file], reason: '要定位到刚下载的那个文件');
+    expect(
+      find.text('没能打开文件管理器，可复制路径后自行打开。'),
+      findsNothing,
+      reason: '成功时不该出现失败提示',
+    );
+  });
+
+  testWidgets('自动安装失败时同样能看到路径 —— 这正是「自行取安装」的场景', (
+    WidgetTester tester,
+  ) async {
+    final clipboard = _captureClipboard(tester);
+    final separator = Platform.pathSeparator;
+    final file = File('${Directory.systemTemp.path}${separator}xvpn.zip');
+    final updater = _FakeUpdater(platform: TargetPlatform.windows)
+      ..checkResult = UpdateAvailable(_info())
+      ..onDownload = ((_) => UpdateDownloaded(file, 'a' * 64))
+      ..installResult = const UpdateInstallFailure(
+        '无法启动更新程序。请手动解压并覆盖安装目录。',
+      );
+    await _pumpCard(tester, updater);
+
+    await _downloadToConfirmStep(tester, updater);
+    await tester.tap(find.text('安装更新'));
+    await tester.pump();
+    await tester.pump();
+
+    expect(find.textContaining('无法启动更新程序'), findsOneWidget);
+    expect(find.text('重试安装'), findsOneWidget);
+    final shown = tester.widget<SelectableText>(find.byType(SelectableText));
+    expect(shown.data, file.path, reason: '失败时更要知道包在哪');
+
+    await tester.tap(find.text('复制路径'));
+    await tester.pumpAndSettle();
+    expect(clipboard, <String>[file.path]);
+  });
+
+  testWidgets('打不开文件管理器时如实告知，而不是什么都不发生', (WidgetTester tester) async {
+    final separator = Platform.pathSeparator;
+    final file = File('${Directory.systemTemp.path}${separator}xvpn.zip');
+    final updater = _FakeUpdater(platform: TargetPlatform.windows)
+      ..checkResult = UpdateAvailable(_info())
+      ..onDownload = ((_) => UpdateDownloaded(file, 'a' * 64));
+    await _pumpCard(tester, updater, revealSucceeds: false);
+
+    await _downloadToConfirmStep(tester, updater);
+    await tester.tap(find.text('打开所在文件夹'));
+    await tester.pumpAndSettle();
+
+    expect(
+      find.text('没能打开文件管理器，可复制路径后自行打开。'),
+      findsOneWidget,
+      reason: '容器与精简桌面上 xdg-open 可能不存在，那时必须给一条退路',
+    );
+  });
+
+  testWidgets('安卓不显示安装包路径：私有缓存目录对用户没有意义', (
+    WidgetTester tester,
+  ) async {
+    final separator = Platform.pathSeparator;
+    final file = File('${Directory.systemTemp.path}${separator}updates${separator}xvpn.apk');
+    final updater = _FakeUpdater(platform: TargetPlatform.android)
+      ..checkResult = UpdateAvailable(_info())
+      ..onDownload = ((_) => UpdateDownloaded(file, 'a' * 64));
+    await _pumpCard(tester, updater);
+
+    await _downloadToConfirmStep(tester, updater);
+
+    expect(find.text('安装更新'), findsOneWidget, reason: '确认步骤本身仍在');
+    expect(
+      find.byType(SelectableText),
+      findsNothing,
+      reason: 'APK 在应用私有缓存里，既打不开也不该让用户去翻',
+    );
+    expect(find.text('复制路径'), findsNothing);
+    expect(find.text('打开所在文件夹'), findsNothing);
   });
 
   testWidgets('安卓：缺权限时给出重试入口，且任何结果都不退出应用', (WidgetTester tester) async {
