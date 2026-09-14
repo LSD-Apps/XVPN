@@ -23,6 +23,15 @@ import 'support/recording_listener.dart';
 ///     的应用状态里写东西是不可接受的；
 ///   * `probesEnabled: false`：不发起任何额外探测（DNS、自检、直连延迟），
 ///     它们既不需要也会真的连网。
+/// 本文件起真实内核时用的端口基准。
+///
+/// 必须与其它**并发跑**的测试文件不同：`PortAllocator` 是「探测到空闲就释放、
+/// 内核随后再绑」，两步之间有窗口（见其文档）。若两个文件都从默认的 2080 起步，
+/// 它们可能在同一瞬间各自探到「2080 可用」，于是其中一个内核绑定失败——表现为
+/// 随机、难以复现的用例失败。按文件分段即可根除这类竞争。
+/// 详见 `SingBoxRunner.portBase`。
+const int _portBase = 23080;
+
 const _conf = '''
 [Interface]
 PrivateKey = AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=
@@ -70,6 +79,8 @@ void main() {
         // 验的是「连接 → 就绪 → 断开 → 收干净」，与门控等多久无关，而默认的
         // 20 秒会让每次跑测试都白等一轮。
         readyGateTimeout: const Duration(seconds: 1),
+        // 与本文件外的并发用例分段，避免争同一对端口（见 [_portBase]）。
+        portBase: _portBase,
         runtimeOverride: CoreRuntime(
           singBoxExe: exe,
           ruleSetDir: assets,

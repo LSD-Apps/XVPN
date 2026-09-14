@@ -30,6 +30,15 @@ PublicKey = ISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0+P0A=
 Endpoint = 127.0.0.1:51820
 ''';
 
+/// 本文件起真实内核时用的端口基准。
+///
+/// 必须与其它**并发跑**的测试文件不同：`PortAllocator` 是「探测到空闲就释放、
+/// 内核随后再绑」，两步之间有窗口（见其文档）。若两个文件都从默认的 2080 起步，
+/// 它们可能在同一瞬间各自探到「2080 可用」，于是其中一个内核绑定失败——表现为
+/// 随机、难以复现的用例失败。按文件分段即可根除这类竞争。
+/// 详见 `SingBoxRunner.portBase`。
+const int _portBase = 26080;
+
 /// 假的 APK 资源：内容只需「非空且大于 64 字节」，因为解包的跳过阈值按长度判。
 Future<ByteData> _fakeAsset(String asset) async {
   final bytes = Uint8List.fromList(List<int>.generate(128, (i) => i & 0xff));
@@ -188,6 +197,8 @@ void main() {
           probesEnabled: false,
           // 节点不可达，门控必然走满超时；这条用例只关心目录，压到 1 秒。
           readyGateTimeout: const Duration(seconds: 1),
+          // 与本文件外的并发用例分段，避免争同一对端口（见 [_portBase]）。
+          portBase: _portBase,
           runtimeOverride: CoreRuntime(
             singBoxExe: exe,
             // 内核读的规则集在 target；出厂副本仍取自 assets（检查的是它）。

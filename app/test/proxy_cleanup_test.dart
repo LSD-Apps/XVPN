@@ -24,6 +24,15 @@ import 'support/recording_listener.dart';
 /// 不足等情况，测试里没法真的去破坏注册表。**刻意不用平台通道替身**——那需要
 /// 初始化 widget binding，而它会拦掉所有真实 HTTP，连接路径（内核就绪要轮询
 /// Clash API）根本走不完。
+/// 本文件起真实内核时用的端口基准。
+///
+/// 必须与其它**并发跑**的测试文件不同：`PortAllocator` 是「探测到空闲就释放、
+/// 内核随后再绑」，两步之间有窗口（见其文档）。若两个文件都从默认的 2080 起步，
+/// 它们可能在同一瞬间各自探到「2080 可用」，于是其中一个内核绑定失败——表现为
+/// 随机、难以复现的用例失败。按文件分段即可根除这类竞争。
+/// 详见 `SingBoxRunner.portBase`。
+const int _portBase = 22080;
+
 const _conf = '''
 [Interface]
 PrivateKey = AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=
@@ -98,6 +107,8 @@ void main() {
       // 指向不可达节点 → 就绪门控必然走满超时。把上限压到 1 秒，否则每个
       // 用例都要白等 20 秒，而这条路径本身与门控无关。
       readyGateTimeout: const Duration(seconds: 1),
+      // 与本文件外的并发用例分段，避免争同一对端口（见 [_portBase]）。
+      portBase: _portBase,
       runtimeOverride: CoreRuntime(
         singBoxExe: exe,
         ruleSetDir: assets,

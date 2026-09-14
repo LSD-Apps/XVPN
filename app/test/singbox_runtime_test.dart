@@ -27,6 +27,15 @@ import 'support/recording_listener.dart';
 ///
 /// 不需要真实的 VPN 服务端：请求打向本机地址，会命中内置的
 /// `ip_is_private → direct` 规则，因此走直连出站，隧道端点只参与初始化。
+/// 本文件起真实内核时用的端口基准。
+///
+/// 必须与其它**并发跑**的测试文件不同：`PortAllocator` 是「探测到空闲就释放、
+/// 内核随后再绑」，两步之间有窗口（见其文档）。若两个文件都从默认的 2080 起步，
+/// 它们可能在同一瞬间各自探到「2080 可用」，于是其中一个内核绑定失败——表现为
+/// 随机、难以复现的用例失败。按文件分段即可根除这类竞争。
+/// 详见 `SingBoxRunner.portBase`。
+const int _portBase = 27080;
+
 const _wireGuard = '''
 [Interface]
 PrivateKey = AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=
@@ -85,11 +94,11 @@ void main() {
 
   /// 起一个真实内核。端口用统一的分配器挑：2080 在开发机上很可能被别的东西
   /// 占着，写死端口会让这些测试变成偶发失败。
+  ///
+  /// 起点用本文件自己的分段（[_portBase]）而不是默认的 2080：并发跑的其它
+  /// 测试文件也在探测端口，若都从 2080 起步就可能探到同一个。
   Future<_Runtime> boot() async {
-    final ports = await PortAllocator.allocate(
-      from: SingBoxConfigBuilder.defaultMixedPort,
-      count: 2,
-    );
+    final ports = await PortAllocator.allocate(from: _portBase, count: 2);
     expect(ports, hasLength(2), reason: '找不到两个可用端口，环境不正常');
 
     final parsed = VpnProtocolFactory.parse(_wireGuard, 'runtime.conf');

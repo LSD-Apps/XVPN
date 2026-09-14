@@ -24,6 +24,15 @@ import 'support/recording_listener.dart';
 ///   1. 真实 [DemoVpnCore]：取消后驱动被取代的续跑走完，状态不被翻回；
 ///   2. 可控替身：取消立刻收手、未连接时是空操作、已连接时按断开处理；
 ///   3. 真实随包内核（缺少二进制时跳过）：取消后进程、PID 文件、系统代理都收干净。
+/// 本文件起真实内核时用的端口基准。
+///
+/// 必须与其它**并发跑**的测试文件不同：`PortAllocator` 是「探测到空闲就释放、
+/// 内核随后再绑」，两步之间有窗口（见其文档）。若两个文件都从默认的 2080 起步，
+/// 它们可能在同一瞬间各自探到「2080 可用」，于是其中一个内核绑定失败——表现为
+/// 随机、难以复现的用例失败。按文件分段即可根除这类竞争。
+/// 详见 `SingBoxRunner.portBase`。
+const int _portBase = 25080;
+
 const _conf = '''
 [Interface]
 PrivateKey = AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=
@@ -399,6 +408,8 @@ void main() {
         proxy: proxy,
         // 节点不可达，取消若无效就会一直等到这个上限。
         readyGateTimeout: const Duration(seconds: 3),
+        // 与本文件外的并发用例分段，避免争同一对端口（见 [_portBase]）。
+        portBase: _portBase,
         runtimeOverride: CoreRuntime(
           singBoxExe: exe,
           ruleSetDir: assets,

@@ -78,9 +78,12 @@ class SingBoxRunner extends VpnCore {
     this.dnsResolver,
     this.runtimeOverride,
     this.readyGateTimeout = tunnelReadyTimeout,
+    this.portBase = mixedPort,
     SystemProxyController? proxy,
   }) : proxy = proxy ?? SystemProxy.forPlatform(),
-       _recovery = CrashRecovery(policy: reconnectPolicy);
+       _recovery = CrashRecovery(policy: reconnectPolicy),
+       _mixedPort = portBase,
+       _clashApiPort = portBase + 1;
 
   /// 系统代理的接管与还原。生产按平台选择（Windows 走原生通道、Linux 走
   /// gsettings/KDE 命令，见 [SystemProxy.forPlatform]）；测试可注入替身。
@@ -104,13 +107,23 @@ class SingBoxRunner extends VpnCore {
   static const int mixedPort = SingBoxConfigBuilder.defaultMixedPort;
   static const int clashApiPort = SingBoxConfigBuilder.defaultClashApiPort;
 
+  /// 挑选端口时的**起始基准**。生产用默认值（[mixedPort]，即 2080）。
+  ///
+  /// 抽成可注入项是为了测试的**并发性**：`flutter test` 会把多个测试文件跑在
+  /// 同一个进程池里，而每个要起真实内核的文件都得先探一对空闲端口。若它们都
+  /// 从 2080 开始探，两个文件就可能在同一瞬间各自探到「2080 可用」——
+  /// [PortAllocator] 只是探测后立刻释放、内核随后才去绑，两步之间有窗口——
+  /// 于是其中一个内核必然绑定失败，表现为随机且难以复现的用例失败。
+  /// 让并发起内核的文件各从自己的分段起步，这类竞争就不会发生。
+  final int portBase;
+
   /// 本次连接实际使用的端口。
   ///
-  /// 默认值被占用时会往后找一个可用的（见 [PortAllocator]），因此这里不能在
-  /// 任何地方假设端口等于默认值——配置生成、系统代理、观测引擎三处必须用
-  /// 同一个值，错一处就会表现为「连上了但什么都读不到」。
-  int _mixedPort = mixedPort;
-  int _clashApiPort = clashApiPort;
+  /// 基准（或其后的位置）被占用时会往后找一个可用的（见 [PortAllocator]），
+  /// 因此这里不能在任何地方假设端口等于基准值——配置生成、系统代理、观测引擎
+  /// 三处必须用同一个值，错一处就会表现为「连上了但什么都读不到」。
+  int _mixedPort;
+  int _clashApiPort;
 
   /// 交给观测引擎的依赖。
   ///
@@ -360,13 +373,13 @@ class SingBoxRunner extends VpnCore {
       // 而占用者其实是自己上一次留下的。先清理，端口选择才是真实的。
       _killStaleCore(runtime.pidFile);
 
-      // 1) 挑端口。默认的 2080 / 2081 被占着时内核会直接起不来，而报错是一句
-      //    用户看不懂的绑定失败。改成往后找可用的，用户什么都不用做。
+      // 1) 挑端口。基准（生产是 2080 / 2081）被占着时内核会直接起不来，而报错是
+      //    一句用户看不懂的绑定失败。改成往后找可用的，用户什么都不用做。
       //    必须在生成配置**之前**确定：配置、系统代理、观测引擎三处共用它。
-      final ports = await PortAllocator.allocate(from: mixedPort, count: 2);
+      final ports = await PortAllocator.allocate(from: portBase, count: 2);
       if (aborted()) return;
       if (ports.length < 2) {
-        listener.onError('本地端口 $mixedPort 起连续 50 个都被占用，无法启动内核');
+        listener.onError('本地端口 $portBase 起连续 50 个都被占用，无法启动内核');
         await _stopCore(notifyStatus: true);
         return;
       }
@@ -378,8 +391,8 @@ class SingBoxRunner extends VpnCore {
       _hooks.mixedPort = _mixedPort;
       // 配置里声明的 MTU：校验的是**用户写的那个值**，而不是回退后的默认值。
       _hooks.declaredMtu = profile.parsed.declaredMtu;
-      if (_mixedPort != mixedPort) {
-        listener.onError('默认端口 $mixedPort 被占用，本次改用 $_mixedPort');
+      if (_mixedPort != portBase) {
+        listener.onError('默认端口 $portBase 被占用，本次改用 $_mixedPort');
       }
 
       // 1) 生成配置。规则集直接引用随包分发的文件，避免二次拷贝。

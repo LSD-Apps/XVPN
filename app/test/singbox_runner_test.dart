@@ -57,6 +57,34 @@ void main() {
         SingBoxConfigBuilder.defaultClashApiPort,
       );
       expect(SingBoxRunner.mixedPort, SingBoxConfigBuilder.defaultMixedPort);
+      expect(
+        runner.takeOverEndpoint,
+        '127.0.0.1:${SingBoxConfigBuilder.defaultMixedPort}',
+        reason: '连接前展示的地址也必须来自同一处默认值',
+      );
+    });
+
+    test('端口基准可注入：并发跑的测试各占一段，不必都从 2080 抢', () {
+      // 生产用默认值（[SingBoxRunner.mixedPort]），测试可以换一段。
+      //
+      // 这条守的是一个只在**并发**下才现形的缺陷：多个测试文件同时起真实内核，
+      // 而 [PortAllocator] 只是「探测到空闲就释放、内核随后再绑」。若大家都从
+      // 2080 起步，两个文件可能在同一瞬间各自探到「2080 可用」，其中一个内核
+      // 必然绑定失败，表现为随机失败的用例。基准可注入才能让各文件分段。
+      final runner = SingBoxRunner(
+        RecordingListener(),
+        probesEnabled: false,
+        portBase: 23080,
+      );
+      addTearDown(runner.dispose);
+
+      expect(runner.monitorHooks().mixedPort, 23080);
+      expect(
+        runner.monitorHooks().clashApiPort,
+        23081,
+        reason: 'Clash API 紧邻基准，否则两处偏移各写一个数字迟早会分叉',
+      );
+      expect(runner.takeOverEndpoint, '127.0.0.1:23080');
     });
 
     test('关闭主动探测时，hooks 也如实反映', () {
