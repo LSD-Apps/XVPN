@@ -50,10 +50,13 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   project.set_dart_entrypoint_arguments(std::move(command_line_arguments));
 
   FlutterWindow window(project);
-  Win32Window::Point origin(10, 10);
   // 画布 1180 × 742（设计稿）再加上 46 高的自绘标题栏，
   // 另外留出窗口边框在被 WM_NCCALCSIZE 去掉后仍能正常显示的空间。
   Win32Window::Size size(1180, 788);
+  // 默认居中到光标所在显示器的工作区。此前是写死的 (10, 10)，在高分辨率或
+  // 多显示器下窗口会贴在左上角，用户每次都要先把它拖到中间。
+  // 具体换算（含 DPI 与任务栏避让）见 Win32Window::CenteredOrigin。
+  Win32Window::Point origin = Win32Window::CenteredOrigin(size);
   if (!window.Create(L"XVPN", origin, size)) {
     return EXIT_FAILURE;
   }

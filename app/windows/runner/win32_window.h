@@ -13,9 +13,11 @@
 class Win32Window {
  public:
   struct Point {
-    unsigned int x;
-    unsigned int y;
-    Point(unsigned int x, unsigned int y) : x(x), y(y) {}
+    // 有符号：Windows 的坐标是**虚拟屏幕**坐标，主显示器左侧/上方的显示器
+    // 落在负区间。用 unsigned 会让「居中到左侧那块屏」变成绕回屏幕右端。
+    int x;
+    int y;
+    Point(int x, int y) : x(x), y(y) {}
   };
 
   struct Size {
@@ -35,6 +37,11 @@ class Win32Window {
   // as appropriate for the default monitor. The window is invisible until
   // |Show| is called. Returns true if the window was created successfully.
   bool Create(const std::wstring& title, const Point& origin, const Size& size);
+
+  // 返回让 |size|（逻辑像素）在**光标所在显示器**的工作区内居中所需的原点，
+  // 同样是逻辑像素，可直接交给 Create。工作区已排除任务栏，因此窗口不会压在
+  // 任务栏下面；问不到显示器信息时退回固定的 (10, 10) 而不是猜一个位置。
+  static Point CenteredOrigin(const Size& size);
 
   // Show the current window. Returns true if the window was successfully shown.
   bool Show();

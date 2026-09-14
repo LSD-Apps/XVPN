@@ -76,9 +76,65 @@ struct _MyApplication {
 
 G_DEFINE_TYPE(MyApplication, my_application, GTK_TYPE_APPLICATION)
 
+/// 让窗口在屏幕工作区内居中。
+///
+/// 用 [gtk_window_move] 而不是 `gtk_window_set_position(GTK_WIN_POS_CENTER)`：
+/// 后者自 GTK 3.10 起就是 deprecated，而本工程的 Linux 构建带 `-Wall -Werror`
+/// （见 `linux/CMakeLists.txt`），用它会让发布流水线直接编译失败——正是本仓库
+/// 记录过的那类「只在真机编译时才暴露」的错误。
+///
+/// **必须在窗口已显示之后调用**。GTK 文档写得很直白：多数窗口管理器会忽略对
+/// **初始位置**的请求（它们用自己的放置算法），只接受窗口显示**之后**的移动
+/// 请求。在 show 之前调用等于没调——窗口照样落在 WM 选的位置。
+///
+/// 代价是窗口可能先出现一瞬再移到中间。这是「X11 下真的居中」与「完全不跳」
+/// 之间的取舍，选了前者；Wayland 下合成器按协议自行决定窗口位置（不存在
+/// 「应用指定位置」这回事），此时这句是无害的空操作。
+///
+/// 尺寸与工作区都用**逻辑像素**（GTK3 的 application pixels，见
+/// gdk_monitor_get_workarea 的说明），两边同一坐标系，不需要手动乘缩放比。
+static void center_window_on_workarea(GtkWindow* window) {
+  GdkDisplay* display = gtk_widget_get_display(GTK_WIDGET(window));
+  if (display == nullptr) {
+    return;
+  }
+  // 主显示器。与 Windows 端取的「光标所在显示器」略有不同：GTK 要拿指针位置
+  // 得再走一趟 seat/device 查询，而启动图标所在的通常就是主屏。
+  GdkMonitor* monitor = gdk_display_get_primary_monitor(display);
+  if (monitor == nullptr) {
+    return;
+  }
+  GdkRectangle workarea = {0, 0, 0, 0};
+  gdk_monitor_get_workarea(monitor, &workarea);
+
+  gint width = 0;
+  gint height = 0;
+  gtk_window_get_size(window, &width, &height);
+  if (width <= 0 || height <= 0) {
+    return;
+  }
+  gint x = workarea.x + (workarea.width - width) / 2;
+  gint y = workarea.y + (workarea.height - height) / 2;
+  // 同 Windows 端：窗口比工作区还大时居中的结果是负数，退化成贴住左上角，
+  // 避免标题栏（以及拖动区与关闭按钮）落到屏幕外。
+  if (x < workarea.x) {
+    x = workarea.x;
+  }
+  if (y < workarea.y) {
+    y = workarea.y;
+  }
+  gtk_window_move(window, x, y);
+}
+
 // Called when first Flutter frame received.
 static void first_frame_cb(MyApplication* self, FlView* view) {
-  gtk_widget_show(gtk_widget_get_toplevel(GTK_WIDGET(view)));
+  GtkWidget* toplevel = gtk_widget_get_toplevel(GTK_WIDGET(view));
+  gtk_widget_show(toplevel);
+  // 顺序不能反：WM 只接受「窗口已显示」之后的移动请求，先 move 再 show 会被
+  // 直接忽略（见 center_window_on_workarea 的说明）。
+  if (GTK_IS_WINDOW(toplevel)) {
+    center_window_on_workarea(GTK_WINDOW(toplevel));
+  }
 }
 
 // ---------------------------------------------------------------- 窗口通道

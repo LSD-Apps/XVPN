@@ -123,6 +123,47 @@ Win32Window::~Win32Window() {
   Destroy();
 }
 
+// static
+Win32Window::Point Win32Window::CenteredOrigin(const Size& size) {
+  // 居中到**光标所在显示器**的工作区：用户刚双击图标，看的就是那块屏；而
+  // 工作区（rcWork）已经排除任务栏与 Dock，因此窗口不会被任务栏挡住。
+  //
+  // 用光标而不是「主显示器」还让这里与 Create 的 DPI 选择保持一致：两者都
+  // 取同一块显示器，坐标才不会被按另一块屏的缩放比换算。
+  POINT cursor = {0, 0};
+  GetCursorPos(&cursor);
+  // 取不到光标位置时 cursor 仍是 (0, 0)，而 MONITOR_DEFAULTTOPRIMARY 会
+  // 落在主显示器上——这正是我们想要的兜底，不必额外分支。
+  HMONITOR monitor = MonitorFromPoint(cursor, MONITOR_DEFAULTTOPRIMARY);
+
+  MONITORINFO info = {};
+  // 显式转换：sizeof 是 size_t，而 cbSize 是 DWORD；Windows 构建带 /W4 /WX，
+  // 转换告警会被当成编译失败。
+  info.cbSize = static_cast<DWORD>(sizeof(MONITORINFO));
+  if (monitor == nullptr || !GetMonitorInfo(monitor, &info)) {
+    return Point(10, 10);
+  }
+
+  // 这里必须返回**逻辑**像素：Create() 会拿同一块显示器的 DPI 再缩放一次，
+  // 所以两级换算要用同一个比例，否则高 DPI 屏上窗口会明显偏离中心。
+  const double scale_factor = FlutterDesktopGetDpiForMonitor(monitor) / 96.0;
+  // 显式转成 int 再交给 Scale：size.width/height 是 unsigned，直接传会因为
+  // 符号不匹配触发 /W4 的转换告警，而 Windows 构建是 /WX（告警即失败）。
+  const int width = Scale(static_cast<int>(size.width), scale_factor);
+  const int height = Scale(static_cast<int>(size.height), scale_factor);
+  const int x =
+      info.rcWork.left + ((info.rcWork.right - info.rcWork.left) - width) / 2;
+  const int y =
+      info.rcWork.top + ((info.rcWork.bottom - info.rcWork.top) - height) / 2;
+  // 窗口比工作区还大时（小屏 + 高缩放）居中的结果是负数，会有一部分落到屏幕
+  // 外。此时退化成「贴住工作区左上角」：宁可偏心，也不能让标题栏跑到看不见
+  // 的地方——那会连带把拖动与关闭按钮一起丢掉。
+  const int clamped_x = x < info.rcWork.left ? info.rcWork.left : x;
+  const int clamped_y = y < info.rcWork.top ? info.rcWork.top : y;
+  return Point(static_cast<int>(clamped_x / scale_factor),
+               static_cast<int>(clamped_y / scale_factor));
+}
+
 bool Win32Window::Create(const std::wstring& title,
                          const Point& origin,
                          const Size& size) {
