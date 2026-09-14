@@ -1,0 +1,20 @@
+# Authors
+
+Copyright holder and primary author of XVPN:
+
+- **LUSIDA（Start）**
+  - GitHub organization: [LSD-Apps](https://github.com/LSD-Apps)
+  - Maintainer account: [LSD2024](https://github.com/LSD2024)
+  - Commit identity used in this repository:
+    `LSD2024 <LSD2024@noreply.gitcode.com>`
+
+Canonical repository: <https://github.com/LSD-Apps/XVPN>
+
+## Attribution policy
+
+Authorship is attributed to the human maintainer / copyright holder above.
+**AI coding assistants are tools, not authors or contributors.** Do not add
+`Co-authored-by` trailers for assistants (for example `Cursor <cursoragent@cursor.com>`),
+and do not list them in `AUTHORS`, `CITATION.cff`, or release notes.
+
+See also [`.mailmap`](.mailmap) and [`CONTRIBUTING.md`](CONTRIBUTING.md).

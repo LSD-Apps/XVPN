@@ -10,8 +10,9 @@
 ///
 ///   1. **读 Clash API 并保持只读一次**。一个长连接复用 [HttpClient]，
 ///      不再每次轮询都新建 TCP 连接。
-///   2. **只做必要的工作**。累计流量每秒都要更新，而连接列表只在出现新连接时
-///      才构造对象；速率、DNS、自检各有自己的节奏，不互相拖累。
+///   2. **只做必要的工作**。累计流量每秒都要更新；连接列表只在出现新连接时
+///      才完整构造对象；已见过的连接稳态轮次只读 id/上下行三个字段。
+///      速率、DNS、自检各有自己的节奏，不互相拖累。
 ///   3. **把观测结果转成对用户有意义的结论**：失败归因、DNS 健康、
 ///      自动纠正了哪些域名。
 library;
@@ -47,17 +48,31 @@ import 'wireguard_handshake.dart';
 class _ConnectionTrace {
   _ConnectionTrace({
     required this.host,
+    required this.target,
     required this.direct,
-    required this.bytes,
+    required this.upload,
+    required this.download,
     this.startedAt,
     required this.lastSeenAt,
   }) : firstSeenAt = lastSeenAt;
 
   String host;
+
+  /// 展示用目标（域名或 IP:port）。稳态轮次靠它归并增量，避免每秒再 fromJson。
+  String target;
+
   final bool direct;
 
-  /// 该连接累计交付的字节数（内核计数，只增不减）。
-  int bytes;
+  /// 该连接累计上传 / 下载字节（内核计数，只增不减）。
+  ///
+  /// 分开存是为了让流量增量按方向精确差分，而不是只存总量再按比例拆。
+  int upload;
+  int download;
+
+  /// 该连接累计交付的字节数（上传 + 下载）。质量判定用总量。
+  int get bytes => upload + download;
+
+  RouteKind get kind => direct ? RouteKind.direct : RouteKind.proxy;
 
   /// 内核给出的连接建立时间。缺失时退回本机首次看到它的时刻。
   final DateTime? startedAt;
@@ -473,7 +488,11 @@ class CoreMonitor {
         return;
       }
 
-      // 1) 累计流量：每秒都要更新。
+      // 1) 累计流量与活连接数：每秒都要更新。
+      //
+      // 不再每轮遍历连接算「活连接上的隧道/直连字节」——界面占比用的是
+      // session*（按连接增量累加），那一套活连接快照对短连接永远偏空，而且
+      // 每秒扫一遍 chains 是纯浪费。连接数取列表长度即可。
       final totals = ClashSnapshot.totalsOf(json);
       _kernelMemory = totals.memory;
       final sample = _rate.sample(
@@ -482,15 +501,14 @@ class CoreMonitor {
         totals.uploadTotal,
       );
       if (sample != null) {
-        final breakdown = _outboundBreakdown(json);
-        _lastConnectionCount = breakdown.count;
+        final rawList = json['connections'];
+        final connectionCount = rawList is List ? rawList.length : 0;
+        _lastConnectionCount = connectionCount;
         hooks.listener.onTraffic(
           downBps: sample.downBps,
           upBps: sample.upBps,
           totalBytes: sample.totalBytes,
-          directBytes: breakdown.directBytes,
-          proxiedBytes: breakdown.proxiedBytes,
-          connectionCount: breakdown.count,
+          connectionCount: connectionCount,
           kernelMemory: totals.memory,
         );
       }
@@ -509,41 +527,6 @@ class CoreMonitor {
     }
   }
 
-  /// 按出站聚合字节数与连接数。
-  ///
-  /// 这是**监测数据精确性**的关键补充：此前界面上只有一个「本次累计」，
-  /// 用户无法回答「这些流量里有多少真的走了隧道」——而那恰恰是判断
-  /// 分流是否按预期工作的唯一依据。
-  ({int directBytes, int proxiedBytes, int count}) _outboundBreakdown(
-    Map<String, Object?> json,
-  ) {
-    final rawList = json['connections'];
-    if (rawList is! List) {
-      return (directBytes: 0, proxiedBytes: 0, count: 0);
-    }
-    var directBytes = 0;
-    var proxiedBytes = 0;
-    for (final raw in rawList) {
-      if (raw is! Map) continue;
-      final conn = raw.cast<String, Object?>();
-      final bytes = _int(conn['upload']) + _int(conn['download']);
-      final rawChains = conn['chains'];
-      final proxied =
-          rawChains is List &&
-          rawChains.any((Object? c) => c.toString() == OutboundTags.vpn);
-      if (proxied) {
-        proxiedBytes += bytes;
-      } else {
-        directBytes += bytes;
-      }
-    }
-    return (
-      directBytes: directBytes,
-      proxiedBytes: proxiedBytes,
-      count: rawList.length,
-    );
-  }
-
   static int _int(Object? raw) {
     if (raw is num) return raw.toInt();
     if (raw is String) return int.tryParse(raw) ?? 0;
@@ -555,10 +538,18 @@ class CoreMonitor {
   /// 为什么必须算增量：内核的 `upload` / `download` 是**该连接的累计值**，
   /// 直接累加会让数字随轮询次数成倍膨胀。相减之后才是真实新增。
   ///
-  /// 连接关闭后会从列表里消失，它最后一段流量就统计不到了——这是这套观测方式
-  /// 的固有限制（快照里没有关闭的连接），因此界面上的流量是**偏低**的下界，
-  /// 而不是虚高的估计值。而**质量判定**恰好要用到关闭那一刻的状态，因此同一趟
-  /// 里顺手把它消费掉（见 [_emitClosedConnectionQuality]）。
+  /// **首次见到**就把当前累计值记为一笔增量：HTTP 类短连接经常只出现在一轮
+  /// 快照里就关闭，若跳过首见字节，整段流量永远进不了「隧道/直连」统计——
+  /// 那正是统计卡无法真实呈现分流占比的根因。
+  ///
+  /// 仍可能略少：两次轮询之间已关闭连接的最后约 0～1 秒增长，以及内核本身
+  /// 就不进 `/connections` 的 DNS 流量。因此相对内核全局总量是接近精确的
+  /// 下界，不会虚高。质量判定仍在连接消失时消费账本（见
+  /// [_emitClosedConnectionQuality]）。
+  ///
+  /// **稳态热路径**只读 id / upload / download 三个字段，不再每秒
+  /// `ClashConnection.fromJson`：目标与出站在首见时已写入账本。观测与分流
+  /// 数据处理共用同一个 isolate，这里每秒多分配就会直接推迟分流记录处理。
   void _emitTrafficDeltas(Map<String, Object?> json) {
     final rawList = json['connections'];
     if (rawList is! List) {
@@ -580,44 +571,65 @@ class CoreMonitor {
 
     for (final raw in rawList) {
       if (raw is! Map) continue;
-      final conn = ClashConnection.fromJson(raw);
-      if (conn == null) continue;
-      live.add(conn.id);
+      final id = ClashConnection.idOf(raw);
+      if (id.isEmpty) continue;
+      live.add(id);
 
-      final total = conn.upload + conn.download;
-      // 先取旧字节数再更新——顺序反了会让增量恒为 0。
-      final trace = _connTraces[conn.id];
-      final previousBytes = trace?.bytes;
-      if (trace == null) {
-        _connTraces[conn.id] = _ConnectionTrace(
+      final map = raw.cast<String, Object?>();
+      final upload = _int(map['upload']);
+      final download = _int(map['download']);
+      final trace = _connTraces[id];
+
+      late final int upDelta;
+      late final int downDelta;
+      late final String target;
+      late final RouteKind kind;
+
+      if (trace != null) {
+        // 热路径：账本里已有目标与方向，只做上下行差分。
+        final rawUp = upload - trace.upload;
+        final rawDown = download - trace.download;
+        upDelta = rawUp < 0 ? 0 : rawUp;
+        downDelta = rawDown < 0 ? 0 : rawDown;
+        trace.upload = upload;
+        trace.download = download;
+        trace.lastSeenAt = now;
+        target = trace.target;
+        kind = trace.kind;
+        // 有流量活动时才读 metadata.host：稳态无增量的连接不必每秒解析。
+        if (upDelta > 0 || downDelta > 0) {
+          final host = _hostOf(map);
+          if (host.isNotEmpty) trace.host = host;
+        }
+      } else {
+        // 冷路径（首见）：完整解析一次，把 target/kind 写入账本供后续热路径用。
+        final conn = ClashConnection.fromJson(raw);
+        if (conn == null) {
+          live.remove(id);
+          continue;
+        }
+        upDelta = conn.upload < 0 ? 0 : conn.upload;
+        downDelta = conn.download < 0 ? 0 : conn.download;
+        target = conn.target;
+        kind = conn.proxied ? RouteKind.proxy : RouteKind.direct;
+        _connTraces[id] = _ConnectionTrace(
           host: conn.host,
+          target: conn.target,
           direct: !conn.proxied,
-          bytes: total,
+          upload: conn.upload,
+          download: conn.download,
           startedAt: conn.startedAt,
           lastSeenAt: now,
         );
-      } else {
-        trace.bytes = total;
-        trace.lastSeenAt = now;
-        // 同一连接的目标可能中途才被嗅探出来，因此有值时刷新；空值不覆盖。
-        if (conn.host.isNotEmpty) trace.host = conn.host;
       }
-      // 第一次见到这条连接时没有增量可言：它的全部字节都发生在建连那一刻之前，
-      // 而那部分流量属于「连接刚建立」这个事件，不是本轮的增量。
-      if (previousBytes == null) continue;
 
-      final delta = total - previousBytes;
-      if (delta <= 0) continue;
+      if (upDelta <= 0 && downDelta <= 0) continue;
 
-      final kind = conn.proxied ? RouteKind.proxy : RouteKind.direct;
-      final key = (conn.target, kind);
-      // 上传/下载的增量无法从总量差里精确拆开（账本只存了总量），
-      // 按当前比例近似分摊。这不影响总量正确性，只影响拆分精度。
-      final splitUp = _splitUpload(conn, delta);
+      final key = (target, kind);
       final previousOfTarget = deltas[key];
       deltas[key] = (
-        up: (previousOfTarget?.up ?? 0) + splitUp,
-        down: (previousOfTarget?.down ?? 0) + (delta - splitUp),
+        up: (previousOfTarget?.up ?? 0) + upDelta,
+        down: (previousOfTarget?.down ?? 0) + downDelta,
       );
     }
 
@@ -636,17 +648,11 @@ class CoreMonitor {
     }
   }
 
-  /// 把一条连接本轮的总增量拆成上传部分。
-  ///
-  /// 内核只给两个累计值，精确拆分需要同时保存上一轮的 up/down；这里账本只存了
-  /// 总量，因此按两个分量当前占总量的比例近似分摊。对「这一行跑了多少流量」
-  /// 这个用途足够：总量准确，只有上传/下载的边界是近似的。
-  static int _splitUpload(ClashConnection conn, int delta) {
-    final total = conn.upload + conn.download;
-    if (total <= 0) return 0;
-    final candidate = (delta * (conn.upload / total)).round();
-    if (candidate < 0) return 0;
-    return candidate > delta ? delta : candidate;
+  /// 只读 metadata.host，供热路径偶尔刷新嗅探结果。
+  static String _hostOf(Map<String, Object?> json) {
+    final rawMetadata = json['metadata'];
+    if (rawMetadata is! Map) return '';
+    return rawMetadata['host']?.toString() ?? '';
   }
 
   /// 新连接 → 分流记录，并顺带把走隧道的流量按域名累计。

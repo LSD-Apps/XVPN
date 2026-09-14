@@ -189,7 +189,7 @@ void main() {
     });
   });
 
-  group('会话累计分流（面板数据来源）', () {
+  group('观测分流（连接页占比数据来源）', () {
     ConnectionTraffic traffic(String target, RouteKind kind, int bytes) =>
         ConnectionTraffic(
           target: target,
@@ -205,7 +205,7 @@ void main() {
       state.onSplitRecord(_rec('a.example', kind: RouteKind.proxy));
       state.onConnectionTraffic(traffic('a.example', RouteKind.proxy, 1000));
       // 这个目标没有记录（可能刚被淘汰），累计仍应生效——面板回答的是
-      // 「本次会话走了多少隧道」，不该因为某一行消失而倒退。
+      // 「本次连接走了多少隧道」，不该因为某一行消失而倒退。
       state.onConnectionTraffic(
         traffic('ghost.example', RouteKind.direct, 500),
       );
@@ -214,7 +214,20 @@ void main() {
       expect(state.sessionDirectBytes, 500);
     });
 
-    test('清空记录时累计一并归零', () {
+    test('关闭分流明细后仍累计观测分流，只停按域名记账', () {
+      final state = AppState();
+      addTearDown(state.dispose);
+
+      state.updateSettings(state.settings.copyWith(logSplits: false));
+      state.onConnectionTraffic(traffic('a.example', RouteKind.proxy, 800));
+      state.onConnectionTraffic(traffic('b.example', RouteKind.direct, 200));
+
+      expect(state.sessionProxiedBytes, 800);
+      expect(state.sessionDirectBytes, 200);
+      expect(state.records, isEmpty, reason: '关闭明细后不该再长出分流行');
+    });
+
+    test('清空记录时观测分流一并归零', () {
       final state = AppState();
       addTearDown(state.dispose);
 
@@ -226,6 +239,59 @@ void main() {
 
       expect(state.sessionProxiedBytes, 0);
       expect(state.sessionDirectBytes, 0);
+    });
+
+    test('断开连接时观测分流与本次连接流量一并归零', () {
+      final state = AppState();
+      addTearDown(state.dispose);
+
+      state.onTraffic(
+        downBps: 1024,
+        upBps: 512,
+        totalBytes: 9000,
+        directBytes: 100,
+        proxiedBytes: 200,
+        connectionCount: 3,
+      );
+      state.onConnectionTraffic(traffic('a.example', RouteKind.proxy, 1000));
+      state.onConnectionTraffic(traffic('b.example', RouteKind.direct, 500));
+      expect(state.sessionProxiedBytes, 1000);
+      expect(state.totalBytes, 9000);
+
+      state.onStatusChanged(VpnStatus.disconnected);
+
+      expect(state.sessionProxiedBytes, 0);
+      expect(state.sessionDirectBytes, 0);
+      expect(state.totalBytes, 0);
+      expect(state.downBps, 0);
+      expect(state.upBps, 0);
+      expect(state.connectionCount, 0);
+    });
+
+    test('已连接时 onTraffic 不立刻重建界面，避免与 ticker 双倍占用主线程', () async {
+      final state = AppState();
+      addTearDown(state.dispose);
+      var notifies = 0;
+      state.addListener(() => notifies++);
+
+      state.onStatusChanged(VpnStatus.connected);
+      final afterConnect = notifies;
+
+      state.onTraffic(downBps: 1024, upBps: 512, totalBytes: 4096);
+      expect(
+        notifies,
+        afterConnect,
+        reason: '已连接时流量数字由 1s ticker 统一刷新，这里再 notify 会每秒双重建',
+      );
+      expect(state.downBps, 1024);
+      expect(state.totalBytes, 4096);
+
+      state.onStatusChanged(VpnStatus.disconnected);
+      final afterDisconnect = notifies;
+      state.onTraffic(downBps: 0, upBps: 0, totalBytes: 0);
+      // 未连接时走合并通知（微任务），冲掉队列后再断言。
+      await Future<void>.value();
+      expect(notifies, greaterThan(afterDisconnect));
     });
   });
 

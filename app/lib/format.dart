@@ -17,6 +17,12 @@ String _two(int v) => v.toString().padLeft(2, '0');
   return (value: bytesPerSecond.toStringAsFixed(0), unit: 'B/s');
 }
 
+/// 速率的整体标签，形如 `1.20 MB/s`。托盘 tooltip 与窄位文案用。
+String fmtRateLabel(double bytesPerSecond) {
+  final parts = fmtRate(bytesPerSecond);
+  return '${parts.value} ${parts.unit}';
+}
+
 /// 累计流量：B → KB → MB → GB → TB。
 ({String value, String unit}) fmtBytes(int bytes) {
   const kb = 1024.0;

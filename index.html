@@ -4,12 +4,12 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>XVPN — split-tunnel VPN client for Windows, Linux &amp; Android</title>
-<meta name="description" content="XVPN is a split-tunnel VPN client for Windows, Linux and Android. Import your own WireGuard, OpenVPN or Hysteria2 profile and get automatic rule-set based traffic splitting, dual-resolver DNS cross-validation, and self-correcting routing rules. Open source, GPL-3.0-or-later. Collects no data.">
-<meta name="keywords" content="split-tunnel VPN client, WireGuard client, OpenVPN client, Hysteria2 client, sing-box GUI, Windows VPN, Linux VPN, Android VPN, DNS leak prevention, geoip-cn, geosite-cn, automatic rule learning, open source VPN">
+<meta name="description" content="XVPN is a split-tunnel VPN client for Windows, Linux and Android. Import your own WireGuard, OpenVPN or Hysteria2 profile; traffic matched by bundled rule sets goes direct, the rest uses your tunnel. Open source, GPL-3.0-or-later. No nodes, no accounts, collects no data.">
+<meta name="keywords" content="split-tunnel VPN client, WireGuard client, OpenVPN client, Hysteria2 client, sing-box GUI, Windows VPN, Linux VPN, Android VPN, open source VPN, BYO config">
 <link rel="canonical" href="https://lsd-apps.github.io/XVPN/">
 <meta property="og:type" content="website">
 <meta property="og:title" content="XVPN — split-tunnel VPN client">
-<meta property="og:description" content="Import your own WireGuard/OpenVPN/Hysteria2 profile; get automatic traffic splitting, DNS cross-validation and self-correcting rules. Windows + Linux + Android, Flutter + sing-box, GPL-3.0-or-later.">
+<meta property="og:description" content="Bring your own WireGuard / OpenVPN / Hysteria2 profile. Automatic split tunnelling, DNS cross-validation, failure attribution. Windows · Linux · Android. GPL-3.0-or-later.">
 <meta property="og:url" content="https://lsd-apps.github.io/XVPN/">
 <meta name="twitter:card" content="summary">
 <style>
@@ -41,15 +41,16 @@
     background: var(--code-bg); padding: .12em .4em; border-radius: 4px;
     font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: .9em;
   }
-  table { border-collapse: collapse; width: 100%; margin: 1em 0; font-size: .95rem; }
-  th, td { border: 1px solid var(--line); padding: .5em .7em; text-align: left; vertical-align: top; }
-  th { background: var(--code-bg); font-weight: 600; }
-  ul { padding-left: 1.4em; }
-  li { margin: .35em 0; }
+  ol, ul { padding-left: 1.4em; }
+  li { margin: .4em 0; }
   .links { display: flex; flex-wrap: wrap; gap: 10px; margin: 22px 0 0; }
   .links a {
     display: inline-block; padding: 8px 14px; border: 1px solid var(--line);
     border-radius: 8px; text-decoration: none; font-size: .95rem;
+  }
+  .note {
+    margin: 1.2em 0; padding: 12px 14px; border-left: 3px solid var(--accent);
+    background: var(--code-bg); font-size: .95rem;
   }
   footer { margin-top: 4em; color: var(--muted); font-size: .85rem;
            border-top: 1px solid var(--line); padding-top: 1.2em; }
@@ -61,64 +62,66 @@
 <h1>XVPN</h1>
 <p class="tagline">A split-tunnel VPN client that just takes your <code>.conf</code>.</p>
 
-<p>XVPN is a <strong>config client</strong> for Windows, Linux and Android. You import your
-own WireGuard (<code>.conf</code>), OpenVPN (<code>.ovpn</code>) or Hysteria2
-(<code>.yaml</code> / <code>.yml</code>) profile; the app
-translates it for the core, decides which traffic goes direct and which goes through
-the tunnel, and tells you <em>why</em> a site fails when it does.</p>
+<p>XVPN is a <strong>config client</strong> for Windows, Linux and Android.
+You import your own WireGuard, OpenVPN or Hysteria2 profile; the app connects to
+<strong>your</strong> server, sends rule-matched traffic <em>direct</em>, and sends
+the rest through <em>your</em> tunnel — then tells you <em>why</em> something failed
+when it does.</p>
 
-<p>It ships <strong>no</strong> nodes, servers, subscriptions or accounts, and it
-implements no cryptography — that comes from
-<a href="https://github.com/SagerNet/sing-box">sing-box</a>. You bring your own config.</p>
+<p>It ships <strong>no</strong> nodes, servers, subscriptions or accounts.
+Cryptography comes from <a href="https://github.com/SagerNet/sing-box">sing-box</a>.
+You bring a lawful config.</p>
 
 <div class="links">
-  <a href="https://github.com/LSD-Apps/XVPN">Source code</a>
-  <a href="https://github.com/LSD-Apps/XVPN/blob/main/README.md">Documentation</a>
-  <a href="https://github.com/LSD-Apps/XVPN/releases">Releases</a>
-  <a href="privacy.html">Privacy policy</a>
-  <a href="https://github.com/LSD-Apps/XVPN/blob/main/README.zh-CN.md">简体中文</a>
+  <a href="https://github.com/LSD-Apps/XVPN/releases/latest"><strong>Download</strong></a>
+  <a href="https://github.com/LSD-Apps/XVPN/blob/main/docs/USER_GUIDE.md">User guide</a>
+  <a href="https://github.com/LSD-Apps/XVPN/blob/main/docs/USER_GUIDE.zh-CN.md">使用指南</a>
+  <a href="https://github.com/LSD-Apps/XVPN">Source</a>
+  <a href="privacy.html">Privacy</a>
+  <a href="https://github.com/LSD-Apps/XVPN/blob/main/docs/LEGAL.md">Legal</a>
 </div>
 
-<h2>What it does</h2>
+<h2>Path in four steps</h2>
+<ol>
+  <li>Run a lawful WireGuard / OpenVPN / Hysteria2 <strong>server</strong> you control
+      (or use a profile your organisation issued). Server install lives in each
+      protocol’s <strong>official</strong> docs — not here.</li>
+  <li>Export a client config (<code>.conf</code> / <code>.ovpn</code> / Hysteria2 YAML).</li>
+  <li>Install XVPN, import, connect.</li>
+  <li>Confirm status: rates move; failures show local vs server vs rule.</li>
+</ol>
+<p class="note">
+  Full walkthrough with UI map, redacted config shapes, and troubleshooting:<br>
+  <a href="https://github.com/LSD-Apps/XVPN/blob/main/docs/USER_GUIDE.md">User guide (EN)</a> ·
+  <a href="https://github.com/LSD-Apps/XVPN/blob/main/docs/USER_GUIDE.zh-CN.md">使用指南（中文）</a>
+</p>
+
+<h2>What you get</h2>
 <ul>
-  <li><strong>Automatic split tunnelling</strong> — bundled <code>geosite-cn</code> and
-      <code>geoip-cn</code> rule sets; flows matched by them go direct, everything else
-      goes through the tunnel. No rules to write.</li>
-  <li><strong>Dual-resolver DNS</strong> — rule-set matches resolve via a direct
-      resolver, everything else inside the tunnel; the two answer sets are
-      cross-validated so a bad answer never drives routing.</li>
-  <li><strong>Failure attribution</strong> — "judged direct but failed" (a rule gap),
-      "went through the tunnel but failed" (a node problem), and "direct itself is down"
-      (a local network problem) look identical to a user but need opposite responses.
-      XVPN tells them apart.</li>
-  <li><strong>DNS cross-validation</strong> — the same domain is resolved via the direct
-      resolver and via the core, the answer sets are compared, and geolocated against the
-      <code>geoip-cn</code> prefix index to distinguish dual deployment from an
-      inconsistent answer.</li>
-  <li><strong>Self-correcting routing</strong> — a domain judged direct that keeps failing
-      is switched to the tunnel at highest priority. Counter-evidence is respected: one
-      successful direct connection resets the failure streak, and two revoke a learned rule.</li>
+  <li><strong>Automatic split tunnelling</strong> — bundled domestic rule sets go
+      direct; everything else uses your tunnel. No rules to write for the common case.</li>
+  <li><strong>DNS that follows routing</strong> — dual resolvers, cross-checked so a
+      bad answer is less likely to drive the wrong path.</li>
+  <li><strong>Failure attribution</strong> — local network vs your server vs a rule miss
+      need opposite fixes; the status card separates them.</li>
+  <li><strong>Privacy by design</strong> — no accounts, analytics, ads, crash reporters,
+      or backend. <a href="privacy.html">Privacy policy</a>.</li>
 </ul>
 
-<h2>Privacy</h2>
-<p><strong>XVPN collects nothing.</strong> No accounts, no analytics, no ads, no trackers,
-no crash reporting, no backend. Configs and credentials stay on your device; split records
-live in memory and are gone when the app closes. Every outbound network connection the app
-can make is enumerated in the privacy policy — and because the app is open source, each
-claim can be verified against the code.</p>
-<p><a href="privacy.html">Read the full privacy policy →</a></p>
-
 <h2>License</h2>
-<p>GPL-3.0-or-later. This is not a preference but a consequence of the dependency: the
-Android build links the GPL-licensed sing-box core into the same process, forming a
-combined work. Third-party components and the upstream additional terms are listed in
+<p>GPL-3.0-or-later (required because the Android build links the GPL-licensed
+sing-box core into the same process). See
 <a href="https://github.com/LSD-Apps/XVPN/blob/main/NOTICE.md">NOTICE.md</a>.</p>
 
 <footer>
-  <p>XVPN is an independent project and is not affiliated with, endorsed by, or
-  sponsored by the sing-box or SagerNet projects.</p>
-  <p>This project is a client tool and provides no nodes or services. Please ensure the
-  configs and services you use comply with the laws of your jurisdiction.</p>
+  <p>Copyright (C) 2026 LUSIDA（Start）. Maintained by
+  <a href="https://github.com/LSD2024">LSD2024</a> /
+  <a href="https://github.com/LSD-Apps">LSD-Apps</a>
+  (<a href="https://github.com/LSD-Apps/XVPN/blob/main/AUTHORS">AUTHORS</a>).</p>
+  <p>Independent project — not affiliated with sing-box / SagerNet.</p>
+  <p>Client tool only; no nodes or services. You are responsible for lawful use of
+  your configs and servers.
+  <a href="https://github.com/LSD-Apps/XVPN/blob/main/docs/LEGAL.md">docs/LEGAL.md</a>.</p>
 </footer>
 
 </main>

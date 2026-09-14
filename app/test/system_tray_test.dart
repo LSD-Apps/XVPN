@@ -128,7 +128,9 @@ void main() {
     debugDefaultTargetPlatformOverride = null;
   });
 
-  testWidgets('状态没变时不重复推送：N 次无关变化只发一次', (WidgetTester tester) async {
+  testWidgets('状态没变时不重复推送：未连接时流量刷新不进载荷', (
+    WidgetTester tester,
+  ) async {
     debugDefaultTargetPlatformOverride = TargetPlatform.windows;
     final state = AppState();
     addTearDown(state.dispose);
@@ -141,8 +143,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(trayCalls(), hasLength(1), reason: '挂上托盘时同步一次当前状态');
 
-    // 与托盘无关的状态变化（每秒一次的流量刷新）会触发 notifyListeners，
-    // 界面因此重建；托盘不能跟着重建就推一次，否则平台通道每秒被刷。
+    // 未连接时速率不进载荷：界面每秒流量刷新不应刷平台通道。
     for (var i = 1; i <= 6; i++) {
       state.onTraffic(
         downBps: i.toDouble(),
@@ -151,7 +152,7 @@ void main() {
       );
     }
     await tester.pumpAndSettle();
-    expect(trayCalls(), hasLength(1), reason: '载荷没变就不该再碰平台通道');
+    expect(trayCalls(), hasLength(1), reason: '未连接时流量变化不该再碰平台通道');
 
     // 真的变了才推第二次。
     state.onStatusChanged(VpnStatus.connecting);
@@ -159,6 +160,47 @@ void main() {
     expect(trayCalls(), hasLength(2));
     expect(argsOf(trayCalls().last)['status'], VpnStatus.connecting.label);
 
+    debugDefaultTargetPlatformOverride = null;
+  });
+
+  testWidgets('已连接时载荷带格式化速率，刻度变化会再推一次', (
+    WidgetTester tester,
+  ) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.windows;
+    final state = AppState();
+    addTearDown(state.dispose);
+    final center = centerWithoutUpdate();
+    addTearDown(center.dispose);
+    final tray = SystemTray(state: state, updateCenter: center);
+    addTearDown(tray.dispose);
+
+    tray.attach();
+    await tester.pumpAndSettle();
+
+    state.onStatusChanged(VpnStatus.connected);
+    state.onTraffic(
+      downBps: 1.2 * 1024 * 1024,
+      upBps: 300 * 1024,
+      totalBytes: 4096,
+    );
+    await tray.sync();
+
+    final connectedArgs = argsOf(trayCalls().last);
+    expect(connectedArgs['connected'], isTrue);
+    expect(connectedArgs['downRate'], '1.20 MB/s');
+    expect(connectedArgs['upRate'], '300 KB/s');
+
+    final before = trayCalls().length;
+    state.onTraffic(
+      downBps: 2.4 * 1024 * 1024,
+      upBps: 300 * 1024,
+      totalBytes: 8192,
+    );
+    await tray.sync();
+    expect(trayCalls().length, before + 1, reason: '显示刻度变了就必须再推');
+    expect(argsOf(trayCalls().last)['downRate'], '2.40 MB/s');
+
+    state.dispose();
     debugDefaultTargetPlatformOverride = null;
   });
 

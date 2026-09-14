@@ -54,8 +54,13 @@ diagnostics, Flutter desktop app, Flutter Android app, GPL-3.0-or-later.
 
 ## Documentation
 
-- [README.md](README.md) — overview, quick start, build, test (English)
-- [README.zh-CN.md](README.zh-CN.md) — 简体中文
+- [README.md](README.md) — short portal: what/not, get started, build (English)
+- [README.zh-CN.md](README.zh-CN.md) — 简体中文门户
+- [docs/USER_GUIDE.md](docs/USER_GUIDE.md) — **primary user tutorial** (your server → client)
+- [docs/USER_GUIDE.zh-CN.md](docs/USER_GUIDE.zh-CN.md) — 使用指南（中文）
+- [docs/README.md](docs/README.md) — documentation index (user / advanced / maintainer)
+- [AUTHORS](AUTHORS) — copyright holder and maintainer identity
+- [docs/LEGAL.md](docs/LEGAL.md) — legal / usage notice (Chinese)
 - [PRIVACY.md](PRIVACY.md) / [privacy.html](privacy.html) — privacy policy; the
   app collects nothing, and every outbound network connection is enumerated
 - [CONTRIBUTING.md](CONTRIBUTING.md) — development conventions, adding a protocol
@@ -69,8 +74,7 @@ diagnostics, Flutter desktop app, Flutter Android app, GPL-3.0-or-later.
 - [docs/ANDROID.md](docs/ANDROID.md) — VpnService + libbox integration
 - [docs/RELEASE.md](docs/RELEASE.md) — release engineering and platform compliance
 - [docs/STORE_LISTING.md](docs/STORE_LISTING.md) — Google Play listing materials
-- [docs/RESEARCH.md](docs/RESEARCH.md) — why sing-box was chosen over a WireGuard
-  plugin
+- [docs/RESEARCH.md](docs/RESEARCH.md) — short note on why sing-box was chosen
 
 ## Technical facts
 

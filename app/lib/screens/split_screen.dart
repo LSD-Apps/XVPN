@@ -151,7 +151,7 @@ class _SplitScreenState extends State<SplitScreen> {
           title: latency == null ? '延迟 测量中' : '延迟 $latency ms',
           detail:
               '$failures · 活连接 ${state.connectionCount} 条 · '
-              '本次累计 ${_totalLabel(state.totalBytes)}',
+              '本次连接 ${_totalLabel(state.totalBytes)}',
           warn: latency == null || hasProblem,
           mono: true,
           action: digest.hasProblems ? detail : null,
@@ -166,7 +166,7 @@ class _SplitScreenState extends State<SplitScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: <Widget>[
-          const XvCardTitle('本次汇总'),
+          const XvCardTitle('连接汇总'),
           CheckRow(
             title: latency == null ? '延迟：测量中' : '延迟：$latency ms',
             detail: health != null && health.isProblem
@@ -190,15 +190,27 @@ class _SplitScreenState extends State<SplitScreen> {
           ),
           const SizedBox(height: 10),
           CheckRow(
-            title: '观测范围：本次累计 ${_totalLabel(state.totalBytes)}',
-            detail:
-                '当前活连接 ${state.connectionCount} 条 · '
-                '比例取自活连接快照，连接关闭后不再计入',
+            title: '本次连接：${_totalLabel(state.totalBytes)}',
+            detail: _observedSplitDetail(state),
             mono: true,
           ),
         ],
       ),
     );
+  }
+
+  /// 隧道/直连观测的诚实说明：与「本次连接」总量口径不同，放在分流页深挖。
+  static String _observedSplitDetail(AppState state) {
+    final proxied = state.sessionProxiedBytes;
+    final direct = state.sessionDirectBytes;
+    final observed = proxied + direct;
+    if (observed == 0) {
+      return '尚无隧道/直连拆分，连接后随流量出现 · 活连接 ${state.connectionCount} 条';
+    }
+    final percent = (proxied * 100 / observed).round();
+    return '隧道 ${_totalLabel(proxied)} · 直连 ${_totalLabel(direct)}'
+        '（约 $percent% 走隧道）· 活连接 ${state.connectionCount} 条'
+        ' · 按连接观测，可能略少于上方总量';
   }
 
   static String _totalLabel(int bytes) {
@@ -279,7 +291,8 @@ class _SplitScreenState extends State<SplitScreen> {
                   '输入关键字可以缩小范围。\n'
                   '同一目标只列一条，访问次数与流量累加。'
             : '同一目标只列一条，访问次数与流量累加。'
-                  '默认保留最近 ${AppState.recordLimit} 条，可在设置中关闭。',
+                  '默认保留最近 ${AppState.recordLimit} 条，可在设置中关闭。'
+                  '清空会清除记录与隧道/直连统计。',
         style: TextStyle(fontSize: 11.5, color: XV.muted2, height: 1.7),
       ),
     );

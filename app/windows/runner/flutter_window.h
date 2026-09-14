@@ -74,6 +74,8 @@ class FlutterWindow : public Win32Window {
   std::wstring tray_version_;
   std::wstring tray_status_;
   std::wstring tray_update_;
+  std::wstring tray_down_rate_;
+  std::wstring tray_up_rate_;
   bool tray_connected_ = false;
 
   HICON tray_icon_normal_ = nullptr;

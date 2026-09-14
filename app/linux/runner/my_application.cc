@@ -411,7 +411,8 @@ static const gchar* tray_string(FlValue* state, const char* key) {
 }
 
 // 应用 Dart 推来的托盘状态。字段与 Windows 端 ApplyTrayState 完全一致：
-// version / status / connected / updateVersion（后者只在有未忽略的更新时出现）。
+// version / status / connected / downRate / upRate / updateVersion
+// （后三者只在有值时出现；速率仅已连接时附带）。
 static void apply_tray_state(MyApplication* self, FlValue* state) {
   if (state == nullptr || fl_value_get_type(state) != FL_VALUE_TYPE_MAP) {
     return;
@@ -419,6 +420,8 @@ static void apply_tray_state(MyApplication* self, FlValue* state) {
   const gchar* version = tray_string(state, "version");
   const gchar* status = tray_string(state, "status");
   const gchar* update = tray_string(state, "updateVersion");
+  const gchar* down_rate = tray_string(state, "downRate");
+  const gchar* up_rate = tray_string(state, "upRate");
   FlValue* connected_value = fl_value_lookup_string(state, "connected");
   const gboolean connected =
       connected_value != nullptr &&
@@ -436,6 +439,13 @@ static void apply_tray_state(MyApplication* self, FlValue* state) {
   }
   if (status != nullptr && *status != '\0') {
     g_string_append_printf(title, " · %s", status);
+  }
+  if (connected &&
+      ((down_rate != nullptr && *down_rate != '\0') ||
+       (up_rate != nullptr && *up_rate != '\0'))) {
+    g_string_append_printf(title, " · ↓%s ↑%s",
+                           down_rate != nullptr ? down_rate : "",
+                           up_rate != nullptr ? up_rate : "");
   }
   if (update != nullptr && *update != '\0') {
     g_string_append_printf(title, " · 发现新版本 v%s", update);

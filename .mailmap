@@ -1,0 +1,9 @@
+# Canonical identity for this repository.
+# Maps historical / tool identities onto the maintainer account.
+# Note: GitHub's Contributors graph still reads Co-authored-by trailers from
+# commit messages; those must be stripped from history separately (see CONTRIBUTING).
+
+LSD2024 <LSD2024@noreply.gitcode.com> Cursor <cursoragent@cursor.com>
+LSD2024 <LSD2024@noreply.gitcode.com> Cursor Agent <cursoragent@cursor.com>
+LSD2024 <LSD2024@noreply.gitcode.com> cursoragent <cursoragent@cursor.com>
+LUSIDA（Start） <LSD2024@noreply.gitcode.com> LSD2024 <LSD2024@noreply.gitcode.com>

@@ -702,6 +702,10 @@ void FlutterWindow::UpdateTrayIcon() {
   if (!tray_status_.empty()) {
     tooltip += L" · " + tray_status_;
   }
+  // 已连接时附上下行/上行速率，最小化到托盘后仍能一眼看到「现在有没有在跑」。
+  if (tray_connected_ && (!tray_down_rate_.empty() || !tray_up_rate_.empty())) {
+    tooltip += L" · ↓" + tray_down_rate_ + L" ↑" + tray_up_rate_;
+  }
   if (!tray_update_.empty()) {
     tooltip += L" · 发现新版本 v" + tray_update_;
   }
@@ -733,6 +737,8 @@ void FlutterWindow::ApplyTrayState(const flutter::EncodableMap& state) {
   tray_version_ = Utf8ToWide(MapString(state, "version"));
   tray_status_ = Utf8ToWide(MapString(state, "status"));
   tray_update_ = Utf8ToWide(MapString(state, "updateVersion"));
+  tray_down_rate_ = Utf8ToWide(MapString(state, "downRate"));
+  tray_up_rate_ = Utf8ToWide(MapString(state, "upRate"));
   const flutter::EncodableValue* connected = MapValue(state, "connected");
   const bool* flag = connected == nullptr ? nullptr
                                           : std::get_if<bool>(connected);

@@ -325,21 +325,23 @@ class ConnectScreen extends StatelessWidget {
               value: up.value,
               unit: up.unit,
               spark: state.upHistory,
-              color: XV.green,
+              // 与下行分色：忙碌时扫一眼就能区分方向，不只靠箭头。
+              color: XV.blue,
               compact: compact,
             ),
           ),
-          // 移动端窄，放不下第三张卡，因此把「本次累计」并进下载卡的第二行，
-          // 而不是直接不显示——它是用户判断「这次连上跑了多少流量」的唯一数字。
+          // 移动端窄，放不下第三张卡，因此把「本次连接 + 隧道/直连」并进下方
+          // footer，而不是直接不显示。
           if (!compact) ...<Widget>[
             const SizedBox(width: 13),
             Expanded(
               child: _StatCard(
-                label: '本次累计',
+                label: '本次连接',
                 value: total.value,
                 unit: total.unit,
-                spark: state.totalHistory,
-                color: XV.blue,
+                // 累计流量配速率火花会误导；这里改成隧道/直连拆分。
+                color: XV.violet,
+                footer: _sessionSplitFooter(),
               ),
             ),
           ],
@@ -348,36 +350,111 @@ class ConnectScreen extends StatelessWidget {
     );
   }
 
-  /// 移动端统计行下面的补充信息：本次累计 + 失败计数。
+  /// 第三卡底部：隧道 / 直连字节与占比。
   ///
-  /// 桌面端这两项分别由第三张卡和侧栏质量指标承担，移动端两者都没有。
+  /// 有观测值才显示占比，避免「0% 走隧道」的假数据；尚无流量时给一句轻提示。
+  Widget _sessionSplitFooter() {
+    final proxied = state.sessionProxiedBytes;
+    final direct = state.sessionDirectBytes;
+    final observed = proxied + direct;
+    if (observed == 0) {
+      return Text('连接后显示隧道 / 直连', style: XvText.caption);
+    }
+    final percent = (proxied * 100 / observed).round();
+    final proxiedText = fmtBytes(proxied);
+    final directText = fmtBytes(direct);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: <Widget>[
+        Text(
+          '约 $percent% 走隧道',
+          style: XvText.caption.copyWith(
+            color: XV.text,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+        const SizedBox(height: 2),
+        Text(
+          '隧道 ${proxiedText.value}${proxiedText.unit} · '
+          '直连 ${directText.value}${directText.unit}',
+          style: XvText.caption,
+        ),
+      ],
+    );
+  }
+
+  /// 移动端统计行下面：本次连接 + 隧道占比（半高信息条）+ 失败计数。
   Widget _buildMobileStatsFooter() {
     final total = fmtBytes(state.totalBytes);
+    final proxied = state.sessionProxiedBytes;
+    final direct = state.sessionDirectBytes;
+    final observed = proxied + direct;
     final failures = state.failures.length;
+    final splitLabel = observed == 0
+        ? '尚无分流'
+        : '约 ${(proxied * 100 / observed).round()}% 走隧道';
+
     return Padding(
-      padding: const EdgeInsets.only(top: 8, left: 2, right: 2),
-      child: Row(
-        children: <Widget>[
-          Text('本次累计 ${total.value}${total.unit}', style: XvText.caption),
-          const Spacer(),
-          Text(
-            failures == 0 ? '无失败连接' : '$failures 次失败',
-            style: XvText.caption.copyWith(
-              color: failures == 0 ? XV.muted2 : XV.amber,
+      padding: const EdgeInsets.only(top: 10),
+      child: XvCard(
+        color: XV.panel2,
+        radius: 12,
+        padding: const EdgeInsets.fromLTRB(13, 11, 13, 11),
+        child: Row(
+          children: <Widget>[
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: <Widget>[
+                  Text('本次连接', style: XvText.statLabel),
+                  const SizedBox(height: 4),
+                  RichText(
+                    text: TextSpan(
+                      style: XvText.statValue.copyWith(fontSize: 20),
+                      children: <InlineSpan>[
+                        TextSpan(text: total.value),
+                        TextSpan(
+                          text: ' ${total.unit}',
+                          style: XvText.statUnit,
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
             ),
-          ),
-        ],
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: <Widget>[
+                Text(
+                  splitLabel,
+                  style: XvText.bodyMuted.copyWith(
+                    color: XV.text,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  failures == 0 ? '无失败连接' : '$failures 次失败',
+                  style: XvText.caption.copyWith(
+                    color: failures == 0 ? XV.muted2 : XV.amber,
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
       ),
     );
   }
 
-  // ---------------------------------------------------- 零配置校验 / 最近分流
+  // ---------------------------------------------------- 连接状态 / 最近分流
 
   Widget _buildChecksCard(BuildContext context) {
     return XvCard(child: _checksBody(context, forceTun: false));
   }
 
-  /// 零配置接管状态的内容。
+  /// 连接状态卡的内容。
   ///
   /// 桌面端与移动端共用同一份，避免两端各写一遍后慢慢跑偏——尤其是底部的
   /// 失败归因：那是「打不开网页到底是规则判错了还是节点不通」的唯一出口，
@@ -406,7 +483,7 @@ class ConnectScreen extends StatelessWidget {
     final digest = state.failureDigest;
 
     return <Widget>[
-      const XvCardTitle('零配置接管状态'),
+      const XvCardTitle('连接状态'),
       CheckRow(
         // 已支持多种协议，这里跟随实际导入的配置，不再写死 WireGuard。
         title: '已导入 ${state.profiles.length} 个配置',
@@ -448,14 +525,10 @@ class ConnectScreen extends StatelessWidget {
         const SizedBox(height: 11),
         _handshakeRow(),
       ],
-      // 以下三块是「检测能力」的可见出口。
-      //
-      // 它们的共同作用是回答用户真正的疑问——「为什么有的网站打不开」。
+      // 以下是「检测能力」的可见出口。隧道/直连占比已抬进统计卡，这里不再重复。
       // 只在连上之后显示：未连接时这些探测没有意义，显示出来只会是
       // 一排「待检测」的噪音。
       if (connected) ...<Widget>[
-        const SizedBox(height: 11),
-        _splitVolumeRow(),
         const SizedBox(height: 11),
         _selfCheckRow(),
         const SizedBox(height: 11),
@@ -658,39 +731,6 @@ class ConnectScreen extends StatelessWidget {
                 ),
               );
             },
-      ),
-    );
-  }
-
-  /// 分流占比：本次会话里有多少流量真的进了隧道。
-  ///
-  /// 口径改动过，原因值得记下来：**原来用的是「当前活连接」的字节快照**，而
-  /// 内核只按出站给出每条连接的用量、没有分出站的历史累计。HTTP 请求大多在
-  /// 一秒内结束，1 秒一次的轮询基本抓不到它们，于是这个数字常年停在 0%——
-  /// 面板看起来「永远不变」，而隧道其实一直在正常工作。
-  ///
-  /// 现在改用状态层逐轮累加出来的会话累计值（`sessionProxiedBytes`），
-  /// 它随流量增长，并且不受连接存活时间影响。
-  Widget _splitVolumeRow() {
-    final proxied = state.sessionProxiedBytes;
-    final direct = state.sessionDirectBytes;
-    final total = proxied + direct;
-    if (total == 0) {
-      // 还没有任何可归属的流量时不显示，避免给出一行恒为 0% 的假数据。
-      return const SizedBox.shrink();
-    }
-    final percent = (proxied * 100 / total).round();
-    final proxiedText = fmtBytes(proxied);
-    final directText = fmtBytes(direct);
-    return Padding(
-      padding: const EdgeInsets.only(top: 11),
-      child: CheckRow(
-        title: '本次分流：$percent% 走隧道',
-        detail:
-            '隧道 ${proxiedText.value}${proxiedText.unit} · '
-            '直连 ${directText.value}${directText.unit} · '
-            '当前活连接 ${state.connectionCount} 条',
-        mono: true,
       ),
     );
   }
@@ -1381,16 +1421,22 @@ class _StatCard extends StatelessWidget {
     required this.label,
     required this.value,
     required this.unit,
-    required this.spark,
     required this.color,
+    this.spark,
+    this.footer,
     this.compact = false,
   });
 
   final String label;
   final String value;
   final String unit;
-  final List<double> spark;
   final Color color;
+
+  /// 速率卡的火花线。累计流量卡不传——数字是总量，配速率曲线会误导。
+  final List<double>? spark;
+
+  /// 累计卡底部的隧道/直连拆分等补充信息。
+  final Widget? footer;
 
   /// 移动端的卡片规范与桌面端不同：设计稿里移动统计卡是 panel2 底 + 12 圆角
   /// + 更紧的内边距（`.m-stat`），而不是桌面的 panel + rCard。
@@ -1418,8 +1464,14 @@ class _StatCard extends StatelessWidget {
               ],
             ),
           ),
-          SizedBox(height: compact ? 7 : 9),
-          Sparkline(values: spark, color: color),
+          if (spark != null) ...<Widget>[
+            SizedBox(height: compact ? 7 : 9),
+            Sparkline(values: spark!, color: color),
+          ],
+          if (footer != null) ...<Widget>[
+            SizedBox(height: compact ? 7 : 9),
+            footer!,
+          ],
         ],
       ),
     );

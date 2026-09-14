@@ -328,7 +328,7 @@ void main() {
     await _stopCore(tester, state);
   });
 
-  testWidgets('移动端连接页同样有「零配置接管状态」并展示失败归因', (WidgetTester tester) async {
+  testWidgets('移动端连接页同样有「连接状态」并展示失败归因', (WidgetTester tester) async {
     final state = AppState();
     addTearDown(state.dispose);
     await _pumpShell(tester, state, size: const Size(390, 844));
@@ -337,8 +337,8 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(seconds: 1));
 
-    // 与桌面端同一份内容：接管状态必须两端一致
-    expect(find.text('零配置接管状态'), findsOneWidget);
+    // 与桌面端同一份内容：连接状态必须两端一致
+    expect(find.text('连接状态'), findsOneWidget);
     expect(find.textContaining('已导入 1 个配置'), findsOneWidget);
     expect(find.text('TUN 虚拟网卡接管'), findsOneWidget);
 
@@ -436,7 +436,7 @@ void main() {
 
     await tester.tap(find.text('设置'));
     await tester.pumpAndSettle();
-    expect(find.text('记录分流日志'), findsOneWidget);
+    expect(find.text('记录分流明细'), findsOneWidget);
 
     state.updateSettings(state.settings.copyWith(logSplits: false));
     await tester.pumpAndSettle();
@@ -573,7 +573,9 @@ void main() {
     await _stopCore(tester, state);
   });
 
-  testWidgets('移动端统计区仍能看到本次累计与失败次数', (WidgetTester tester) async {
+  testWidgets('移动端统计区仍能看到本次连接、隧道占比与失败次数', (
+    WidgetTester tester,
+  ) async {
     final state = AppState();
     addTearDown(state.dispose);
     await _pumpShell(tester, state, size: const Size(390, 844));
@@ -582,7 +584,8 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(seconds: 1));
 
-    expect(find.textContaining('本次累计'), findsOneWidget);
+    expect(find.text('本次连接'), findsWidgets);
+    expect(find.textContaining('走隧道'), findsWidgets);
     expect(find.text('无失败连接'), findsOneWidget);
 
     state.onConnectionFailure(

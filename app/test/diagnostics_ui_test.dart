@@ -271,7 +271,7 @@ void main() {
     testWidgets('连接后展示流量分布、自检与 DNS', (WidgetTester tester) async {
       final state = AppState();
       addTearDown(state.dispose);
-      // 用高一点的窗口，保证「零配置接管状态」卡片里的检测行都在视口内
+      // 用高一点的窗口，保证「连接状态」卡片里的检测行都在视口内
       // （桌面端布局在内容超出时靠卡片内部滚动，视口外的行不会被构建）。
       await _pump(tester, state, size: const Size(1500, 1400));
       await _connect(tester, state);
@@ -280,12 +280,16 @@ void main() {
 
       // 演示内核连接成功后会持续上报流量，其中带有按路径拆分的字节数。
       expect(state.isConnected, isTrue);
-      expect(state.proxiedBytes + state.directBytes, greaterThan(0));
-      // 面板文案在改口径时变过：以前是「当前活连接：N% 走隧道」，取自活连接快照，
-      // 而短连接在 1 秒轮询里基本抓不到，数字常年停在 0%。现在用的是状态层累加
-      // 出来的会话累计值。
-      expect(find.textContaining('本次分流'), findsWidgets);
+      // 演示内核仍填活连接快照字段；真实路径看 session*。
+      expect(
+        state.sessionProxiedBytes + state.sessionDirectBytes,
+        greaterThan(0),
+        reason: '连接后应按增量累计出隧道/直连字节',
+      );
+      // 隧道/直连占比已抬进「本次连接」统计卡，用人话「约 N% 走隧道」。
+      expect(find.textContaining('约'), findsWidgets);
       expect(find.textContaining('走隧道'), findsWidgets);
+      expect(find.text('连接状态'), findsOneWidget);
 
       // 演示内核不做 DNS 探测与自检，先确认占位文案在，
       // 再喂一份真实报告验证渲染路径。
@@ -823,11 +827,12 @@ void main() {
 
       final traffic = listener.lastTraffic;
       expect(traffic, isNotNull, reason: '第二次采样必须上报流量');
-      expect(traffic!.proxiedBytes, 4000, reason: '走隧道的是 vpn-1');
-      expect(traffic.directBytes, 2000, reason: '走直连的是 direct-1');
-      expect(traffic.connectionCount, 2);
+      expect(traffic!.connectionCount, 2);
       expect(traffic.kernelMemory, 65536, reason: '内核内存用于自查大数据量压力');
       expect(traffic.totalBytes, 12000);
+      // 活连接快照字节不再每秒遍历上报（界面用 session*）；隧道/直连看增量。
+      expect(traffic.proxiedBytes, 0);
+      expect(traffic.directBytes, 0);
 
       // 分流记录：两条新连接，规则名已归一化。
       expect(
@@ -846,6 +851,132 @@ void main() {
       final before = listener.records.length;
       await monitor.tick();
       expect(listener.records.length, before, reason: '已上报过的连接不该重复记');
+
+      // 首见字节已计入：两轮采样后流量增量应等于连接当时累计值，而不是 0。
+      final proxiedTraffic = listener.trafficUpdates
+          .where((ConnectionTraffic t) => t.kind == RouteKind.proxy)
+          .fold<int>(0, (int s, ConnectionTraffic t) => s + t.totalDelta);
+      final directTraffic = listener.trafficUpdates
+          .where((ConnectionTraffic t) => t.kind == RouteKind.direct)
+          .fold<int>(0, (int s, ConnectionTraffic t) => s + t.totalDelta);
+      expect(proxiedTraffic, 4000, reason: '首见即计入，覆盖短连接');
+      expect(directTraffic, 2000);
+    });
+
+    test('只出现一轮就关闭的短连接，整段流量仍计入', () async {
+      // 这是统计卡「隧道/直连」能否真实呈现的关键：HTTP 类连接经常只在一轮
+      // 快照里出现就关闭。若跳过首见字节，session* 永远是 0。
+      final withConn = jsonEncode(<String, Object?>{
+        'downloadTotal': 5000,
+        'uploadTotal': 0,
+        'memory': 0,
+        'connections': <Object?>[
+          <String, Object?>{
+            'id': 'short-1',
+            'metadata': <String, Object?>{
+              'host': 'cdn.example.com',
+              'destinationPort': '443',
+            },
+            'chains': <String>['vpn'],
+            'rule': 'final',
+            'upload': 800,
+            'download': 4200,
+          },
+        ],
+      });
+      final empty = jsonEncode(<String, Object?>{
+        'downloadTotal': 5000,
+        'uploadTotal': 0,
+        'memory': 0,
+        'connections': <Object?>[],
+      });
+
+      final listener = RecordingListener();
+      final monitor = CoreMonitor(
+        CoreMonitorHooks(
+          listener: listener,
+          clashApiPort: 2081,
+          probesEnabled: false,
+          httpClient: _SequenceClashClient(<String>[withConn, empty]),
+        ),
+      );
+      addTearDown(monitor.dispose);
+
+      await monitor.tick();
+      expect(
+        listener.trafficUpdates.single.totalDelta,
+        5000,
+        reason: '首见就把当前累计记为一笔增量',
+      );
+      expect(listener.trafficUpdates.single.kind, RouteKind.proxy);
+      expect(listener.trafficUpdates.single.uploadDelta, 800);
+      expect(listener.trafficUpdates.single.downloadDelta, 4200);
+
+      await monitor.tick();
+      expect(
+        listener.trafficUpdates,
+        hasLength(1),
+        reason: '关闭后不应再把同一笔字节计第二次',
+      );
+    });
+
+    test('后续轮次按 up/down 精确差分，不按总量比例近似', () async {
+      final first = jsonEncode(<String, Object?>{
+        'downloadTotal': 1000,
+        'uploadTotal': 100,
+        'memory': 0,
+        'connections': <Object?>[
+          <String, Object?>{
+            'id': 'grow-1',
+            'metadata': <String, Object?>{
+              'host': 'api.example.com',
+              'destinationPort': '443',
+            },
+            'chains': <String>['vpn'],
+            'rule': 'final',
+            'upload': 100,
+            'download': 1000,
+          },
+        ],
+      });
+      final second = jsonEncode(<String, Object?>{
+        'downloadTotal': 5000,
+        'uploadTotal': 150,
+        'memory': 0,
+        'connections': <Object?>[
+          <String, Object?>{
+            'id': 'grow-1',
+            'metadata': <String, Object?>{
+              'host': 'api.example.com',
+              'destinationPort': '443',
+            },
+            'chains': <String>['vpn'],
+            'rule': 'final',
+            'upload': 150,
+            'download': 5000,
+          },
+        ],
+      });
+
+      final listener = RecordingListener();
+      final monitor = CoreMonitor(
+        CoreMonitorHooks(
+          listener: listener,
+          clashApiPort: 2081,
+          probesEnabled: false,
+          httpClient: _SequenceClashClient(<String>[first, second]),
+        ),
+      );
+      addTearDown(monitor.dispose);
+
+      await monitor.tick();
+      await monitor.tick();
+
+      expect(listener.trafficUpdates, hasLength(2));
+      expect(listener.trafficUpdates[0].uploadDelta, 100);
+      expect(listener.trafficUpdates[0].downloadDelta, 1000);
+      expect(listener.trafficUpdates[1].uploadDelta, 50);
+      expect(listener.trafficUpdates[1].downloadDelta, 4000);
     });
   });
 }
@@ -860,6 +991,27 @@ class _FakeClashClient implements HttpClient {
 
   @override
   Future<HttpClientRequest> getUrl(Uri url) async => _FakeRequest(body);
+
+  @override
+  void close({bool force = false}) {}
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
+
+/// 按顺序返回多份正文，用于模拟连接出现与关闭。
+class _SequenceClashClient implements HttpClient {
+  _SequenceClashClient(this._bodies);
+
+  final List<String> _bodies;
+  int _index = 0;
+
+  @override
+  Future<HttpClientRequest> getUrl(Uri url) async {
+    final body = _bodies[_index < _bodies.length ? _index : _bodies.length - 1];
+    _index++;
+    return _FakeRequest(body);
+  }
 
   @override
   void close({bool force = false}) {}

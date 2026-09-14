@@ -157,7 +157,6 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
 
   final List<double> _downHistory = <double>[];
   final List<double> _upHistory = <double>[];
-  final List<double> _totalHistory = <double>[];
 
   VpnStatus _status = VpnStatus.disconnected;
 
@@ -252,7 +251,6 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
 
   List<double> get downHistory => List<double>.unmodifiable(_downHistory);
   List<double> get upHistory => List<double>.unmodifiable(_upHistory);
-  List<double> get totalHistory => List<double>.unmodifiable(_totalHistory);
   String? get lastError => _lastError;
   DateTime get ruleSetUpdatedAt => _ruleSetUpdatedAt;
 
@@ -260,24 +258,29 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
   List<RuleSetEntry> get ruleSets => List<RuleSetEntry>.unmodifiable(_ruleSets);
   double get downBps => _downBps;
   double get upBps => _upBps;
+
+  /// 本次连接流量：内核自本次连接起累计的上下行总和。
+  ///
+  /// 用户语言叫「本次连接」——断开归零。它不分隧道/直连；要看占比请看
+  /// [sessionProxiedBytes]。
   int get totalBytes => _totalBytes;
 
-  /// 走隧道 / 走直连的已传输字节。用来回答「这些流量里有多少真的进了隧道」——
-  /// 这是判断分流是否按预期工作的唯一依据。
+  /// 走隧道 / 走直连的已传输字节（兼容字段）。
   ///
-  /// 注意口径：它们取自内核**当前活连接**的快照，因此短连接一旦关闭就从这里消失。
-  /// 想要「本次会话累计走了多少隧道」请看 [sessionProxiedBytes]。
+  /// 真实内核路径不再每秒遍历活连接填这两个值（界面占比用 [sessionProxiedBytes]）；
+  /// 演示内核仍会写入，供旧测试与演示面板对照。新代码请读 session*。
   int get directBytes => _directBytes;
   int get proxiedBytes => _proxiedBytes;
 
-  /// 本次会话累计：按目标累加出来的走隧道 / 走直连字节数。
+  /// 本次连接内观测到的隧道 / 直连字节（按连接增量累加）。
   ///
-  /// 与 [directBytes] 的区别是**累计而非瞬时**。此前界面上那个「N% 走隧道」用的是
-  /// 瞬时快照，而 HTTP 请求大多在一秒内结束——轮询根本抓不到它们，于是数字常年
-  /// 停在 0，用户看到的是一个永远不动的面板。累计值随流量逐轮增长，才反映实情。
+  /// 用户语言叫「隧道/直连」占比：回答「已看到的流量里，有多少进了隧道」。
+  /// 与 [totalBytes]（「本次连接」= 内核全局累计）口径不同——这里按连接观测，
+  /// 首次见到即计入，之后按 up/down 精确差分；仍可能略少于内核总量（关闭前
+  /// 最后约 0～1 秒、以及 DNS 流量），但不会虚高，也不会像活连接快照那样
+  /// 常年停在 0%。
   ///
-  /// 口径说明：只在能观察到增量的连接上累加，因此是**下界**（连接关闭瞬间的
-  /// 最后一段流量可能未被计入），但不会虚高。
+  /// 生命周期与「本次连接」对齐：断开归零；点「清空」也归零。跨次连接不累加。
   int get sessionProxiedBytes => _sessionProxiedBytes;
   int get sessionDirectBytes => _sessionDirectBytes;
 
@@ -1521,13 +1524,19 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
         if (status == VpnStatus.disconnected) {
           _downBps = 0;
           _upBps = 0;
+          _totalBytes = 0;
           _latencyMs = null;
           _directBytes = 0;
           _proxiedBytes = 0;
           _connectionCount = 0;
+          _kernelMemory = 0;
+          // 「本次连接 / 观测分流」都是这一次连接的口径，断开后必须归零；
+          // 否则重连后用户会把上一次的数字当成这一次的。
+          _sessionProxiedBytes = 0;
+          _sessionDirectBytes = 0;
           _pushSpark(0, 0);
           // 断开后 DNS 与自检的结论已经过期，留着会误导。
-          // 自动纠正表不清：那是学到的长期结论，与本次会话无关。
+          // 自动纠正表不清：那是学到的长期结论，与本次连接无关。
           _dnsReport = null;
           _selfCheckReport = null;
           // 健康结论同理：它描述的是「刚才那条隧道」，断开后不再有意义。
@@ -1556,7 +1565,11 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
     _connectionCount = connectionCount;
     _kernelMemory = kernelMemory;
     _pushSpark(downBps, upBps);
-    notifyListeners();
+    // 已连接时由 1 秒 ticker 统一刷新界面（含连接时长）。这里再 notify 会让
+    // 主线程每秒重建两次，而界面与分流数据处理共用同一个 isolate。
+    // 未连接 / 连接中仍合并通知一次，好让断开后的归零立刻反映到统计卡。
+    if (_status == VpnStatus.connected) return;
+    _notifyCoalesced();
   }
 
   @override
@@ -1617,20 +1630,24 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
   /// 目标还没出现过时不新建行：行由 [onSplitRecord] 建，流量只做累加——
   /// 否则会出现「只有流量、没有连接事件」的记录。
   ///
+  /// 「观测分流」占比与「按域名记账」刻意拆开：关闭 [AppSettings.logSplits]
+  /// 只停分流行，连接页的隧道占比仍要动——用户关掉明细记录，不等于不要
+  /// 「这次连上有多少进了隧道」这个答案。
+  ///
   /// 这里是**每秒 × 目标数**的高频路径，因此只做常数级工作：查表、两个加法、
   /// 一个计数器自增。**不调用 `notifyListeners`**——界面每秒有一次统一定时刷新，
   /// 每条流量都触发重绘会把主线程占满，而它和分流共用同一个 isolate。
   @override
   void onConnectionTraffic(ConnectionTraffic traffic) {
-    if (!_settings.logSplits) return;
-
-    // 会话累计独立于记录是否存在：记录会被淘汰，而「本次累计走了多少隧道」
-    // 不该因为某一行被挤出就倒退。
+    // 观测分流独立于记录是否存在、也独立于是否记账：记录会被淘汰或关闭，
+    // 而「本次连接走了多少隧道」不该因此倒退或停更。
     if (traffic.kind == RouteKind.proxy) {
       _sessionProxiedBytes += traffic.totalDelta;
     } else {
       _sessionDirectBytes += traffic.totalDelta;
     }
+
+    if (!_settings.logSplits) return;
 
     final record = _recordByTarget[traffic.target];
     if (record == null) {
@@ -1778,15 +1795,12 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
   void _pushSpark(double down, double up) {
     _downHistory.add(down);
     _upHistory.add(up);
-    _totalHistory.add((down + up));
+    // totalHistory 曾给「本次连接」卡配速率火花，已去掉该误导用法，不再维护。
     while (_downHistory.length > sparkPoints) {
       _downHistory.removeAt(0);
     }
     while (_upHistory.length > sparkPoints) {
       _upHistory.removeAt(0);
-    }
-    while (_totalHistory.length > sparkPoints) {
-      _totalHistory.removeAt(0);
     }
   }
 

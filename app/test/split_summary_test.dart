@@ -18,7 +18,7 @@ PublicKey = cHVibGljIGtleSB2YWx1ZSBnb2VzIGhlcmUgcGFkZGVk
 Endpoint = 1.2.3.4:51820
 ''';
 
-/// 分流记录页上的「本次汇总」。
+/// 分流记录页上的「连接汇总」。
 ///
 /// 这一块存在的理由是**关联**：判定出问题时，用户下一个问题是「规则判错了还是
 /// 节点不通」，而回答它需要延迟与失败记录同屏——同一个目标反复失败、且延迟同时
@@ -63,9 +63,42 @@ void main() {
     final state = newState();
     await pump(tester, state);
 
-    expect(find.text('本次汇总'), findsOneWidget);
+    expect(find.text('连接汇总'), findsOneWidget);
     expect(find.textContaining('连接失败：暂无'), findsOneWidget);
+    expect(find.textContaining('本次连接'), findsOneWidget);
+    expect(find.textContaining('尚无隧道/直连拆分'), findsOneWidget);
     expect(find.text('失败详情'), findsNothing);
+
+    await teardown(tester, state);
+  });
+
+  testWidgets('有隧道/直连拆分时展示占比，并说明与总量口径不同', (
+    WidgetTester tester,
+  ) async {
+    final state = newState();
+    state.onTraffic(downBps: 0, upBps: 0, totalBytes: 50 * 1024);
+    state.onConnectionTraffic(
+      const ConnectionTraffic(
+        target: 'a.example',
+        kind: RouteKind.proxy,
+        uploadDelta: 0,
+        downloadDelta: 30 * 1024,
+      ),
+    );
+    state.onConnectionTraffic(
+      const ConnectionTraffic(
+        target: 'b.example',
+        kind: RouteKind.direct,
+        uploadDelta: 0,
+        downloadDelta: 10 * 1024,
+      ),
+    );
+    await pump(tester, state);
+
+    expect(find.textContaining('本次连接：50KB'), findsOneWidget);
+    expect(find.textContaining('隧道 30KB'), findsOneWidget);
+    expect(find.textContaining('约 75% 走隧道'), findsOneWidget);
+    expect(find.textContaining('可能略少于上方总量'), findsOneWidget);
 
     await teardown(tester, state);
   });
@@ -136,7 +169,7 @@ void main() {
 
     expect(find.textContaining('延迟 38 ms'), findsOneWidget);
     expect(find.textContaining('连接失败 1 条'), findsOneWidget);
-    expect(find.text('本次汇总'), findsNothing, reason: '紧凑版不带标题，省下的正是矮屏最缺的高度');
+    expect(find.text('连接汇总'), findsNothing, reason: '紧凑版不带标题，省下的正是矮屏最缺的高度');
     expect(tester.takeException(), isNull);
 
     await teardown(tester, state);

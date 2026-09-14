@@ -447,7 +447,12 @@ class DemoVpnCore extends VpnCore {
     _recordTimer = null;
     _down = 0;
     _up = 0;
-    listener.onTraffic(downBps: 0, upBps: 0, totalBytes: _total);
+    // 与真实内核对齐：断开后「本次连接」归零，否则演示路径会把上一次的总量
+    // 留在界面上，掩盖生产环境里「断开即清」的口径。
+    _total = 0;
+    _directTotal = 0;
+    _proxiedTotal = 0;
+    listener.onTraffic(downBps: 0, upBps: 0, totalBytes: 0);
     listener.onStatusChanged(VpnStatus.disconnected);
   }
 

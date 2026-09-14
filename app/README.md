@@ -1,17 +1,22 @@
-# xvpn
+# app/ — Flutter 工程
 
-Zero-config split-tunnel VPN client
+这是 XVPN 的应用源码目录（UI + 状态层 + 协议适配 + 内核接入）。
 
-## Getting Started
+**请不要从这里开始读产品说明。** 用户与贡献者入口在仓库根目录：
 
-This project is a starting point for a Flutter application.
+| 你想… | 去读 |
+| --- | --- |
+| 学会使用（自备/自建服务端 → 客户端） | [`../docs/USER_GUIDE.zh-CN.md`](../docs/USER_GUIDE.zh-CN.md) |
+| 产品定位与法律边界 | [`../docs/LEGAL.md`](../docs/LEGAL.md) |
+| 构建 / 测试 / 仓库结构 | [`../README.zh-CN.md`](../README.zh-CN.md) |
+| 开发约定 | [`../CONTRIBUTING.md`](../CONTRIBUTING.md) |
+| 文档总索引 | [`../docs/README.md`](../docs/README.md) |
 
-A few resources to get you started if this is your first Flutter project:
+```powershell
+cd app
+flutter pub get
+flutter analyze
+flutter test
+```
 
-- [Learn Flutter](https://docs.flutter.dev/get-started/learn-flutter)
-- [Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Flutter learning resources](https://docs.flutter.dev/reference/learning-resources)
-
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+English overview: [`../README.md`](../README.md) · User guide: [`../docs/USER_GUIDE.md`](../docs/USER_GUIDE.md).

@@ -3,17 +3,18 @@ message: If you use XVPN in academic work, please cite it as below.
 title: XVPN
 abstract: >-
   A split-tunnel VPN client that takes a user-supplied WireGuard, OpenVPN or
-  Hysteria2 profile and applies automatic traffic splitting between China and
-  elsewhere, dual-resolver DNS with cross-validation, failure attribution derived
+  Hysteria2 profile and applies automatic traffic splitting with bundled rule
+  sets, dual-resolver DNS with cross-validation, failure attribution derived
   from core logs, and evidence-based automatic routing correction. Built on
-  sing-box for Windows, Linux and Android with a shared Flutter UI.
+  sing-box for Windows, Linux and Android with a shared Flutter UI. Ships no
+  nodes or accounts; the user brings their own configuration.
 type: software
 license: GPL-3.0-or-later
 license-url: https://github.com/LSD-Apps/XVPN/blob/main/LICENSE
 repository-code: https://github.com/LSD-Apps/XVPN
 url: https://github.com/LSD-Apps/XVPN
-version: 1.0.0
-date-released: 2026-09-12
+version: 1.2.0
+date-released: 2026-09-14
 keywords:
   - vpn
   - split-tunnel
@@ -22,7 +23,7 @@ keywords:
   - hysteria2
   - sing-box
   - dns
-  - dns-poisoning
+  - dns-validation
   - geoip
   - geosite
   - flutter
@@ -32,4 +33,6 @@ keywords:
   - network
   - privacy
 authors:
-  - name: LUSIDA（Start）
+  - name: "LUSIDA（Start）"
+    alias: LSD2024
+    email: LSD2024@noreply.gitcode.com

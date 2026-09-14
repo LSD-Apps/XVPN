@@ -46,13 +46,17 @@ class TunnelVolumeCard extends StatelessWidget {
             entries.isEmpty
                 ? '还没有观察到走隧道的流量。连接后这条清单会按流量从多到少列出'
                       '走隧道的目标，便于判断哪些本该直连。'
-                : '按已观测到的流量从多到少排列。不在规则库内的域名必然走隧道，'
-                      '若它其实可以直连，这里会白占隧道带宽——可就地改为直连。',
+                : '按当前保留的分流记录汇总，不等于「本次连接」总量。'
+                      '不在规则库内的域名必然走隧道，若它其实可以直连，'
+                      '这里会白占隧道带宽——可就地改为直连。',
             style: XvText.caption,
           ),
           if (entries.isNotEmpty) ...<Widget>[
             const SizedBox(height: 6),
-            Text('清单合计 ${_bytes(total)}', style: XvText.caption),
+            Text(
+              '清单合计 ${_bytes(total)}（仅当前保留的记录）',
+              style: XvText.caption,
+            ),
             const SizedBox(height: 4),
             for (final entry in entries)
               _buildEntry(context, entry),

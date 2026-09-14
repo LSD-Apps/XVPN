@@ -234,8 +234,10 @@ class SettingsScreen extends StatelessWidget {
         children: <Widget>[
           const XvCardTitle('记录'),
           SettingRow(
-            title: '记录分流日志',
-            description: '关闭后不再记录任何域名，已有记录会一并清空',
+            title: '记录分流明细',
+            description:
+                '关闭后不再按域名记账，已有记录会清空。'
+                '连接页的「本次连接」流量与隧道/直连占比仍会更新',
             isLast: true,
             control: XvSwitch(
               value: state.settings.logSplits,

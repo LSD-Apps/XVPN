@@ -4,11 +4,12 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
 import '../app_state.dart';
+import '../format.dart';
 import '../models.dart';
 import '../version.dart';
 import 'update_center.dart';
 
-/// 把托盘要显示的三件事推给原生：版本号、连接状态、有没有新版本。
+/// 把托盘要显示的事推给原生：版本号、连接状态、速率、有没有新版本。
 ///
 /// 托盘在**原生侧**：Windows 见 windows/runner/flutter_window.cpp，Linux 见
 /// linux/runner/my_application.cc（libayatana-appindicator3，运行时 dlopen）。
@@ -21,7 +22,8 @@ import 'update_center.dart';
 ///
 /// 推送是**去重**的：界面每秒都会重建，不去重会让平台通道被同一份状态反复
 /// 淹没。比较的是整份载荷，因此「状态没变」不会有任何通道调用，「更新提示从
-/// 无到有」这种变化则会被推一次。
+/// 无到有」或「已连接时速率刻度变化」则会被推一次。已连接时约每秒一次是预期
+/// （与 Clash 采样同频）；未连接时流量刷新不会进载荷，因此不会刷通道。
 class SystemTray {
   SystemTray({
     required this.state,
@@ -74,13 +76,19 @@ class SystemTray {
   /// 状态文案取自 [VpnStatusX.label]——托盘**不另造一套说法**：界面上写
   /// 「未连接」，托盘就是「未连接」。图标灰不灰则由独立的 [connected] 布尔量
   /// 决定，而不是让原生去比对中文文案——那样文案一改，图标就会悄悄跟丢。
+  ///
+  /// 速率只在已连接时附上，且在 Dart 侧先格式化成短串：原生只负责拼 tooltip，
+  /// 不要紧挨 Windows 128 宽字符上限。
   @visibleForTesting
   Map<String, Object?> payload() {
     final notice = _updateCenter.notice.value;
+    final connected = state.isConnected;
     return <String, Object?>{
       'version': appVersion,
       'status': state.status.label,
-      'connected': state.isConnected,
+      'connected': connected,
+      if (connected) 'downRate': fmtRateLabel(state.downBps),
+      if (connected) 'upRate': fmtRateLabel(state.upBps),
       // 已忽略的提示不再是「有更新」：载荷里连这个 key 都不出现。
       if (notice != null && !notice.dismissed) 'updateVersion': notice.version,
     };
