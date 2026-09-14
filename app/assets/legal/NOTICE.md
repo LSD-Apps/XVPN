@@ -23,7 +23,8 @@ this program.  If not, see <https://www.gnu.org/licenses/>.
 SPDX-License-Identifier: GPL-3.0-or-later
 ```
 
-版权与维护者身份见仓库根目录 `AUTHORS`。法律与使用声明见 `docs/LEGAL.md`。
+版权与维护者身份见 [`AUTHORS`](AUTHORS)。法律与使用声明见
+[`docs/LEGAL.md`](docs/LEGAL.md)。
 
 **为什么这段声明放在这里而不是 `LICENSE` 文件里**：GitHub 的许可证识别要求
 `LICENSE` 保持 GPL 正文的**原样**——只要在里面插入任何自定义段落，
