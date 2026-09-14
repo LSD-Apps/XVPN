@@ -624,6 +624,11 @@ void FlutterWindow::InstallTrayIcon() {
   // （很快，外壳 initState 就会推一次）就会换成「XVPN <版本> · <状态>」。
   wcscpy_s(tray_icon_.szTip, L"XVPN · 智能分流");
   tray_installed_ = Shell_NotifyIconW(NIM_ADD, &tray_icon_) == TRUE;
+  if (tray_installed_) {
+    // Vista+ 用 VERSION_4：气泡与点击回调行为更稳定；失败也不影响托盘本身。
+    tray_icon_.uVersion = NOTIFYICON_VERSION_4;
+    Shell_NotifyIconW(NIM_SETVERSION, &tray_icon_);
+  }
 }
 
 void FlutterWindow::RemoveTrayIcon() {
@@ -754,29 +759,59 @@ void FlutterWindow::ShowMainWindow() {
   SetForegroundWindow(handle);
 }
 
+void FlutterWindow::NotifyRunningInBackground() {
+  if (!tray_installed_) return;
+
+  // 文案分两档：已连接时强调隧道未断——这正是用户最容易误以为「关窗=断开」
+  // 的时刻；未连接时只说明进程还在，避免「后台运行」听起来像还在代理流量。
+  const wchar_t* body = tray_connected_
+      ? L"已收至系统托盘，隧道仍在后台保持连接。点击托盘图标可打开，右键可退出。"
+      : L"已收至系统托盘，程序仍在后台运行。点击托盘图标可打开，右键可退出。";
+
+  tray_icon_.uFlags = NIF_INFO | NIF_ICON | NIF_MESSAGE | NIF_TIP;
+  wcsncpy_s(tray_icon_.szInfoTitle, L"XVPN", _TRUNCATE);
+  wcsncpy_s(tray_icon_.szInfo, body, _TRUNCATE);
+  tray_icon_.dwInfoFlags = NIIF_INFO;
+  Shell_NotifyIconW(NIM_MODIFY, &tray_icon_);
+
+  // 立刻清掉气泡字段：否则随后 UpdateTrayIcon（已连接时约每秒一次）再
+  // NIM_MODIFY 时，若仍带着 NIF_INFO / 旧正文，会反复弹出。
+  tray_icon_.szInfo[0] = L'\0';
+  tray_icon_.szInfoTitle[0] = L'\0';
+  tray_icon_.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
+}
+
 void FlutterWindow::ShowTrayMenu() {
   HWND handle = GetHandle();
   if (handle == nullptr) return;
 
   HMENU menu = CreatePopupMenu();
   if (menu == nullptr) return;
-  AppendMenuW(menu, MF_STRING, kTrayMenuShow, L"显示主界面");
-  // 版本号是**纯信息项**（MF_GRAYED、id 为 0），这没有问题：它本来就没有动作。
+
+  // 菜单结构（与 Linux 托盘对齐）：
+  //   显示主界面
+  //   ──
+  //   <连接状态>（灰，纯信息；有则显示）
+  //   XVPN <版本>（灰，纯信息；有则显示）
+  //   发现新版本…（可点；有更新才显示，不依赖版本项是否出现）
+  //   ──
+  //   退出 XVPN
   //
-  // 「发现新版本」则必须是**可点**的：它承载的是一条可操作的信息（应用里有
-  // 下载与安装的入口），做成灰项等于告诉用户一件事然后不给他任何出路。
-  // 此前这里写的是「没有一条现成的 native → Dart 通道」，但那条通道本就在用
-  // （见下方 WM_SIZE 里的 maximizedChanged，以及 Linux 的 quitRequested），
-  // 因此那是个不成立的理由。
+  // 「发现新版本」必须可点：它承载的是可操作信息。此前版本项与更新项绑在
+  // 同一个 if (version) 里——版本字段偶发缺失时，更新入口会一起消失。
+  AppendMenuW(menu, MF_STRING, kTrayMenuShow, L"显示主界面");
+  AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+  if (!tray_status_.empty()) {
+    AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, tray_status_.c_str());
+  }
   if (!tray_version_.empty()) {
-    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING | MF_GRAYED, 0,
                 (L"XVPN " + tray_version_).c_str());
-    if (!tray_update_.empty()) {
-      AppendMenuW(menu, MF_STRING, kTrayMenuUpdate,
-                  (L"发现新版本 v" + tray_update_ + L"（打开更新界面）")
-                      .c_str());
-    }
+  }
+  if (!tray_update_.empty()) {
+    AppendMenuW(menu, MF_STRING, kTrayMenuUpdate,
+                (L"发现新版本 v" + tray_update_ + L"（打开更新界面）")
+                    .c_str());
   }
   AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
   AppendMenuW(menu, MF_STRING, kTrayMenuQuit, L"退出 XVPN");
@@ -839,7 +874,12 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
   // 关闭主窗口 = 收进托盘，而不是退出程序。
   // 返回 0 会阻止默认的销毁流程；真正退出只能走托盘菜单的「退出 XVPN」。
   if (message == WM_CLOSE) {
+    const bool was_visible = IsWindowVisible(hwnd) != FALSE;
     ShowWindow(hwnd, SW_HIDE);
+    // 仅首次收进托盘时气泡提示：用户已在托盘里时再关一次（例如脚本）不刷屏。
+    if (was_visible) {
+      NotifyRunningInBackground();
+    }
     return 0;
   }
 

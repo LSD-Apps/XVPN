@@ -109,5 +109,41 @@ Endpoint = $endpoint
         throwsA(isA<VpnConfigException>()),
       );
     });
+
+    test('缺保活与 Amnezia 进入 notices 而非详情堆砌', () {
+      final plain = WireGuardProfile(WireGuardConf.parse('''
+[Interface]
+PrivateKey = aGVsbG8gd29ybGQgdGhpcyBpcyBhIGtleSB2YWx1ZQ=
+Address = 10.7.0.2/32
+DNS = 1.1.1.1
+
+[Peer]
+PublicKey = cHVibGljIGtleSB2YWx1ZSBnb2VzIGhlcmUgcGFkZGVk
+Endpoint = 203.0.113.42:51820
+AllowedIPs = 0.0.0.0/0
+'''));
+      expect(plain.details.any((d) => d.label == '保活'), isTrue);
+      expect(plain.notices.any((n) => n.message.contains('PersistentKeepalive')), isTrue);
+
+      final amnezia = WireGuardProfile(WireGuardConf.parse('''
+[Interface]
+PrivateKey = aGVsbG8gd29ybGQgdGhpcyBpcyBhIGtleSB2YWx1ZQ=
+Address = 10.7.0.2/32
+Jc = 4
+Jmin = 40
+
+[Peer]
+PublicKey = cHVibGljIGtleSB2YWx1ZSBnb2VzIGhlcmUgcGFkZGVk
+Endpoint = 203.0.113.42:51820
+AllowedIPs = 0.0.0.0/0
+PersistentKeepalive = 25
+'''));
+      expect(amnezia.notices.any((n) => n.isWarn && n.message.contains('Amnezia')), isTrue);
+      expect(amnezia.unusedKeys, containsAll(<String>['jc', 'jmin']));
+      expect(
+        amnezia.displayDetails.any((d) => d.label == '未使用字段'),
+        isTrue,
+      );
+    });
   });
 }

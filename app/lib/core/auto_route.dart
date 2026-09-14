@@ -1026,7 +1026,7 @@ class AutoRouteTable {
         domain: domain,
         added: false,
         reason:
-            '直连解析落在国内网段 $streak/${policy.domesticPromotionThreshold} 次，继续观察',
+            '直连解析落在规则库网段 $streak/${policy.domesticPromotionThreshold} 次，继续观察',
       );
     }
 
@@ -1064,7 +1064,7 @@ class AutoRouteTable {
     return AutoRouteDecision(
       domain: domain,
       added: true,
-      reason: '连续 $streak 次直连解析落在国内网段，已自动改为直连',
+      reason: '连续 $streak 次直连解析落在规则库网段，已自动改为直连',
       entry: promoted,
     );
   }

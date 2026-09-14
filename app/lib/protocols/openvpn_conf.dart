@@ -6,6 +6,7 @@
 library;
 
 import 'parsed_profile.dart';
+import 'protocol_tuning.dart';
 import 'vpn_protocol.dart';
 
 class OpenVpnConf {
@@ -27,7 +28,13 @@ class OpenVpnConf {
     required this.requiresCredentials,
     required this.username,
     required this.password,
-    required this.ingoredDirectives,
+    required this.tunMtu,
+    required this.pingInterval,
+    required this.pingRestart,
+    required this.pingRestartDisabled,
+    required this.mssFix,
+    required this.remoteCount,
+    required this.ignoredDirectives,
   });
 
   final String? remoteHost;
@@ -73,8 +80,47 @@ class OpenVpnConf {
   final String? username;
   final String? password;
 
-  /// 读到但不影响本 App 行为的指令，仅作记录。
-  final List<String> ingoredDirectives;
+  /// `tun-mtu`。未声明时为 null，适配器回退到协议默认 1500。
+  final int? tunMtu;
+
+  /// `ping` / `keepalive` 的间隔（秒）。
+  final int? pingInterval;
+
+  /// `ping-restart` / `keepalive` 的超时（秒）。为 0 时见 [pingRestartDisabled]。
+  final int? pingRestart;
+
+  /// `ping-restart 0`：禁用重启计时。
+  final bool pingRestartDisabled;
+
+  /// `mssfix` 目标值。裸 `mssfix`（无参数）用 [defaultMssFix]。
+  final int? mssFix;
+
+  /// 配置里 `remote` 指令的个数。大于 1 时仅第一个会用于连接。
+  final int remoteCount;
+
+  /// 读到但本客户端未映射到内核的指令名（已去重、排序由展示层决定）。
+  final List<String> ignoredDirectives;
+
+  /// 用户以为会影响连通性、但本客户端明确不支持的指令。
+  ///
+  /// 出现在 [ignoredDirectives] 里时会升成 [ProfileNotice]，其余未识别指令
+  /// 只进「未使用字段」清单，避免每条冷门指令都弹提示。
+  static const Set<String> impactfulIgnoredDirectives = <String>{
+    'comp-lzo',
+    'comp-lz4',
+    'compress',
+    'fragment',
+    'mssfix-extra',
+    'dhcp-option',
+    'block-outside-dns',
+    'register-dns',
+    'http-proxy',
+    'socks-proxy',
+    'explicit-exit-notify',
+  };
+
+  /// 裸 `mssfix` 时的默认 clamp 值（与 OpenVPN 历史默认一致）。
+  static const int defaultMssFix = 1450;
 
   /// 客户端是否自带了完整凭据（内联证书齐全）。
   bool get hasInlineCredentials =>
@@ -100,6 +146,12 @@ class OpenVpnConf {
     int? keyDirection;
     var requiresServerCert = false;
     var requiresCredentials = false;
+    int? tunMtu;
+    int? pingInterval;
+    int? pingRestart;
+    var pingRestartDisabled = false;
+    int? mssFix;
+    var remoteCount = 0;
     final ignored = <String>[];
 
     // 内联块：<tag> ... </tag>
@@ -121,10 +173,13 @@ class OpenVpnConf {
 
       switch (name) {
         case 'remote':
-          // remote host [port] [proto]
-          if (parts.length >= 2) remoteHost = parts[1];
-          if (parts.length >= 3) remotePort = int.tryParse(parts[2]);
-          if (parts.length >= 4) remoteProto = parts[3].toLowerCase();
+          // 多 remote 时只采用第一个；其余计入 remoteCount 供提示。
+          remoteCount += 1;
+          if (remoteCount == 1 && parts.length >= 2) {
+            remoteHost = parts[1];
+            if (parts.length >= 3) remotePort = int.tryParse(parts[2]);
+            if (parts.length >= 4) remoteProto = parts[3].toLowerCase();
+          }
         case 'proto':
           remoteProto = value.toLowerCase();
         case 'cipher':
@@ -154,6 +209,39 @@ class OpenVpnConf {
           // 可能不带参数（交互输入），也可能指向一个文件。
           // 两种情况都需要用户提供凭据：移动端读不到那个文件。
           requiresCredentials = true;
+        case 'tun-mtu':
+          tunMtu = int.tryParse(value);
+        case 'keepalive':
+          // keepalive <ping> <restart> ≡ ping + ping-restart
+          if (parts.length >= 3) {
+            pingInterval = int.tryParse(parts[1]);
+            final restart = int.tryParse(parts[2]);
+            if (restart == 0) {
+              pingRestartDisabled = true;
+              pingRestart = null;
+            } else {
+              pingRestart = restart;
+              pingRestartDisabled = false;
+            }
+          }
+        case 'ping':
+          pingInterval = int.tryParse(value);
+        case 'ping-restart':
+          final restart = int.tryParse(value);
+          if (restart == 0) {
+            pingRestartDisabled = true;
+            pingRestart = null;
+          } else if (restart != null) {
+            pingRestart = restart;
+            pingRestartDisabled = false;
+          }
+        case 'mssfix':
+          // 裸 mssfix → 历史默认 1450；带数值则原样采用。
+          if (value.trim().isEmpty) {
+            mssFix = defaultMssFix;
+          } else {
+            mssFix = int.tryParse(value);
+          }
         case 'client':
         case 'dev':
         case 'nobind':
@@ -197,7 +285,15 @@ class OpenVpnConf {
       requiresCredentials: requiresCredentials,
       username: username,
       password: password,
-      ingoredDirectives: List<String>.unmodifiable(ignored.toSet()),
+      tunMtu: tunMtu,
+      pingInterval: pingInterval,
+      pingRestart: pingRestart,
+      pingRestartDisabled: pingRestartDisabled,
+      mssFix: mssFix,
+      remoteCount: remoteCount,
+      ignoredDirectives: List<String>.unmodifiable(
+        (ignored.toSet().toList()..sort()),
+      ),
     );
     conf.validate();
     return conf;
@@ -250,7 +346,7 @@ class OpenVpnConf {
 }
 
 /// OpenVPN 配置的协议无关视图。
-class OpenVpnProfile implements ParsedProfile {
+class OpenVpnProfile extends ParsedProfile {
   const OpenVpnProfile(this.conf);
 
   final OpenVpnConf conf;
@@ -289,10 +385,10 @@ class OpenVpnProfile implements ParsedProfile {
   @override
   bool get requiresCredentials => conf.requiresCredentials;
 
-  /// OpenVPN 侧不解析 MTU 指令（`tun-mtu` / `mssfix` 都未支持），
-  /// 因此没有可校验的声明值——返回 null，界面据此不显示这项检查。
+  /// 配置声明的 `tun-mtu`（原始值）。超出合理区间时校验层会回退，
+  /// 这里仍返回原始值，方便界面区分「用户写了什么」与「实际用了什么」。
   @override
-  int? get declaredMtu => null;
+  int? get declaredMtu => conf.tunMtu;
 
   @override
   List<({String label, String value})> get details =>
@@ -309,5 +405,63 @@ class OpenVpnProfile implements ParsedProfile {
               : (conf.tlsAuth != null ? 'tls-auth' : '无'),
         ),
         (label: '客户端证书', value: conf.hasInlineCredentials ? '已内联' : '无'),
+        (
+          label: 'MTU',
+          value:
+              '${sanitizeMtu(conf.tunMtu) ?? 1500}'
+              '${sanitizeMtu(conf.tunMtu) == null && conf.tunMtu != null ? '（配置里的 ${conf.tunMtu} 超出合理范围，已回退）' : ''}',
+        ),
+        if (conf.pingInterval != null ||
+            conf.pingRestart != null ||
+            conf.pingRestartDisabled)
+          (
+            label: '保活',
+            value: [
+              if (conf.pingInterval != null) 'ping ${conf.pingInterval}s',
+              if (conf.pingRestartDisabled)
+                'ping-restart 已禁用'
+              else if (conf.pingRestart != null)
+                'restart ${conf.pingRestart}s',
+            ].join(' · '),
+          ),
+        if (conf.mssFix != null) (label: 'MSS', value: '${conf.mssFix}'),
       ];
+
+  @override
+  List<String> get unusedKeys => conf.ignoredDirectives;
+
+  @override
+  List<ProfileNotice> get notices {
+    final items = <ProfileNotice>[];
+    if (conf.remoteCount > 1) {
+      items.add(
+        ProfileNotice.info(
+          '配置含 ${conf.remoteCount} 个 remote，仅使用第一个'
+          '（$serverDisplay）',
+        ),
+      );
+    }
+    final impact = conf.ignoredDirectives
+        .where(OpenVpnConf.impactfulIgnoredDirectives.contains)
+        .toList(growable: false);
+    if (impact.isNotEmpty) {
+      items.add(
+        ProfileNotice.info(
+          '以下指令未生效：${impact.join('、')}（本客户端不支持）',
+        ),
+      );
+    }
+    if (conf.network == 'udp' &&
+        conf.pingInterval == null &&
+        conf.pingRestart == null &&
+        !conf.pingRestartDisabled) {
+      items.add(
+        const ProfileNotice.info(
+          '未声明 ping/keepalive。UDP 模式下 NAT 映射可能超时，'
+          '可按服务端建议添加 keepalive',
+        ),
+      );
+    }
+    return items;
+  }
 }

@@ -67,6 +67,50 @@ class TunnelVolumeCard extends StatelessWidget {
   }
 
   Widget _buildEntry(BuildContext context, TunnelVolumeEntry entry) {
+    final title = Row(
+      children: <Widget>[
+        Flexible(
+          child: Text(
+            entry.target,
+            style: XvText.bodyMuted.copyWith(color: XV.text),
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+        const SizedBox(width: 8),
+        RouteTag.kind(RouteKind.proxy, label: '走隧道'),
+        if (entry.hasRule) ...<Widget>[
+          const SizedBox(width: 6),
+          RouteTag.green('已有规则'),
+        ],
+      ],
+    );
+    final detail = Text(_detail(entry), style: XvText.caption);
+    final action = entry.canPreferDirect
+        ? TapAction(
+            label: '改为直连',
+            onTap: () => _prefer(context, entry),
+          )
+        : null;
+
+    // 窄屏：标题与标签占满首行，「改为直连」放到详情下方，避免与长目标名抢宽。
+    if (compact) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 5),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            title,
+            const SizedBox(height: 3),
+            detail,
+            if (action != null) ...<Widget>[
+              const SizedBox(height: 2),
+              Align(alignment: Alignment.centerRight, child: action),
+            ],
+          ],
+        ),
+      );
+    }
+
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 5),
       child: Row(
@@ -75,34 +119,16 @@ class TunnelVolumeCard extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: <Widget>[
-                Row(
-                  children: <Widget>[
-                    Flexible(
-                      child: Text(
-                        entry.target,
-                        style: XvText.bodyMuted.copyWith(color: XV.text),
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    RouteTag.kind(RouteKind.proxy, label: '走隧道'),
-                    if (entry.hasRule) ...<Widget>[
-                      const SizedBox(width: 6),
-                      RouteTag.green('已有规则'),
-                    ],
-                  ],
-                ),
+                title,
                 const SizedBox(height: 3),
-                Text(_detail(entry), style: XvText.caption),
+                detail,
               ],
             ),
           ),
-          const SizedBox(width: 8),
-          if (entry.canPreferDirect)
-            TapAction(
-              label: '改为直连',
-              onTap: () => _prefer(context, entry),
-            ),
+          if (action != null) ...<Widget>[
+            const SizedBox(width: 8),
+            action,
+          ],
         ],
       ),
     );

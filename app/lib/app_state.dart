@@ -162,7 +162,7 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
 
   /// 默认设置。
   ///
-  /// 不直接用 `const AppSettings()`：应用直连预置里有一项（国内站点补充）是
+  /// 不直接用 `const AppSettings()`：应用直连预置里有一项（直连站点补充）是
   /// **默认启用**的，而默认值需要从 `AppPresets` 推导。放在这里集中一次，
   /// 三个「从头建设置」的入口（初始值、存档缺键、解析失败回退）就不会各写一份。
   static AppSettings defaultSettings() =>

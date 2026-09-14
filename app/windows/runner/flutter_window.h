@@ -37,6 +37,12 @@ class FlutterWindow : public Win32Window {
   void ShowTrayMenu();
   void ShowMainWindow();
 
+  /// 关闭窗口收进托盘时弹出一次气泡，让用户知道进程（与隧道）仍在后台。
+  ///
+  /// 只在「可见 → 隐藏」时调用；已经在托盘里再触发 WM_CLOSE 不重复弹，
+  /// 避免连点关闭或脚本反复 PostMessage 刷屏。
+  void NotifyRunningInBackground();
+
   /// 应用 Dart 推来的托盘状态（版本 / 状态文案 / 是否已连接 / 更新版本）。
   void ApplyTrayState(const flutter::EncodableMap& state);
 

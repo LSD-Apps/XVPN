@@ -3,6 +3,7 @@ import 'dart:convert';
 import '../models.dart';
 import '../protocols/parsed_profile.dart';
 import '../protocols/protocol_adapter.dart';
+import '../protocols/protocol_tuning.dart';
 import 'auto_route.dart';
 import 'outbound_tags.dart';
 import 'route_rule_sets.dart';
@@ -90,7 +91,8 @@ class SingBoxConfigBuilder {
   static const int defaultClashApiPort = 2081;
 
   /// 直连 DNS。走直连出站，用于解析命中规则集的域名，保证拿到离用户最近的节点。
-  static const List<String> domesticDns = <String>['223.5.5.5', '119.29.29.29'];
+  /// 直连侧解析器。与 [localPreferenceDnsServers] 同源——隧道内海外解析不得复用。
+  static const List<String> domesticDns = localPreferenceDnsServers;
 
   /// 兜底的外部 DNS。.conf 里没有声明时使用。
   static const String fallbackRemoteDns = '1.1.1.1';
@@ -289,14 +291,18 @@ class SingBoxConfigBuilder {
 
   /// 选择隧道内的解析器。
   ///
-  /// 优先沿用配置里声明的第一个 IP 型 DNS——那是配置作者选定的解析器；
+  /// 优先沿用配置里声明的第一个**适合隧道**的 IP 型 DNS；跳过
+  /// [localPreferenceDnsServers]（例如 `223.5.5.5`）——那些只适合直连侧。
   /// 没有可用的就退回 1.1.1.1。返回 (地址, 是否来自配置, 标签)。
   static (String, bool, String) _pickRemoteDns(ParsedProfile profile) {
     for (final entry in profile.declaredDns) {
       final value = entry.trim();
       if (value.isEmpty) continue;
       // 只接受 IP：域名型 DNS 自己就需要先被解析，会形成循环依赖。
-      if (_looksLikeIp(value)) return (value, true, 'dns-remote');
+      if (!_looksLikeIp(value)) continue;
+      // 本地偏好解析器经隧道去问海外域名：延迟与错误 CDN，体感就是卡。
+      if (isLocalPreferenceDns(value)) continue;
+      return (value, true, 'dns-remote');
     }
     return (fallbackRemoteDns, false, 'dns-remote');
   }

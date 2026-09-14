@@ -207,6 +207,106 @@ $_ca
       expect(endpoint.containsKey('static_key'), isFalse);
       expect(endpoint.containsKey('key_direction'), isFalse);
     });
+
+    test('未声明 tun-mtu 时端点与 TUN 都用 1500', () {
+      expect(endpoint['mtu'], 1500);
+      final profile = OpenVpnAdapter().parse(_ovpn, 'client.ovpn');
+      expect(OpenVpnAdapter().tunMtu(profile), 1500);
+    });
+  });
+
+  group('OpenVPN：tun-mtu / keepalive / mssfix', () {
+    const rich = '''
+client
+dev tun
+proto udp
+remote ovpn.example.net 1194
+tun-mtu 1400
+keepalive 10 60
+mssfix 1360
+remote-cert-tls server
+cipher AES-256-GCM
+auth SHA256
+<ca>
+$_ca
+</ca>
+''';
+
+    test('解析并下发 mtu / ping / mss_fix', () {
+      final conf = OpenVpnConf.parse(rich);
+      expect(conf.tunMtu, 1400);
+      expect(conf.pingInterval, 10);
+      expect(conf.pingRestart, 60);
+      expect(conf.mssFix, 1360);
+
+      final profile = OpenVpnProfile(conf);
+      final endpoint = OpenVpnAdapter().buildEndpoint(
+        profile,
+        const OutboundContext(tag: 'vpn', resolverTag: 'dns-cn'),
+      );
+      expect(endpoint['mtu'], 1400);
+      expect(endpoint['ping_interval'], '10s');
+      expect(endpoint['ping_restart'], '60s');
+      expect(endpoint['mss_fix'], 1360);
+      expect(
+        OpenVpnAdapter().tunMtu(profile),
+        1400,
+        reason: 'TUN 与端点 MTU 必须同值',
+      );
+    });
+
+    test('裸 mssfix 使用历史默认 1450', () {
+      final conf = OpenVpnConf.parse('''
+client
+remote ovpn.example.net 1194
+mssfix
+<ca>
+$_ca
+</ca>
+''');
+      expect(conf.mssFix, OpenVpnConf.defaultMssFix);
+    });
+
+    test('ping-restart 0 映射为 ping_restart_disabled', () {
+      final conf = OpenVpnConf.parse('''
+client
+remote ovpn.example.net 1194
+ping 15
+ping-restart 0
+<ca>
+$_ca
+</ca>
+''');
+      expect(conf.pingInterval, 15);
+      expect(conf.pingRestartDisabled, isTrue);
+      final endpoint = OpenVpnAdapter().buildEndpoint(
+        OpenVpnProfile(conf),
+        const OutboundContext(tag: 'vpn', resolverTag: 'dns-cn'),
+      );
+      expect(endpoint['ping_interval'], '15s');
+      expect(endpoint['ping_restart_disabled'], isTrue);
+      expect(endpoint.containsKey('ping_restart'), isFalse);
+    });
+
+    test('非法 tun-mtu 回退到 1500，且 TUN 与端点一致', () {
+      final conf = OpenVpnConf.parse('''
+client
+remote ovpn.example.net 1194
+tun-mtu 9000
+<ca>
+$_ca
+</ca>
+''');
+      expect(conf.tunMtu, 9000);
+      final profile = OpenVpnProfile(conf);
+      expect(profile.declaredMtu, 9000);
+      final endpoint = OpenVpnAdapter().buildEndpoint(
+        profile,
+        const OutboundContext(tag: 'vpn', resolverTag: 'dns-cn'),
+      );
+      expect(endpoint['mtu'], OpenVpnAdapter.defaultTunMtu);
+      expect(OpenVpnAdapter().tunMtu(profile), endpoint['mtu']);
+    });
   });
 
   group('协议工厂', () {
@@ -258,6 +358,68 @@ $_ca
       expect(VpnProtocolFactory.looksSupported('client.ovpn'), isTrue);
       expect(VpnProtocolFactory.looksSupported('client.conf'), isTrue);
       expect(VpnProtocolFactory.looksSupported('photo.png'), isFalse);
+    });
+  });
+
+  group('OpenVPN：未使用指令与多 remote', () {
+    test('多 remote 只采用第一个，并进入 notices', () {
+      final conf = OpenVpnConf.parse('''
+client
+dev tun
+proto udp
+remote primary.example.net 1194
+remote backup.example.net 1194
+remote third.example.net 443
+<ca>
+$_ca
+</ca>
+''');
+      expect(conf.remoteHost, 'primary.example.net');
+      expect(conf.remoteCount, 3);
+      final profile = OpenVpnProfile(conf);
+      expect(
+        profile.notices.any((n) => n.message.contains('3 个 remote')),
+        isTrue,
+      );
+    });
+
+    test('有影响的忽略指令进 notices，全部忽略指令进 unusedKeys', () {
+      final conf = OpenVpnConf.parse('''
+client
+remote ovpn.example.net 1194
+comp-lzo
+dhcp-option DNS 8.8.8.8
+some-unknown-flag
+cipher AES-256-GCM
+<ca>
+$_ca
+</ca>
+''');
+      expect(
+        conf.ignoredDirectives,
+        containsAll(<String>['comp-lzo', 'dhcp-option', 'some-unknown-flag']),
+      );
+      final profile = OpenVpnProfile(conf);
+      expect(profile.unusedKeys, conf.ignoredDirectives);
+      expect(
+        profile.displayDetails.any(
+          (d) => d.label == '未使用字段' && d.value.contains('comp-lzo'),
+        ),
+        isTrue,
+      );
+      expect(
+        profile.notices.any(
+          (n) =>
+              n.message.contains('comp-lzo') &&
+              n.message.contains('dhcp-option'),
+        ),
+        isTrue,
+      );
+      expect(
+        profile.notices.any((n) => n.message.contains('some-unknown-flag')),
+        isFalse,
+        reason: '冷门指令只进未使用清单，不单独弹提示',
+      );
     });
   });
 }

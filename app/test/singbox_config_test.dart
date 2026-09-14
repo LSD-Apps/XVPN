@@ -136,6 +136,59 @@ Endpoint = 1.2.3.4:51820
       ).map(_map).firstWhere((s) => s['tag'] == 'dns-remote');
       expect(remote['server'], '1.1.1.1');
     });
+
+    test('配置里只有本地偏好 DNS 时，隧道内改用公共解析器', () {
+      // 223.5.5.5 适合直连侧；经隧道拿去解析海外域名只会更卡。
+      final conf = WireGuardConf.parse('''
+[Interface]
+PrivateKey = k
+Address = 10.0.0.3/32
+DNS = 223.5.5.5, 119.29.29.29
+
+[Peer]
+PublicKey = p
+Endpoint = 1.2.3.4:51820
+''');
+      final profile = WireGuardProfile(conf);
+      expect(profile.tunnelDnsRemappedFromLocalPreference, isTrue);
+      final dns = _map(
+        SingBoxConfigBuilder.build(
+          profile: profile,
+          splitMode: SplitMode.smart,
+          ruleSetDir: '/tmp/rs',
+        )['dns'],
+      );
+      final remote = _list(
+        dns['servers'],
+      ).map(_map).firstWhere((s) => s['tag'] == 'dns-remote');
+      expect(remote['server'], '1.1.1.1');
+    });
+
+    test('本地偏好 DNS 与公网 DNS 并存时沿用公网那一个', () {
+      final conf = WireGuardConf.parse('''
+[Interface]
+PrivateKey = k
+Address = 10.0.0.3/32
+DNS = 223.5.5.5, 8.8.8.8
+
+[Peer]
+PublicKey = p
+Endpoint = 1.2.3.4:51820
+''');
+      final profile = WireGuardProfile(conf);
+      expect(profile.tunnelDnsRemappedFromLocalPreference, isFalse);
+      final dns = _map(
+        SingBoxConfigBuilder.build(
+          profile: profile,
+          splitMode: SplitMode.smart,
+          ruleSetDir: '/tmp/rs',
+        )['dns'],
+      );
+      final remote = _list(
+        dns['servers'],
+      ).map(_map).firstWhere((s) => s['tag'] == 'dns-remote');
+      expect(remote['server'], '8.8.8.8');
+    });
   });
 
   group('路由', () {

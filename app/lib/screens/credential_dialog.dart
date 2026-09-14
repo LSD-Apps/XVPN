@@ -134,9 +134,23 @@ class _CredentialFormState extends State<_CredentialForm> {
                   hasError: _error != null,
                   obscure: _obscured,
                   onSubmitted: (_) => _submit(),
-                  trailing: TapAction(
-                    label: _obscured ? '显示' : '隐藏',
-                    onTap: () => setState(() => _obscured = !_obscured),
+                  trailing: IconButton(
+                    tooltip: _obscured ? '显示密码' : '隐藏密码',
+                    icon: Icon(
+                      _obscured
+                          ? Icons.visibility_outlined
+                          : Icons.visibility_off_outlined,
+                      size: 18,
+                      color: XV.muted,
+                    ),
+                    onPressed: () => setState(() => _obscured = !_obscured),
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(
+                      minWidth: 36,
+                      minHeight: 36,
+                    ),
+                    visualDensity: VisualDensity.compact,
+                    splashRadius: 18,
                   ),
                 ),
                 if (_error != null) ...<Widget>[
@@ -251,7 +265,7 @@ class _Field extends StatelessWidget {
                   ),
                 ),
               ),
-              // 显示/隐藏密码的切换。没有它在桌面端只能盲打密码。
+              // 显示/隐藏密码：右侧眼睛图标（盲打时核对用）。
               ?trailing,
             ],
           ),

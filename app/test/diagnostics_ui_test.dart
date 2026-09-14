@@ -457,7 +457,7 @@ void main() {
         guard++;
       }
       expect(find.text('手工指定'), findsOneWidget);
-      // 默认启用的「国内长尾站点补充」会让表本来就非空，因此这里断言的是
+      // 默认启用的「直连站点补充」会让表本来就非空，因此这里断言的是
       // **手工指定分组**为空，而不是整张表为空——后者是改造前的口径。
       expect(find.textContaining('还没有手工指定的域名'), findsOneWidget);
 

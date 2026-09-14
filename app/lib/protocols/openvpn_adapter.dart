@@ -142,31 +142,42 @@ class OpenVpnAdapter implements VpnProtocolAdapter {
       if (conf.requiresServerCert) 'remote_certificate_tls': 'server',
     };
 
+    final mtu = resolveMtu(conf);
+
     return <String, Object?>{
       'type': 'openvpn-client',
       'tag': context.tag,
       'server': conf.remoteHost,
       'server_port': conf.remotePort,
       'network': conf.network,
+      'mtu': mtu,
       if (conf.username != null) 'username': conf.username,
       if (conf.password != null) 'password': conf.password,
       if (dataCiphers.isNotEmpty) 'data_ciphers': dataCiphers,
       'data_ciphers_fallback': ?fallback,
       'auth': ?auth,
       'tls': tls,
+      // 保活：时长必须带单位，写成裸整数会被内核拒绝。
+      if (conf.pingInterval != null && conf.pingInterval! > 0)
+        'ping_interval': '${conf.pingInterval}s',
+      if (conf.pingRestartDisabled)
+        'ping_restart_disabled': true
+      else if (conf.pingRestart != null && conf.pingRestart! > 0)
+        'ping_restart': '${conf.pingRestart}s',
+      if (conf.mssFix != null && conf.mssFix! > 0) 'mss_fix': conf.mssFix,
     };
   }
 
-  /// TUN 入站的 MTU。
-  ///
-  /// 取 1500 与 OpenVPN 自己的 `tun-mtu` 默认值对齐。sing-box 的 tun 入站默认
-  /// 是 9000，远超隧道能装下的尺寸，包一进隧道就得在 IP 层分片。
-  ///
-  /// 局限要说清楚：服务端可能通过 PUSH_REPLY 下发别的 tun-mtu，而那个值在
-  /// 连接建立前无从得知（客户端配置里通常也不写）。因此这里只能取协议默认值
-  /// 这一最合理的选择——即便服务端用的是 1400，对齐到 1500 也远好于 9000。
+  /// 端点 MTU：优先配置的 `tun-mtu`（经合理性校验），否则协议默认 1500。
+  static int resolveMtu(OpenVpnConf conf) =>
+      sanitizeMtu(conf.tunMtu) ?? defaultTunMtu;
+
+  /// TUN 入站的 MTU 与端点保持一致，避免系统栈组出装不进隧道的包。
   @override
-  int tunMtu(ParsedProfile profile) => defaultTunMtu;
+  int tunMtu(ParsedProfile profile) {
+    if (profile is! OpenVpnProfile) return defaultTunMtu;
+    return resolveMtu(profile.conf);
+  }
 
   /// OpenVPN 的 `tun-mtu` 默认值。
   static const int defaultTunMtu = 1500;

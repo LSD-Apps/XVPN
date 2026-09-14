@@ -117,6 +117,31 @@ OpenVPN 2.4+ 用 `data-ciphers` 协商，`data-ciphers-fallback` 是给
 「无需翻译」的指令里丢掉了——那等于悄悄放弃了服务端身份校验，属于
 「看起来能连、实际不安全」的降级。`verify-x509-name` 同样处理。
 
+### 3.5.3b OpenVPN：MTU / 保活 / MSS
+
+sing-box 1.14 的 `openvpn-client` 已支持这些字段，原先被静默丢进 ignored：
+
+| `.ovpn` | 内核字段 | 作用 |
+| --- | --- | --- |
+| `tun-mtu N` | `mtu`（经 `[1280,1500]` 校验）+ TUN 入站同值 | 避免分片卡顿 |
+| `keepalive A B` / `ping` / `ping-restart` | `ping_interval` / `ping_restart`（`"Ns"`）；`ping-restart 0` → `ping_restart_disabled` | NAT 后会话稳定 |
+| `mssfix [N]` | `mss_fix`（裸指令默认 1450） | TCP 性能 |
+
+确认导入对话框会把上述字段写回 `.ovpn`（此前只解析不下发到表单，点确认会丢掉）。
+
+配置提示统一走 `ProfileNotice` + `ParsedProfile.unusedKeys` /
+`displayDetails`：未映射指令（含 OpenVPN 的 `comp-lzo` / `dhcp-option` 等）
+进「未使用字段」；有实际影响的进 `notices`；多 `remote` 只采用第一个并提示。
+导入确认 / 桌面列表 / 移动端共用 `ProfileNoticesView`，不再各写一套。
+
+### 3.5.3c 隧道 DNS 卫生
+
+配置里声明的 DNS（常见于 WireGuard `DNS = 223.5.5.5`）**不会**再被无脑当成
+隧道内解析海外域名的解析器。`223.5.5.5` / `119.29.29.29` 只适合直连侧；
+经隧道去问它们会放大延迟与错误 CDN。跳过这些地址后若无其它公网 DNS，
+回退到 `1.1.1.1` + `9.9.9.9`。直连侧 DNS 列表仍用同一组地址
+（`localPreferenceDnsServers` / `SingBoxConfigBuilder.domesticDns`）。
+
 ### 3.5.4 WireGuard 的保活不替用户决定
 
 原实现写的是 `peer.persistentKeepalive ?? 25`，也就是给**没有声明**保活的配置
@@ -127,7 +152,8 @@ OpenVPN 2.4+ 用 `data-ciphers` 协商，`data-ciphers-fallback` 是给
 * 内核自己的默认值是 0（不主动发包，靠上层流量自然维持 NAT 映射），
   这也正是 WireGuard 官方的推荐默认。
 
-现在只在配置显式声明时才下发。
+现在只在配置显式声明时才下发。配置详情会提示：长距离 / 运营商 NAT 可自行声明
+`PersistentKeepalive`。
 
 ### 3.5.5 MTU 做合理性校验
 

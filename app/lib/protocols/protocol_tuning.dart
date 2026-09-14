@@ -196,3 +196,23 @@ bool looksLikeAmneziaWireGuard(Map<String, String> ignoredKeys) {
   }
   return false;
 }
+
+/// 适合**直连侧**的公共解析器（本机访问本地站点时用）。
+///
+/// 绝不能把它们当作隧道内解析**海外域名**的解析器：流量会先出国再去问
+/// 这些解析器，延迟高、容易拿到错误的 CDN 节点，体感就是「能连但海外站很卡」。
+/// WireGuard `.conf` 里常见的 `DNS = 223.5.5.5` 正是这种误用。
+const List<String> localPreferenceDnsServers = <String>[
+  '223.5.5.5', // 阿里公共 DNS
+  '119.29.29.29', // 腾讯公共 DNS
+];
+
+/// [ip] 是否属于 [localPreferenceDnsServers]（忽略首尾空白）。
+bool isLocalPreferenceDns(String ip) {
+  final trimmed = ip.trim();
+  if (trimmed.isEmpty) return false;
+  for (final server in localPreferenceDnsServers) {
+    if (server == trimmed) return true;
+  }
+  return false;
+}

@@ -10,11 +10,38 @@ class VpnConfigException implements Exception {
   String toString() => message;
 }
 
+/// 配置提示的严重程度。
+///
+/// - [warn]：必须知道，否则会连不上或明显异常
+/// - [info]：建议知道，影响性能或稳定性
+enum ProfileNoticeKind { warn, info }
+
+/// 面向用户的一条配置提示。
+///
+/// 与 [ParsedProfile.details] 的键值事实分开：事实给人核对字段，提示给人做决策。
+/// 导入确认、桌面列表、移动端共用同一类型，避免各处用字符串 `kind` 分叉。
+class ProfileNotice {
+  const ProfileNotice.warn(this.message) : kind = ProfileNoticeKind.warn;
+
+  const ProfileNotice.info(this.message) : kind = ProfileNoticeKind.info;
+
+  final ProfileNoticeKind kind;
+  final String message;
+
+  bool get isWarn => kind == ProfileNoticeKind.warn;
+}
+
 /// 一份已导入配置的协议无关视图。
 ///
 /// 界面与配置生成只依赖这个抽象，因此新增协议时二者都不需要改动；
 /// 协议特有的字段通过 [details] 以「标签 + 值」的形式暴露出来。
+///
+/// 各协议用 **extends** 而不是 implements：共享的 [displayDetails] /
+/// [unusedKeys] / [needsIpv4OnlyDns] 等默认实现才能真正生效，
+/// 避免每个协议再抄一份或各写各的。
 abstract class ParsedProfile {
+  const ParsedProfile();
+
   /// 所属协议。
   VpnProtocol get protocol;
 
@@ -57,8 +84,29 @@ abstract class ParsedProfile {
   /// 决定了 PC 与移动端完全一致的行为。
   bool get wantsDebugLogs => false;
 
-  /// 协议特有的补充信息，用于「配置文件」页展示。
+  /// 协议特有的补充信息（不含「未使用字段」——那由 [unusedKeys] 统一追加）。
   List<({String label, String value})> get details;
+
+  /// 配置里出现、但本客户端未映射到内核的键名。
+  ///
+  /// 各协议自己收集；界面通过 [displayDetails] 统一挂上「未使用字段」行，
+  /// 避免 Hy2 写在 details、OVPN 静默丢掉、WG 各搞一套。
+  List<String> get unusedKeys => const <String>[];
+
+  /// 配置页实际展示的键值：协议 [details] + 若有则追加未使用字段。
+  List<({String label, String value})> get displayDetails {
+    final unused = unusedKeys;
+    if (unused.isEmpty) return details;
+    return <({String label, String value})>[
+      ...details,
+      (label: '未使用字段', value: unused.join('、')),
+    ];
+  }
+
+  /// 面向用户的配置提示（与 [details] 的键值事实分开）。
+  ///
+  /// 导入确认表单与配置列表都应优先展示，不能只埋在普通字段里。
+  List<ProfileNotice> get notices => const <ProfileNotice>[];
 
   /// 是否需要用户额外提供用户名/密码（例如 OpenVPN 的 auth-user-pass）。
   bool get requiresCredentials;

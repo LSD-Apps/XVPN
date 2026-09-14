@@ -8,6 +8,7 @@ import '../protocols/vpn_protocol.dart';
 import '../protocols/wireguard_conf.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
+import '../widgets/profile_notices.dart';
 
 /// 表单字段的测试标识。
 ///
@@ -77,7 +78,8 @@ class ConfigFormModel {
           ..allowedIps = (peer == null || peer.allowedIps.isEmpty)
               ? '0.0.0.0/0, ::/0'
               : peer.allowedIps.join(', ')
-          ..persistentKeepalive = peer?.persistentKeepalive?.toString();
+          ..persistentKeepalive = peer?.persistentKeepalive?.toString()
+          ..notices = profile.notices;
       case OpenVpnProfile():
         final conf = profile.conf;
         model
@@ -99,7 +101,14 @@ class ConfigFormModel {
           ..remoteCertTls = conf.requiresServerCert
           ..requiresCredentials = conf.requiresCredentials
           ..username = conf.username
-          ..password = conf.password;
+          ..password = conf.password
+          ..tunMtu = conf.tunMtu?.toString()
+          ..pingInterval = conf.pingInterval?.toString()
+          ..pingRestart = conf.pingRestartDisabled
+              ? '0'
+              : conf.pingRestart?.toString()
+          ..mssFix = conf.mssFix?.toString()
+          ..notices = profile.notices;
       case Hysteria2Profile():
         final conf = profile.conf;
         model
@@ -116,7 +125,8 @@ class ConfigFormModel {
               : conf.serverPorts.join(', ')
           ..hopInterval = conf.hopIntervalSeconds?.toString()
           ..pinSha256 = conf.pinSha256
-          ..displayName = conf.displayName;
+          ..displayName = conf.displayName
+          ..notices = profile.notices;
       default:
         break;
     }
@@ -156,6 +166,10 @@ class ConfigFormModel {
   String? password;
   bool remoteCertTls = false;
   bool requiresCredentials = false;
+  String? tunMtu;
+  String? pingInterval;
+  String? pingRestart;
+  String? mssFix;
 
   // ------------------------------------------------------------- Hysteria2
   String? server;
@@ -170,6 +184,11 @@ class ConfigFormModel {
   String? hopInterval;
   String? pinSha256;
   String? displayName;
+
+  /// 从已解析配置预填时附带的提示（例如 Amnezia 字段、缺带宽）。
+  ///
+  /// 不参与 toConfText；仅供确认导入对话框展示。
+  List<ProfileNotice> notices = const <ProfileNotice>[];
 
   /// 手填模式下的默认名称。
   static String defaultName(VpnProtocol protocol) => switch (protocol) {
@@ -314,6 +333,21 @@ class ConfigFormModel {
       }
       buffer.writeln('key-direction $n');
     }
+
+    // tun-mtu / keepalive / mssfix：确认导入时不能把解析结果丢掉。
+    final mtuValue = _clean(tunMtu);
+    if (mtuValue != null) buffer.writeln('tun-mtu $mtuValue');
+    final ping = _clean(pingInterval);
+    final restart = _clean(pingRestart);
+    if (ping != null && restart != null && restart != '0') {
+      buffer.writeln('keepalive $ping $restart');
+    } else {
+      if (ping != null) buffer.writeln('ping $ping');
+      if (restart != null) buffer.writeln('ping-restart $restart');
+    }
+    final mss = _clean(mssFix);
+    if (mss != null) buffer.writeln('mssfix $mss');
+
     return buffer.toString().trim();
   }
 
@@ -540,6 +574,10 @@ class _ConfigFormDialogState extends State<_ConfigFormDialog> {
       'ovpn.dataCiphers' => initial.dataCiphers,
       'ovpn.dataCiphersFallback' => initial.dataCiphersFallback,
       'ovpn.auth' => initial.auth,
+      'ovpn.tunMtu' => initial.tunMtu,
+      'ovpn.pingInterval' => initial.pingInterval,
+      'ovpn.pingRestart' => initial.pingRestart,
+      'ovpn.mssFix' => initial.mssFix,
       'hy2.server' => initial.server,
       'hy2.port' => initial.port ?? defaults.port,
       'hy2.auth' => initial.hysteriaAuth,
@@ -604,7 +642,11 @@ class _ConfigFormDialogState extends State<_ConfigFormDialog> {
           ..tlsCrypt = _rawText('ovpn.tlsCrypt')
           ..keyDirection = _text('ovpn.keyDirection')
           ..remoteCertTls = _remoteCertTls
-          ..requiresCredentials = _requiresCredentials;
+          ..requiresCredentials = _requiresCredentials
+          ..tunMtu = _text('ovpn.tunMtu')
+          ..pingInterval = _text('ovpn.pingInterval')
+          ..pingRestart = _text('ovpn.pingRestart')
+          ..mssFix = _text('ovpn.mssFix');
       case VpnProtocol.hysteria2:
         model
           ..server = _text('hy2.server')
@@ -686,6 +728,13 @@ class _ConfigFormDialogState extends State<_ConfigFormDialog> {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: <Widget>[
         _header(),
+        if (widget.initial.notices.isNotEmpty) ...<Widget>[
+          const SizedBox(height: 12),
+          ProfileNoticesView(
+            notices: widget.initial.notices,
+            layout: ProfileNoticesLayout.cards,
+          ),
+        ],
         const SizedBox(height: 14),
         if (widget.fromFile) ...<Widget>[
           _protocolTag(),
@@ -953,6 +1002,35 @@ class _ConfigFormDialogState extends State<_ConfigFormDialog> {
       _ctl('ovpn.auth'),
       field: 'ovpn.auth',
       hint: 'SHA256',
+    ),
+    _section('隧道参数（可选）'),
+    _input(
+      'tun-mtu（可选）',
+      _ctl('ovpn.tunMtu'),
+      field: 'ovpn.tunMtu',
+      hint: '1500',
+      numeric: true,
+    ),
+    _input(
+      'ping / keepalive 间隔秒（可选）',
+      _ctl('ovpn.pingInterval'),
+      field: 'ovpn.pingInterval',
+      hint: '10',
+      numeric: true,
+    ),
+    _input(
+      'ping-restart 秒（可选，0 = 禁用）',
+      _ctl('ovpn.pingRestart'),
+      field: 'ovpn.pingRestart',
+      hint: '60',
+      numeric: true,
+    ),
+    _input(
+      'mssfix（可选）',
+      _ctl('ovpn.mssFix'),
+      field: 'ovpn.mssFix',
+      hint: '1450',
+      numeric: true,
     ),
     _toggle(
       '要求服务端证书（remote-cert-tls server）',
@@ -1254,9 +1332,23 @@ class _LabeledInputState extends State<_LabeledInput> {
                 ),
               ),
               if (widget.secret)
-                TapAction(
-                  label: _obscured ? '显示' : '隐藏',
-                  onTap: () => setState(() => _obscured = !_obscured),
+                IconButton(
+                  tooltip: _obscured ? '显示密码' : '隐藏密码',
+                  icon: Icon(
+                    _obscured
+                        ? Icons.visibility_outlined
+                        : Icons.visibility_off_outlined,
+                    size: 18,
+                    color: XV.muted,
+                  ),
+                  onPressed: () => setState(() => _obscured = !_obscured),
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(
+                    minWidth: 36,
+                    minHeight: 36,
+                  ),
+                  visualDensity: VisualDensity.compact,
+                  splashRadius: 18,
                 ),
             ],
           ),

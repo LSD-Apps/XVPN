@@ -74,7 +74,7 @@ class AppPreset {
 class AppPresets {
   AppPresets._();
 
-  /// 国内长尾站点补充（默认启用）。
+  /// 直连站点补充（默认启用）。
   ///
   /// 存在的理由是本程序分流机制的一个结构性缺口：`geosite-cn` 是域名快路径，
   /// 而 `geoip-cn` **不参与域名目标的判定**（实测见 `docs/RULES.md`），因此
@@ -94,10 +94,10 @@ class AppPresets {
   /// 在运行中自动学会（见 `core_monitor.probeDirectCandidates`）。
   static const AppPreset cnExtra = AppPreset(
     id: 'cn-extra',
-    label: '国内长尾站点补充',
+    label: '直连站点补充',
     summary:
-        'geosite-cn 未收录、但直连解析落在国内网段的站点。默认启用——'
-        '把国内站点送进隧道属于误判，不是可选项。',
+        'geosite-cn 未收录、但直连解析落在规则库网段内的站点。默认启用——'
+        '把本该直连的站点送进隧道属于误判，不是可选项。',
     directDomains: <String>[
       'gaoding.com',
       'jianyu360.com',
@@ -105,10 +105,10 @@ class AppPresets {
       'chuangkit.com',
     ],
     evidence:
-        '2026-09 实测：55 个国内站点中 51 个被 geosite-cn 收录；'
+        '2026-09 实测：55 个样本站点中 51 个被 geosite-cn 收录；'
         '下列 4 个未收录，且它们的直连解析（223.5.5.5）全部落在 geoip-cn 网段内，'
-        '即确实为国内站点。',
-    // 把国内站点送进隧道是缺陷而不是配置选项，因此默认启用。
+        '即确实可走直连。',
+    // 把本该直连的站点送进隧道是缺陷而不是配置选项，因此默认启用。
     defaultEnabled: true,
   );
 
@@ -142,8 +142,8 @@ class AppPresets {
       'us-eu.gcpp.cursor.sh',
     ],
     evidence:
-        '2026-09 于中国大陆直连实测：上述直连域名均能完成 TLS 并收到 HTTP 应答'
-        '（负对照 google.com 连接超时）；三个例外域名在国内 DNS 查询为 NXDOMAIN。',
+        '2026-09 直连实测（绕过系统代理）：上述直连域名均能完成 TLS 并收到 HTTP 应答'
+        '（负对照 google.com 连接超时）；三个例外域名在本地 DNS 查询为 NXDOMAIN。',
   );
 
   /// 全部内置预置，顺序即界面顺序。

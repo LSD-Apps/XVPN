@@ -124,6 +124,16 @@ void main() {
     });
   });
 
+  group('本地偏好 DNS', () {
+    test('直连侧解析器被识别，隧道不得沿用', () {
+      expect(isLocalPreferenceDns('223.5.5.5'), isTrue);
+      expect(isLocalPreferenceDns(' 119.29.29.29 '), isTrue);
+      expect(isLocalPreferenceDns('1.1.1.1'), isFalse);
+      expect(isLocalPreferenceDns('8.8.8.8'), isFalse);
+      expect(localPreferenceDnsServers, contains('223.5.5.5'));
+    });
+  });
+
   group('WireGuard 端点生成', () {
     const conf = '''
 [Interface]
@@ -168,11 +178,14 @@ PersistentKeepalive = 25
 
     test('不合理的 MTU 被换成默认值', () {
       final bogus = conf.replaceAll('MTU = 1420', 'MTU = 9000');
-      final endpoint = WireGuardAdapter().buildEndpoint(
-        WireGuardProfile(_parseWg(bogus)),
-        context,
-      );
+      final profile = WireGuardProfile(_parseWg(bogus));
+      final endpoint = WireGuardAdapter().buildEndpoint(profile, context);
       expect(endpoint['mtu'], WireGuardAdapter.defaultMtu);
+      expect(
+        WireGuardAdapter().tunMtu(profile),
+        endpoint['mtu'],
+        reason: 'TUN 与端点 MTU 必须同值，否则表现为能连但很慢',
+      );
     });
 
     test('合理 MTU 原样保留', () {

@@ -870,7 +870,7 @@ class Hysteria2Conf {
 }
 
 /// Hysteria2 配置的协议无关视图。
-class Hysteria2Profile implements ParsedProfile {
+class Hysteria2Profile extends ParsedProfile {
   const Hysteria2Profile(this.conf);
 
   final Hysteria2Conf conf;
@@ -955,11 +955,23 @@ class Hysteria2Profile implements ParsedProfile {
           ),
         if (conf.displayName != null && conf.displayName!.isNotEmpty)
           (label: '备注', value: conf.displayName!),
-        if (conf.ignoredFields.isNotEmpty)
-          // 忽略的字段要说出来：用户以为「我配了 obfs 却没生效」时，
-          // 这里是他唯一能看出原因的地方。
-          (label: '未使用字段', value: conf.ignoredFields.join('、')),
       ];
+
+  @override
+  List<String> get unusedKeys => conf.ignoredFields;
+
+  @override
+  List<ProfileNotice> get notices {
+    if (conf.upMbps != null || conf.downMbps != null) {
+      return const <ProfileNotice>[];
+    }
+    return const <ProfileNotice>[
+      ProfileNotice.info(
+        '未声明上行/下行带宽。高丢包链路上内核自动探测常会偏低，'
+        '建议在配置中填写 up/down（Mbps）',
+      ),
+    ];
+  }
 }
 
 // ---------------------------------------------------------------- 取值助手

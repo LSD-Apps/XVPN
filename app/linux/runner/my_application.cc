@@ -58,12 +58,16 @@ struct _MyApplication {
   void* tray_indicator;
   GtkMenu* tray_menu;
   GtkWidget* tray_version_item;
+  GtkWidget* tray_status_item;
   GtkWidget* tray_update_item;
   // 彩色图标的绝对路径；找不到实体文件时退回主题名 "xvpn"。灰色图标是它的
   // 去饱和副本，写进缓存目录后同样以绝对路径交给 indicator；做不出灰色时为
   // nullptr（此时退回彩色）。
   gchar* tray_icon_normal;
   gchar* tray_icon_grey;
+  // Dart 最近一次推来的状态，供关窗收进托盘时写通知正文。
+  gchar* tray_status_text;
+  gboolean tray_connected;
   // 是否已经开始退出。置位后不重复发起（托盘退出 / SIGTERM / 关窗可能先后到达）。
   gboolean quit_requested;
   // Dart 侧收尾的兜底超时。Dart 没在超时内回话时强制退出，避免「点了退出没反应」。
@@ -401,6 +405,20 @@ static void tray_update_cb(GtkMenuItem* item, gpointer user_data) {
                                   nullptr, nullptr, nullptr);
 }
 
+/// 关窗收进托盘时发一次桌面通知，与 Windows 端气泡同语义。
+static void notify_running_in_background(MyApplication* self) {
+  const gchar* body = self->tray_connected
+                          ? "已收至系统托盘，隧道仍在后台保持连接。"
+                            "点击托盘图标可打开，右键可退出。"
+                          : "已收至系统托盘，程序仍在后台运行。"
+                            "点击托盘图标可打开，右键可退出。";
+  g_autoptr(GNotification) notification = g_notification_new("XVPN");
+  g_notification_set_body(notification, body);
+  // 固定 id：同一次会话里反复关窗只刷新同一条，不堆通知。
+  g_application_send_notification(G_APPLICATION(self), "xvpn-background",
+                                  notification);
+}
+
 // 从载荷里取字符串字段。类型不对或不存在都当「没给」。
 static const gchar* tray_string(FlValue* state, const char* key) {
   FlValue* value = fl_value_lookup_string(state, key);
@@ -427,6 +445,11 @@ static void apply_tray_state(MyApplication* self, FlValue* state) {
       connected_value != nullptr &&
       fl_value_get_type(connected_value) == FL_VALUE_TYPE_BOOL &&
       fl_value_get_bool(connected_value);
+
+  self->tray_connected = connected;
+  g_free(self->tray_status_text);
+  self->tray_status_text =
+      (status != nullptr && *status != '\0') ? g_strdup(status) : nullptr;
 
   if (self->tray_indicator == nullptr) {
     return;
@@ -455,8 +478,14 @@ static void apply_tray_state(MyApplication* self, FlValue* state) {
   }
   g_string_free(title, TRUE);
 
-  // 菜单里的两个信息项与 Windows 端同序：版本 + 条件性的更新提示。
-  // 更新项的文案要**说清点它会发生什么**，因为它是可点的（Windows 端一致）。
+  // 菜单信息项与 Windows 端同序：状态 / 版本 / 条件性更新（更新可点）。
+  if (self->tray_status_text != nullptr) {
+    gtk_menu_item_set_label(GTK_MENU_ITEM(self->tray_status_item),
+                            self->tray_status_text);
+    gtk_widget_set_visible(self->tray_status_item, TRUE);
+  } else {
+    gtk_widget_set_visible(self->tray_status_item, FALSE);
+  }
   if (version != nullptr && *version != '\0') {
     g_autofree gchar* label = g_strdup_printf("XVPN %s", version);
     gtk_menu_item_set_label(GTK_MENU_ITEM(self->tray_version_item), label);
@@ -500,13 +529,16 @@ static gboolean setup_tray(MyApplication* self) {
     return FALSE;
   }
 
-  // 菜单逐条对齐 Windows 端（windows/runner/flutter_window.cpp 的 ShowTrayMenu）：
-  // 显示主界面 / 版本（灰、纯信息）/ 更新提示（可点、条件出现）/ 退出 XVPN。
+  // 菜单逐条对齐 Windows 端 ShowTrayMenu：
+  // 显示主界面 / 状态（灰）/ 版本（灰）/ 更新提示（可点、条件出现）/ 退出。
   GtkWidget* menu = gtk_menu_new();
   GtkWidget* show_item = gtk_menu_item_new_with_label("显示主界面");
   g_signal_connect(show_item, "activate", G_CALLBACK(tray_show_cb), self);
   gtk_menu_shell_append(GTK_MENU_SHELL(menu), show_item);
   gtk_menu_shell_append(GTK_MENU_SHELL(menu), gtk_separator_menu_item_new());
+  self->tray_status_item = gtk_menu_item_new_with_label("");
+  gtk_widget_set_sensitive(self->tray_status_item, FALSE);
+  gtk_menu_shell_append(GTK_MENU_SHELL(menu), self->tray_status_item);
   self->tray_version_item = gtk_menu_item_new_with_label("XVPN");
   gtk_widget_set_sensitive(self->tray_version_item, FALSE);
   gtk_menu_shell_append(GTK_MENU_SHELL(menu), self->tray_version_item);
@@ -522,9 +554,10 @@ static gboolean setup_tray(MyApplication* self) {
   g_signal_connect(quit_item, "activate", G_CALLBACK(tray_quit_cb), self);
   gtk_menu_shell_append(GTK_MENU_SHELL(menu), quit_item);
 
-  // 更新项此刻还没有内容：show_all 会把所有子项显示出来，必须显式再藏回去，
-  // 否则菜单里会多出一条空白项。
+  // 状态 / 更新项此刻还没有内容：show_all 会把所有子项显示出来，必须显式再
+  // 藏回去，否则菜单里会多出空白项。
   gtk_widget_show_all(menu);
+  gtk_widget_set_visible(self->tray_status_item, FALSE);
   gtk_widget_set_visible(self->tray_update_item, FALSE);
 
   self->tray_menu = GTK_MENU(menu);
@@ -549,11 +582,15 @@ static gboolean window_delete_event_cb(GtkWidget* widget, GdkEvent* event,
                                        gpointer user_data) {
   MyApplication* self = MY_APPLICATION(user_data);
   (void)event;
+  const gboolean was_visible = gtk_widget_get_visible(widget);
   // 先隐藏：无论哪条分支，用户的观感都是「窗口关掉了」。
   gtk_widget_hide(widget);
   if (tray_is_usable(self)) {
     // 与 Windows 端 WM_CLOSE → SW_HIDE 一致：关闭 = 收进托盘，只有托盘里的
-    // 「退出 XVPN」才真正结束进程。
+    // 「退出 XVPN」才真正结束进程。首次收进时发通知，避免重复关窗刷屏。
+    if (was_visible) {
+      notify_running_in_background(self);
+    }
     return TRUE;
   }
   // 没有托盘：不能只藏起来（用户会剩一个不可达的进程）。把退出交给统一的收尾
@@ -866,6 +903,7 @@ static void my_application_dispose(GObject* object) {
   // 不在这里动它们（拆 GObject 与 D-Bus 注销的顺序不值得在退出路径上冒险）。
   g_clear_pointer(&self->tray_icon_normal, g_free);
   g_clear_pointer(&self->tray_icon_grey, g_free);
+  g_clear_pointer(&self->tray_status_text, g_free);
   // 窗口由 GtkApplication 持有，这里不 unref，只断开引用。
   self->window = nullptr;
   G_OBJECT_CLASS(my_application_parent_class)->dispose(object);

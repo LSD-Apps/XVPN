@@ -126,6 +126,50 @@ void main() {
       expect(b.requiresCredentials, a.requiresCredentials);
     });
 
+    test('OpenVPN：tun-mtu / keepalive / mssfix 确认导入后仍保留', () {
+      const rich = '''
+client
+dev tun
+proto udp
+remote ovpn.example.net 1194
+tun-mtu 1400
+keepalive 10 60
+mssfix 1360
+cipher AES-256-GCM
+auth SHA256
+<ca>
+-----BEGIN CERTIFICATE-----
+MIIBCA
+-----END CERTIFICATE-----
+</ca>
+''';
+      final first = VpnProtocolFactory.parse(rich, 'rich.ovpn') as OpenVpnProfile;
+      final model = ConfigFormModel.fromParsed(first, name: 'rich.ovpn');
+      expect(model.tunMtu, '1400');
+      expect(model.pingInterval, '10');
+      expect(model.pingRestart, '60');
+      expect(model.mssFix, '1360');
+      expect(model.notices, isEmpty, reason: '已声明 keepalive 时不应再提示缺保活');
+
+      final second =
+          VpnProtocolFactory.parse(model.toConfText(), model.name)
+              as OpenVpnProfile;
+      expect(second.conf.tunMtu, 1400);
+      expect(second.conf.pingInterval, 10);
+      expect(second.conf.pingRestart, 60);
+      expect(second.conf.mssFix, 1360);
+    });
+
+    test('OpenVPN：UDP 且无保活时附带 info notice', () {
+      final profile = VpnProtocolFactory.parse(_openVpn.replaceAll('proto tcp', 'proto udp')
+          .replaceAll('remote vpn.example.net 443', 'remote vpn.example.net 1194'), 'udp.ovpn')
+          as OpenVpnProfile;
+      expect(profile.notices, isNotEmpty);
+      expect(profile.notices.first.kind, ProfileNoticeKind.info);
+      final model = ConfigFormModel.fromParsed(profile, name: 'udp.ovpn');
+      expect(model.notices, profile.notices);
+    });
+
     test('Hysteria2：分享链接的全部参数都保留', () {
       final first = VpnProtocolFactory.parse(_hysteria2, 'node.txt');
       final model = ConfigFormModel.fromParsed(first, name: 'node.txt');
@@ -148,6 +192,18 @@ void main() {
       expect(b.upMbps, a.upMbps);
       expect(b.downMbps, a.downMbps);
       expect(b.displayName, a.displayName);
+      expect(model.notices, isEmpty, reason: '已声明带宽时不应再提示');
+    });
+
+    test('Hysteria2：未声明带宽时附带 info notice', () {
+      const bare =
+          'hysteria2://secret@vpn.example.com:8443/?sni=vpn.example.com';
+      final profile =
+          VpnProtocolFactory.parse(bare, 'bare.txt') as Hysteria2Profile;
+      expect(profile.notices.single.kind, ProfileNoticeKind.info);
+      expect(profile.notices.single.message, contains('带宽'));
+      final model = ConfigFormModel.fromParsed(profile, name: 'bare.txt');
+      expect(model.notices, profile.notices);
     });
   });
 

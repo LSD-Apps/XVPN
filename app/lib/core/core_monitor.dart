@@ -828,7 +828,7 @@ class CoreMonitor {
         }
         final decision = table.recordDomesticAnswer(
           domain,
-          reason: '直连解析 ${check.domesticAnswers.join('、')} 落在国内网段',
+          reason: '直连解析 ${check.domesticAnswers.join('、')} 落在规则库网段',
         );
         if (decision.added) {
           hooks.listener.onAutoRouteLearned(decision);

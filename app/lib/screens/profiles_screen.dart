@@ -5,6 +5,7 @@ import '../models.dart';
 import '../protocols/vpn_protocol.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
+import '../widgets/profile_notices.dart';
 import 'credential_dialog.dart';
 import 'import_conf.dart';
 
@@ -110,51 +111,61 @@ class ProfilesScreen extends StatelessWidget {
           for (final p in state.profiles)
             Padding(
               padding: const EdgeInsets.only(bottom: 6),
-              child: Row(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: <Widget>[
-                  Expanded(
-                    child: Text(
-                      p.name,
-                      style: XvText.bodyMuted.copyWith(color: XV.text),
-                      overflow: TextOverflow.ellipsis,
-                    ),
+                  Row(
+                    children: <Widget>[
+                      Expanded(
+                        child: Text(
+                          p.name,
+                          style: XvText.bodyMuted.copyWith(color: XV.text),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      // 需要账号密码的配置（OpenVPN 的 auth-user-pass）有两种状态：
+                      // 还没填（红色标签 + 填写入口）和已经填好（只留一个改密码入口）。
+                      // 没有这个入口时，用户会看到「需要账号密码」的提示却无处可填。
+                      if (p.parsed.requiresCredentials &&
+                          !state.profileHasCredentials(p.id))
+                        Padding(
+                          padding: const EdgeInsets.only(right: 8),
+                          child: RouteTag.warn('缺账号密码'),
+                        ),
+                      if (p.parsed.requiresCredentials &&
+                          !state.profileHasCredentials(p.id))
+                        TapAction(
+                          label: '填写',
+                          onTap: () => _promptCredentials(context, p),
+                        )
+                      else if (p.parsed.requiresCredentials)
+                        TapAction(
+                          label: '改密码',
+                          onTap: () => _promptCredentials(context, p),
+                        ),
+                      if (p.id == state.activeProfile?.id)
+                        RouteTag.green('当前')
+                      else
+                        TapAction(
+                          // 与桌面端卡片统一叫法：都叫「设为当前」。此前移动端写
+                          // 「切换」、桌面端写「设为当前」，同一个动作两种说法，
+                          // 本项目把这种分叉当作缺陷处理。
+                          label: '设为当前',
+                          onTap: () => state.setActiveProfile(p.id),
+                        ),
+                      // 删除入口：桌面端在配置卡片上有「删除」按钮，移动端此前完全没有，
+                      // 结果手机上的配置只能增不能删。放在切换按钮右侧并撑足热区。
+                      TapAction(
+                        label: '删除',
+                        danger: true,
+                        onTap: () => _confirmRemove(context, p),
+                      ),
+                    ],
                   ),
-                  // 需要账号密码的配置（OpenVPN 的 auth-user-pass）有两种状态：
-                  // 还没填（红色标签 + 填写入口）和已经填好（只留一个改密码入口）。
-                  // 没有这个入口时，用户会看到「需要账号密码」的提示却无处可填。
-                  if (p.parsed.requiresCredentials &&
-                      !state.profileHasCredentials(p.id))
-                    Padding(
-                      padding: const EdgeInsets.only(right: 8),
-                      child: RouteTag.warn('缺账号密码'),
-                    ),
-                  if (p.parsed.requiresCredentials &&
-                      !state.profileHasCredentials(p.id))
-                    TapAction(
-                      label: '填写',
-                      onTap: () => _promptCredentials(context, p),
-                    )
-                  else if (p.parsed.requiresCredentials)
-                    TapAction(
-                      label: '改密码',
-                      onTap: () => _promptCredentials(context, p),
-                    ),
-                  if (p.id == state.activeProfile?.id)
-                    RouteTag.green('当前')
-                  else
-                    TapAction(
-                      // 与桌面端卡片统一叫法：都叫「设为当前」。此前移动端写
-                      // 「切换」、桌面端写「设为当前」，同一个动作两种说法，
-                      // 本项目把这种分叉当作缺陷处理。
-                      label: '设为当前',
-                      onTap: () => state.setActiveProfile(p.id),
-                    ),
-                  // 删除入口：桌面端在配置卡片上有「删除」按钮，移动端此前完全没有，
-                  // 结果手机上的配置只能增不能删。放在切换按钮右侧并撑足热区。
-                  TapAction(
-                    label: '删除',
-                    danger: true,
-                    onTap: () => _confirmRemove(context, p),
+                  // warn 全文展开；info 收进「N 条提示」，避免窄行被保活提示刷屏。
+                  ProfileNoticesView(
+                    notices: p.parsed.notices,
+                    layout: ProfileNoticesLayout.foldable,
                   ),
                 ],
               ),
@@ -400,10 +411,17 @@ class _ProfileCard extends StatelessWidget {
                     _Field(label: '隧道地址', value: profile.tunnelAddressDisplay),
                     // 协议特有的补充字段由解析结果统一提供，
                     // 因此新增协议时这里不需要改动。
-                    for (final detail in profile.parsed.details)
+                    for (final detail in profile.parsed.displayDetails)
                       _Field(label: detail.label, value: detail.value),
                   ],
                 ),
+                if (profile.parsed.notices.isNotEmpty) ...<Widget>[
+                  const SizedBox(height: 10),
+                  ProfileNoticesView(
+                    notices: profile.parsed.notices,
+                    layout: ProfileNoticesLayout.lines,
+                  ),
+                ],
               ],
             ),
           ),

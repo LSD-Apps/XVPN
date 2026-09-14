@@ -343,11 +343,9 @@ class RuleSetStore {
   static const List<SuggestedRuleSet> suggested = <SuggestedRuleSet>[
     SuggestedRuleSet(
       name: 'cn-large',
-      label: '国内站点（大范围）',
+      label: '扩展站点列表（大范围）',
       url: 'https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@sing/geo/geosite/cn.srs',
-      note: '约 11.1 万条，源自 ChinaMax。实测覆盖更全且不回退，'
-          '但收录标准是「国内解析更快」，与「该直连」不完全等价。'
-          '上游许可是 GPL-3.0（数据源自 GPL-2.0 的 ios_rule_script）。',
+      note: '约 11.1 万条（ChinaMax）。覆盖更全；收录不完全等于「该直连」。',
       // 它是域名清单（ChinaMax_Domain 派生），因此必须参与 DNS 直连分流。
       domainRuleSet: true,
     ),

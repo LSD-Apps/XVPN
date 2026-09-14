@@ -14,9 +14,9 @@ import 'common.dart';
 /// 内的域名**必然**进隧道，没有任何兜底。这里把两类「确实能直连」的域名显式
 /// 白名单化：
 ///
-///   * **国内长尾站点补充**：本该直连却被判进隧道的国内站点（默认启用，
-///     因为把国内站点送进隧道是缺陷而非选项）；
-///   * **境外应用预置**：在国内可直连的境外应用（如 Cursor），默认关闭——
+///   * **直连站点补充**：本该直连却被判进隧道的站点（默认启用，
+///     因为把本该直连的站点送进隧道是缺陷而非选项）；
+///   * **应用直连预置**：某些应用后端可直连（如 Cursor），默认关闭——
 ///     正常情况下它们本就该走隧道，直连是例外。
 ///
 /// 做成用户可见的开关而不是写死在配置生成里，是因为可达性会随链路与时间变化：
@@ -44,16 +44,17 @@ class AppPresetCard extends StatelessWidget {
         children: <Widget>[
           const XvCardTitle('直连白名单'),
           Text(
-            '把「确实能直连、却被默认规则送进隧道」的域名显式拉出来。两类：'
-            '国内长尾站点补充（修正 geosite-cn 未收录导致的误判，默认启用）与'
-            '境外应用预置（正常情况下它们本该走隧道，因此需要显式启用）。'
-            '默认规则是「不在规则库内就走隧道」，而 geoip-cn 不参与域名目标的'
-            '判定，所以这两类域名都收不到任何兜底。',
+            '把确实能直连、却被默认规则送进隧道的域名拉出来。',
             style: XvText.caption,
           ),
           const SizedBox(height: 6),
           for (final preset in presets)
-            _buildPreset(preset, enabled.contains(preset.id)),
+            _PresetRow(
+              preset: preset,
+              on: enabled.contains(preset.id),
+              onChanged: (bool value) =>
+                  state.setAppPresetEnabled(preset.id, value),
+            ),
           const SizedBox(height: 6),
           // 预置经自动纠正表下发，而那张表是可热更新的规则集，因此不需要重连。
           Text(
@@ -64,8 +65,44 @@ class AppPresetCard extends StatelessWidget {
       ),
     );
   }
+}
 
-  Widget _buildPreset(AppPreset preset, bool on) {
+/// 单条预置：常显摘要与例外；实测依据默认折叠，避免列表纵向膨胀。
+class _PresetRow extends StatefulWidget {
+  const _PresetRow({
+    required this.preset,
+    required this.on,
+    required this.onChanged,
+  });
+
+  final AppPreset preset;
+  final bool on;
+  final ValueChanged<bool> onChanged;
+
+  @override
+  State<_PresetRow> createState() => _PresetRowState();
+}
+
+class _PresetRowState extends State<_PresetRow> {
+  bool _evidenceOpen = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final preset = widget.preset;
+    final title = Text(
+      preset.label,
+      style: XvText.bodyMuted.copyWith(color: XV.text),
+      overflow: TextOverflow.ellipsis,
+    );
+    final status = widget.on
+        ? RouteTag.green('已启用')
+        : RouteTag.warn('未启用');
+    final enableSwitch = XvSwitch(
+      key: ValueKey<String>('app-preset-switch-${preset.id}'),
+      value: widget.on,
+      onChanged: widget.onChanged,
+    );
+
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 6),
       child: Column(
@@ -73,22 +110,11 @@ class AppPresetCard extends StatelessWidget {
         children: <Widget>[
           Row(
             children: <Widget>[
-              Flexible(
-                child: Text(
-                  preset.label,
-                  style: XvText.bodyMuted.copyWith(color: XV.text),
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
+              Flexible(child: title),
               const SizedBox(width: 8),
-              if (on) RouteTag.green('已启用') else RouteTag.warn('未启用'),
+              status,
               const Spacer(),
-              XvSwitch(
-                key: ValueKey<String>('app-preset-switch-${preset.id}'),
-                value: on,
-                onChanged: (bool value) =>
-                    state.setAppPresetEnabled(preset.id, value),
-              ),
+              enableSwitch,
             ],
           ),
           const SizedBox(height: 3),
@@ -98,14 +124,25 @@ class AppPresetCard extends StatelessWidget {
           if (preset.tunnelExceptions.isNotEmpty) ...<Widget>[
             const SizedBox(height: 2),
             Text(
-              '例外（留在隧道，国内解析不出）：'
+              '例外（留在隧道，直连侧解析不出）：'
               '${preset.tunnelExceptions.join('、')}',
               style: XvText.caption,
             ),
           ],
           if (preset.evidence != null) ...<Widget>[
             const SizedBox(height: 2),
-            Text('实测依据：${preset.evidence!}', style: XvText.caption),
+            TapAction(
+              label: _evidenceOpen ? '收起依据' : '查看依据',
+              onTap: () => setState(() => _evidenceOpen = !_evidenceOpen),
+            ),
+            if (_evidenceOpen)
+              Padding(
+                padding: const EdgeInsets.only(top: 2),
+                child: Text(
+                  '实测依据：${preset.evidence!}',
+                  style: XvText.caption,
+                ),
+              ),
           ],
         ],
       ),

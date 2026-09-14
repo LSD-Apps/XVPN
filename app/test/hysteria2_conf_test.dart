@@ -611,5 +611,17 @@ down: 300 mbps
         contains('pinSHA256'),
       );
     });
+
+    test('未声明带宽时 details 简写，提示走 notices', () {
+      final profile = Hysteria2Profile(
+        Hysteria2Conf.parse('hysteria2://pw@a.example.net:443'),
+      );
+      expect(
+        profile.details.firstWhere((d) => d.label == '带宽').value,
+        '未声明（内核自动探测）',
+      );
+      expect(profile.notices.single.kind, ProfileNoticeKind.info);
+      expect(profile.notices.single.message, contains('up/down'));
+    });
   });
 }

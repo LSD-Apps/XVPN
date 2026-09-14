@@ -83,7 +83,12 @@ class RulesScreen extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: <Widget>[
-                const SizedBox(height: 10),
+                const SizedBox(height: 6),
+                Text(
+                  '分流模式、规则集与域名走向都在这里维护',
+                  style: XvText.screenSubtitle,
+                ),
+                const SizedBox(height: 12),
                 _buildSplitCard(compact: true),
                 const SizedBox(height: 12),
                 _buildRuleSetsCard(context, compact: true),
@@ -152,8 +157,7 @@ class RulesScreen extends StatelessWidget {
         children: <Widget>[
           const XvCardTitle('规则集'),
           Text(
-            '内置规则集是二进制 .srs 文件，不能文本编辑：「编辑」用于启用/停用与'
-            '查看来源、大小、更新时间。自定义规则集可以改名与修改下载链接。',
+            '启用/停用与更新规则库；编辑可改自定义源。',
             style: XvText.caption,
           ),
           const SizedBox(height: 6),
@@ -170,33 +174,63 @@ class RulesScreen extends StatelessWidget {
             for (final entry in entries)
               _buildRuleSetRow(context, entry, compact: compact),
           const SizedBox(height: 10),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: <Widget>[
-              XvButton(
-                label: '新增',
-                icon: Icons.add,
-                onPressed: () => _showRuleSetDialog(context, null),
-              ),
-              XvButton(label: '检查更新', onPressed: state.refreshRuleSet),
-              XvButton(
-                label: '恢复内置规则',
-                onPressed: () => _confirmRestoreBuiltins(context),
-              ),
-            ],
-          ),
+          if (compact)
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: <Widget>[
+                Row(
+                  children: <Widget>[
+                    Expanded(
+                      child: XvButton(
+                        label: '新增',
+                        icon: Icons.add,
+                        onPressed: () => _showRuleSetDialog(context, null),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: XvButton(
+                        label: '检查更新',
+                        onPressed: state.refreshRuleSet,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                XvButton(
+                  label: '恢复内置规则',
+                  expand: true,
+                  onPressed: () => _confirmRestoreBuiltins(context),
+                ),
+              ],
+            )
+          else
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: <Widget>[
+                XvButton(
+                  label: '新增',
+                  icon: Icons.add,
+                  onPressed: () => _showRuleSetDialog(context, null),
+                ),
+                XvButton(label: '检查更新', onPressed: state.refreshRuleSet),
+                XvButton(
+                  label: '恢复内置规则',
+                  onPressed: () => _confirmRestoreBuiltins(context),
+                ),
+              ],
+            ),
           if (RuleSetStore.suggested.isNotEmpty) ...<Widget>[
             const SizedBox(height: 14),
             Text('推荐规则集', style: XvText.rowTitle),
             const SizedBox(height: 4),
             Text(
-              '由用户自行添加的第三方规则集：程序只提供地址，不再分发数据。'
-              '因此它们的许可与收录标准由上游决定，是否使用请你自行判断。',
+              '第三方地址，程序只提供链接；许可与收录标准由上游决定。',
               style: XvText.caption,
             ),
             for (final suggestion in RuleSetStore.suggested)
-              _buildSuggestion(context, suggestion),
+              _buildSuggestion(context, suggestion, compact: compact),
           ],
         ],
       ),
@@ -204,38 +238,64 @@ class RulesScreen extends StatelessWidget {
   }
 
   /// 一条推荐规则集。已添加过的不再出现（避免来回点出重名错误）。
-  Widget _buildSuggestion(BuildContext context, SuggestedRuleSet suggestion) {
+  Widget _buildSuggestion(
+    BuildContext context,
+    SuggestedRuleSet suggestion, {
+    required bool compact,
+  }) {
     final already = state.ruleSets.any(
       (RuleSetEntry e) => e.name == suggestion.name,
     );
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 6),
+    final action = already
+        ? RouteTag.green('已添加')
+        : TapAction(
+            // 刻意不叫「添加」：手工域名规则那一行的按钮已经叫「添加」，
+            // 两个不同动作同名会让按文案定位的地方（测试、无障碍）歧义。
+            label: '添加此规则集',
+            onTap: () => _addSuggestion(context, suggestion),
+          );
+    return HoverRow(
+      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 6),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: <Widget>[
-          Row(
-            children: <Widget>[
-              Flexible(
-                child: Text(
-                  suggestion.label,
-                  style: XvText.bodyMuted.copyWith(color: XV.text),
-                  overflow: TextOverflow.ellipsis,
+          if (compact) ...<Widget>[
+            Text(
+              suggestion.label,
+              style: XvText.bodyMuted.copyWith(color: XV.text),
+              overflow: TextOverflow.ellipsis,
+            ),
+            const SizedBox(height: 3),
+            Text(
+              suggestion.note,
+              style: XvText.caption,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+            ),
+            const SizedBox(height: 2),
+            Align(alignment: Alignment.centerRight, child: action),
+          ] else ...<Widget>[
+            Row(
+              children: <Widget>[
+                Flexible(
+                  child: Text(
+                    suggestion.label,
+                    style: XvText.bodyMuted.copyWith(color: XV.text),
+                    overflow: TextOverflow.ellipsis,
+                  ),
                 ),
-              ),
-              const SizedBox(width: 8),
-              if (already)
-                RouteTag.green('已添加')
-              else
-                TapAction(
-                  // 刻意不叫「添加」：手工域名规则那一行的按钮已经叫「添加」，
-                  // 两个不同动作同名会让按文案定位的地方（测试、无障碍）歧义。
-                  label: '添加此规则集',
-                  onTap: () => _addSuggestion(context, suggestion),
-                ),
-            ],
-          ),
-          const SizedBox(height: 3),
-          Text(suggestion.note, style: XvText.caption),
+                const SizedBox(width: 8),
+                action,
+              ],
+            ),
+            const SizedBox(height: 3),
+            Text(
+              suggestion.note,
+              style: XvText.caption,
+              overflow: TextOverflow.ellipsis,
+              maxLines: 2,
+            ),
+          ],
         ],
       ),
     );
@@ -273,62 +333,71 @@ class RulesScreen extends StatelessWidget {
     RuleSetEntry entry, {
     required bool compact,
   }) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 6),
+    // 两端都是两行扫描；窄屏把「编辑/删除」挪到次行，避免与开关抢标题宽度。
+    final title = Row(
+      children: <Widget>[
+        Flexible(
+          child: Text(
+            entry.name,
+            style: XvText.bodyMuted.copyWith(color: XV.text),
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+        if (!entry.enabled) ...<Widget>[
+          const SizedBox(width: 8),
+          RouteTag.warn('已停用'),
+        ],
+      ],
+    );
+    final enableSwitch = XvSwitch(
+      value: entry.enabled,
+      onChanged: (bool v) => state.setRuleSetEnabled(entry.name, v),
+    );
+    final actions = Row(
+      mainAxisSize: MainAxisSize.min,
+      children: <Widget>[
+        TapAction(
+          label: '编辑',
+          onTap: () => _showRuleSetDialog(context, entry),
+        ),
+        TapAction(
+          label: '删除',
+          danger: true,
+          onTap: () => _confirmDeleteRuleSet(context, entry),
+        ),
+      ],
+    );
+    final subtitle = Text(
+      _ruleSetSubtitle(entry),
+      style: XvText.caption,
+      overflow: TextOverflow.ellipsis,
+    );
+
+    return HoverRow(
+      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 6),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: <Widget>[
           Row(
             children: <Widget>[
-              Flexible(
-                child: Text(
-                  entry.name,
-                  style: XvText.bodyMuted.copyWith(color: XV.text),
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-              const SizedBox(width: 8),
-              if (entry.isBuiltin)
-                RouteTag.green('内置')
-              else
-                RouteTag.direct('自定义'),
-              if (!entry.enabled) ...<Widget>[
-                const SizedBox(width: 6),
-                RouteTag.warn('已停用'),
-              ],
-              if (!entry.updatable) ...<Widget>[
-                const SizedBox(width: 6),
-                // 说清楚「为什么这个没有更新按钮」：它是构建期产物，
-                // 上游给的不是 .srs，程序没法直接下载。
-                RouteTag.direct('构建产物'),
+              Expanded(child: title),
+              enableSwitch,
+              if (!compact) ...<Widget>[
+                const SizedBox(width: 4),
+                actions,
               ],
             ],
           ),
           const SizedBox(height: 3),
-          Text(
-            _ruleSetSubtitle(entry),
-            style: XvText.caption,
-            overflow: TextOverflow.ellipsis,
-          ),
-          const SizedBox(height: 2),
-          Row(
-            children: <Widget>[
-              XvSwitch(
-                value: entry.enabled,
-                onChanged: (bool v) => state.setRuleSetEnabled(entry.name, v),
-              ),
-              const Spacer(),
-              TapAction(
-                label: '编辑',
-                onTap: () => _showRuleSetDialog(context, entry),
-              ),
-              TapAction(
-                label: '删除',
-                danger: true,
-                onTap: () => _confirmDeleteRuleSet(context, entry),
-              ),
-            ],
-          ),
+          if (compact)
+            Row(
+              children: <Widget>[
+                Expanded(child: subtitle),
+                actions,
+              ],
+            )
+          else
+            subtitle,
         ],
       ),
     );
@@ -337,12 +406,12 @@ class RulesScreen extends StatelessWidget {
   static String _ruleSetSubtitle(RuleSetEntry entry) {
     final parts = <String>[
       entry.kind.label,
+      if (!entry.updatable) '构建产物',
       if (entry.sizeBytes > 0) _sizeLabel(entry.sizeBytes),
       if (entry.updatedAt != null)
         '更新于 ${fmtDate(entry.updatedAt!)}'
       else
         '使用出厂副本',
-      entry.url,
     ];
     return parts.join(' · ');
   }
@@ -504,6 +573,7 @@ class _RuleSetDialogState extends State<_RuleSetDialog> {
     final isNew = entry == null;
     return Dialog(
       backgroundColor: XV.panel,
+      insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(XV.rCard),
         side: BorderSide(color: XV.line),
