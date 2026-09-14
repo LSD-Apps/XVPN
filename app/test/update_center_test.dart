@@ -9,6 +9,7 @@ import 'package:xvpn/core/updater.dart';
 import 'package:xvpn/screens/shell.dart';
 import 'package:xvpn/theme.dart';
 import 'package:xvpn/theme_controller.dart';
+import 'package:xvpn/version.dart';
 import 'package:xvpn/widgets/title_bar.dart';
 import 'package:xvpn/widgets/update_card.dart';
 
@@ -49,7 +50,16 @@ class _NeverNetworkUpdater extends Updater {
   void dispose() {}
 }
 
-UpdateInfo _info({String version = '1.2.0'}) => UpdateInfo(
+/// 假「新版本」号。
+///
+/// 刻意取一个**远离当前版本**的占位量级：卡片同时渲染「当前版本 v$appVersion」
+/// 与「新版本 v$version」，两者一旦相等，`find.textContaining` 这类模糊查找会
+/// 同时命中两个文本——把 `pubspec.yaml` 的版本提到测试里写死的那个数时就会
+/// 发生（1.2.0 发布时 `findsOneWidget` 报 “Found 2 widgets”）。
+/// 用 9.9.9 而不是逼近当前版本，是为了让这条断言不再随发版而碎。
+const String _newVersion = '9.9.9';
+
+UpdateInfo _info({String version = _newVersion}) => UpdateInfo(
   tag: 'v$version',
   version: version,
   platform: UpdatePlatform.windows,
@@ -104,7 +114,7 @@ void main() {
     });
 
     test('只有真的有新版本时才记录提示，并带上完整更新信息', () async {
-      final info = _info(version: '1.2.0');
+      final info = _info(version: _newVersion);
       final center = _centerWith(UpdateAvailable(info));
       addTearDown(center.dispose);
 
@@ -112,7 +122,7 @@ void main() {
 
       final notice = center.notice.value;
       expect(notice, isNotNull);
-      expect(notice!.version, '1.2.0');
+      expect(notice!.version, _newVersion);
       expect(notice.info, same(info));
       expect(notice.dismissed, isFalse);
     });
@@ -161,7 +171,7 @@ void main() {
 
       center.dismiss();
       expect(center.notice.value!.dismissed, isTrue);
-      expect(center.notice.value!.version, '1.2.0', reason: '忽略只是标记，不应丢掉版本号');
+      expect(center.notice.value!.version, _newVersion, reason: '忽略只是标记，不应丢掉版本号');
 
       // 再次忽略是幂等的。
       center.dismiss();
@@ -204,7 +214,7 @@ void main() {
 
     testWidgets('已有启动检查结果时直接呈现，且卡片自己不发请求', (WidgetTester tester) async {
       final updater = _NeverNetworkUpdater();
-      final center = _centerWith(UpdateAvailable(_info(version: '1.2.0')));
+      final center = _centerWith(UpdateAvailable(_info(version: _newVersion)));
       addTearDown(center.dispose);
       await center.checkOnStartup();
 
@@ -224,7 +234,11 @@ void main() {
       await tester.pump();
 
       expect(find.text('有新版本'), findsOneWidget);
-      expect(find.textContaining('1.2.0'), findsOneWidget);
+      expect(
+        find.textContaining(_newVersion),
+        findsOneWidget,
+        reason: '当前版本是 $appVersion；新版本 $_newVersion 与之不同，才不会撞成两条',
+      );
       expect(find.text('下载更新'), findsOneWidget);
       expect(find.text('忽略'), findsOneWidget);
       expect(
@@ -304,7 +318,7 @@ void main() {
 
     testWidgets('没有提示时不渲染指示器，有提示时出现并可点击', (WidgetTester tester) async {
       var opened = 0;
-      final center = _centerWith(UpdateAvailable(_info(version: '1.2.0')));
+      final center = _centerWith(UpdateAvailable(_info(version: _newVersion)));
       addTearDown(center.dispose);
 
       await pumpTitleBar(tester, center, () => opened++);
@@ -314,9 +328,9 @@ void main() {
       await tester.pump();
 
       expect(find.text('发现新版本'), findsOneWidget);
-      expect(find.byTooltip('发现新版本 v1.2.0，点击查看'), findsOneWidget);
+      expect(find.byTooltip('发现新版本 v$_newVersion，点击查看'), findsOneWidget);
 
-      await tester.tap(find.byTooltip('发现新版本 v1.2.0，点击查看'));
+      await tester.tap(find.byTooltip('发现新版本 v$_newVersion，点击查看'));
       await tester.pump();
       expect(opened, 1, reason: '点击应把用户带去更新界面');
 
@@ -370,7 +384,7 @@ void main() {
       // 连接页没有「外观」这块设置项。
       expect(find.text('外观'), findsNothing);
 
-      await tester.tap(find.byTooltip('发现新版本 v1.2.0，点击查看'));
+      await tester.tap(find.byTooltip('发现新版本 v$_newVersion，点击查看'));
       await tester.pumpAndSettle();
 
       expect(find.text('外观'), findsOneWidget, reason: '应切到设置页');

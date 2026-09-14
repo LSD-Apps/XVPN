@@ -31,7 +31,6 @@ import 'core_log.dart';
 import 'dns_client.dart';
 import 'dns_monitor.dart';
 import 'mtu_probe.dart';
-import 'outbound_tags.dart';
 import 'port_allocator.dart';
 import 'record_buffer.dart';
 import 'singbox_config.dart';

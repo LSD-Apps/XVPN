@@ -93,8 +93,17 @@ class _FakeUpdater extends Updater {
   void dispose() {}
 }
 
+/// 假「新版本」号。
+///
+/// 刻意取一个**远离当前版本**的占位量级：卡片同时渲染「当前版本 v$appVersion」
+/// 与「新版本 v$version」，两者一旦相等，`find.textContaining` 这类模糊查找会
+/// 同时命中两个文本——把 `pubspec.yaml` 的版本提到测试里写死的那个数时就会
+/// 发生（1.2.0 发布时 `findsOneWidget` 报 “Found 2 widgets”）。
+/// 用 9.9.9 而不是逼近当前版本，是为了让这条断言不再随发版而碎。
+const String _newVersion = '9.9.9';
+
 UpdateInfo _info({
-  String version = '1.2.0',
+  String version = _newVersion,
   int? assetSize = 2048,
   String? notes = '修复了若干问题。',
 }) => UpdateInfo(
@@ -196,20 +205,24 @@ void main() {
 
   testWidgets('有更新时显示新版本号、说明与「下载更新」', (WidgetTester tester) async {
     final updater = _FakeUpdater(platform: TargetPlatform.windows)
-      ..checkResult = UpdateAvailable(_info(version: '1.2.0'));
+      ..checkResult = UpdateAvailable(_info(version: _newVersion));
     await _pumpCard(tester, updater);
 
     await tester.tap(find.text('检查更新'));
     await tester.pumpAndSettle();
 
-    expect(find.textContaining('1.2.0'), findsOneWidget);
+    expect(
+      find.textContaining(_newVersion),
+      findsOneWidget,
+      reason: '当前版本是 $appVersion；新版本 $_newVersion 与之不同，才不会撞成两条',
+    );
     expect(find.text('下载更新'), findsOneWidget);
     expect(find.text('查看发布页'), findsOneWidget);
   });
 
   testWidgets('「查看发布页」走应用既有的外部打开机制', (WidgetTester tester) async {
     final updater = _FakeUpdater(platform: TargetPlatform.windows)
-      ..checkResult = UpdateAvailable(_info(version: '1.2.0'));
+      ..checkResult = UpdateAvailable(_info(version: _newVersion));
     final opened = <Uri>[];
     await _pumpCard(tester, updater, opened: opened);
 
@@ -219,7 +232,10 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(opened, hasLength(1));
-    expect(opened.single.toString(), contains('/releases/tag/v1.2.0'));
+    expect(
+      opened.single.toString(),
+      contains('/releases/tag/v$_newVersion'),
+    );
   });
 
   testWidgets('下载中：显示确定进度与「取消」，取消会触发取消令牌', (WidgetTester tester) async {
