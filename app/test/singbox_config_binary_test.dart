@@ -55,6 +55,31 @@ const _hysteria2Link =
     '&obfs=salamander&obfs-password=testobfspass&mport=20000-30000'
     '&hop-interval=30&up=100&down=300#%E6%B5%8B%E8%AF%95%E8%8A%82%E7%82%B9';
 
+const _shadowsocksLink =
+    'ss://aes-256-gcm:testpassword@ss.example.net:8388#example';
+
+const _uuid = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+
+const _vlessLink =
+    'vless://$_uuid@vless.example.net:443?type=tcp&security=tls'
+    '&sni=vless.example.net#example';
+
+const _trojanLink =
+    'trojan://testpassword@trojan.example.net:443?security=tls'
+    '&sni=trojan.example.net#example';
+
+const _vmessJson = '''
+{
+  "type": "vmess",
+  "tag": "vpn",
+  "server": "vmess.example.net",
+  "server_port": 443,
+  "uuid": "$_uuid",
+  "security": "auto",
+  "tls": { "enabled": true, "server_name": "vmess.example.net" }
+}
+''';
+
 void main() {
   final exe = hostCoreBinary;
   final rulesets = Directory('assets/rulesets');
@@ -143,6 +168,66 @@ void main() {
       test('Hysteria2 · 智能分流 · ${inbound.name} 能通过 sing-box check', () async {
         final result = await checkConfig(
           _hysteria2Link,
+          SplitMode.smart,
+          inbound,
+        );
+        expect(
+          result.code,
+          0,
+          reason: '内核拒绝了这份配置，用户会看到「连不上」：\n${result.output}',
+        );
+      });
+    }
+
+    for (final inbound in InboundMode.values) {
+      test('Shadowsocks · 智能分流 · ${inbound.name} 能通过 sing-box check', () async {
+        final result = await checkConfig(
+          _shadowsocksLink,
+          SplitMode.smart,
+          inbound,
+        );
+        expect(
+          result.code,
+          0,
+          reason: '内核拒绝了这份配置，用户会看到「连不上」：\n${result.output}',
+        );
+      });
+    }
+
+    for (final inbound in InboundMode.values) {
+      test('Trojan · 智能分流 · ${inbound.name} 能通过 sing-box check', () async {
+        final result = await checkConfig(
+          _trojanLink,
+          SplitMode.smart,
+          inbound,
+        );
+        expect(
+          result.code,
+          0,
+          reason: '内核拒绝了这份配置，用户会看到「连不上」：\n${result.output}',
+        );
+      });
+    }
+
+    for (final inbound in InboundMode.values) {
+      test('VLESS · 智能分流 · ${inbound.name} 能通过 sing-box check', () async {
+        final result = await checkConfig(
+          _vlessLink,
+          SplitMode.smart,
+          inbound,
+        );
+        expect(
+          result.code,
+          0,
+          reason: '内核拒绝了这份配置，用户会看到「连不上」：\n${result.output}',
+        );
+      });
+    }
+
+    for (final inbound in InboundMode.values) {
+      test('VMess · 智能分流 · ${inbound.name} 能通过 sing-box check', () async {
+        final result = await checkConfig(
+          _vmessJson,
           SplitMode.smart,
           inbound,
         );

@@ -1,7 +1,10 @@
 import 'package:flutter/material.dart';
 
 import '../app_state.dart';
+import '../core/cn_ip_index.dart';
+import '../core/node_region.dart';
 import '../models.dart';
+import '../protocols/parsed_profile.dart';
 import '../protocols/vpn_protocol.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
@@ -62,10 +65,22 @@ class ProfilesScreen extends StatelessWidget {
                     hasCredentials: state.profileHasCredentials(
                       state.profiles[i].id,
                     ),
+                    subscription: state.refreshableSubscriptionOf(
+                      state.profiles[i],
+                    ),
+                    region: classifyNodeRegion(
+                      state.core.cnIpIndex,
+                      state.profiles[i].parsed,
+                    ),
                     onActivate: () =>
                         state.setActiveProfile(state.profiles[i].id),
                     onEditCredentials: () =>
                         _promptCredentials(context, state.profiles[i]),
+                    onRefresh: () => _refreshSubscription(
+                      context,
+                      state,
+                      state.refreshableSubscriptionOf(state.profiles[i])?.id,
+                    ),
                     onRemove: () => state.removeProfile(state.profiles[i].id),
                   ),
                 )
@@ -147,14 +162,18 @@ class ProfilesScreen extends StatelessWidget {
                         RouteTag.green('当前')
                       else
                         TapAction(
-                          // 与桌面端卡片统一叫法：都叫「设为当前」。此前移动端写
-                          // 「切换」、桌面端写「设为当前」，同一个动作两种说法，
-                          // 本项目把这种分叉当作缺陷处理。
                           label: '设为当前',
                           onTap: () => state.setActiveProfile(p.id),
                         ),
-                      // 删除入口：桌面端在配置卡片上有「删除」按钮，移动端此前完全没有，
-                      // 结果手机上的配置只能增不能删。放在切换按钮右侧并撑足热区。
+                      if (state.refreshableSubscriptionOf(p) case final sub?)
+                        TapAction(
+                          label: '刷新',
+                          onTap: () => _refreshSubscription(
+                            context,
+                            state,
+                            sub.id,
+                          ),
+                        ),
                       TapAction(
                         label: '删除',
                         danger: true,
@@ -175,6 +194,32 @@ class ProfilesScreen extends StatelessWidget {
         ],
       ),
     );
+  }
+
+  Future<void> _refreshSubscription(
+    BuildContext context,
+    AppState state,
+    String? id,
+  ) async {
+    if (id == null) return;
+    try {
+      final result = await state.refreshSubscription(id);
+      if (!context.mounted) return;
+      ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+        SnackBar(
+          content: Text(
+            result.skipped.isEmpty
+                ? '已刷新 ${result.imported} 个节点'
+                : '已刷新 ${result.imported} 个节点，跳过 ${result.skipped.length} 个',
+          ),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } on VpnConfigException catch (e) {
+      state.reportError(e.message);
+    } on Object catch (e) {
+      state.reportError('刷新订阅失败：$e');
+    }
   }
 
   /// 补填或修改某份配置的账号密码。
@@ -288,37 +333,64 @@ class _ImportCard extends StatelessWidget {
         final fileTile = ImportActionTile(
           icon: Icons.folder_open_outlined,
           title: '选择配置文件',
-          description: '从本机挑一个 .conf、.ovpn 或 .yaml 文件',
+          description: '导入本机上的配置文件或分享链接',
           primary: true,
           onTap: () => pickAndImportConf(context, state),
         );
         final manualTile = ImportActionTile(
           icon: Icons.edit_outlined,
           title: '手动填写',
-          description: '从零填写 WireGuard、OpenVPN 或 Hysteria2 参数',
+          description: '从零填写协议参数，不必先有文件',
           onTap: () => startManualConfigForm(context, state),
+        );
+        final subTile = ImportActionTile(
+          icon: Icons.link_outlined,
+          title: '自备订阅',
+          description: '粘贴你已有的订阅 URL 或多条分享链接',
+          onTap: () => startSubscriptionImport(context, state),
         );
 
         // 窄屏并排会把「说明」压成两行以上，反而更乱，因此竖排。
-        // 阈值按两个入口各自的最小可用宽度估算。
         const minTileWidth = 250;
         if (constraints.hasBoundedWidth &&
             constraints.maxWidth < minTileWidth * 2 + 10) {
           return Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: <Widget>[fileTile, const SizedBox(height: 10), manualTile],
+            children: <Widget>[
+              fileTile,
+              const SizedBox(height: 10),
+              manualTile,
+              const SizedBox(height: 10),
+              subTile,
+            ],
           );
         }
-        // 横向并排时**不能**用 CrossAxisAlignment.stretch：卡片在移动端设置页里
-        // 处于可滚动容器中，纵向约束是无界的，stretch 会让子项去撑满这个无界高度
-        // 从而报布局错误（实测矮屏下直接崩出 21 个异常）。两个入口的内边距
-        // 完全一致，本来就等高，用 start 不影响观感。
+        if (constraints.hasBoundedWidth &&
+            constraints.maxWidth < minTileWidth * 3 + 20) {
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: <Widget>[
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: <Widget>[
+                  Expanded(child: fileTile),
+                  const SizedBox(width: 10),
+                  Expanded(child: manualTile),
+                ],
+              ),
+              const SizedBox(height: 10),
+              subTile,
+            ],
+          );
+        }
         return Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: <Widget>[
             Expanded(child: fileTile),
             const SizedBox(width: 10),
             Expanded(child: manualTile),
+            const SizedBox(width: 10),
+            Expanded(child: subTile),
           ],
         );
       },
@@ -334,8 +406,8 @@ class _ImportCard extends StatelessWidget {
           content,
           const SizedBox(height: 10),
           Text(
-            '也可以直接把配置文件拖进窗口。协议按内容自动识别，'
-            '分流规则与 DNS 策略都已经内置，无需再填任何参数。',
+            '也可以直接把配置文件拖进窗口。协议按内容自动识别；'
+            '自备订阅只拉取你填写的地址，软件不提供节点。',
             style: XvText.caption,
           ),
         ],
@@ -349,26 +421,22 @@ class _ProfileCard extends StatelessWidget {
     required this.profile,
     required this.isActive,
     required this.hasCredentials,
+    required this.subscription,
+    required this.region,
     required this.onActivate,
     required this.onEditCredentials,
+    required this.onRefresh,
     required this.onRemove,
   });
 
   final VpnProfile profile;
   final bool isActive;
-
-  /// 这份配置是否已经保存了账号密码。
-  ///
-  /// 与 `AppState.profileHasCredentials` 同义。桌面卡片此前完全没有凭据入口，
-  /// 用户在导入对话框里选了「稍后填写」之后就卡住了——OpenVPN 根本无法使用，
-  /// 唯一的绕法是重新导入一遍。移动端一直有这两个入口，桌面端缺失属于功能缺口。
   final bool hasCredentials;
-
+  final ProfileSubscription? subscription;
+  final AddressRegion region;
   final VoidCallback onActivate;
-
-  /// 补填或修改账号密码。两个状态共用这一个动作。
   final VoidCallback onEditCredentials;
-
+  final VoidCallback onRefresh;
   final VoidCallback onRemove;
 
   @override
@@ -397,6 +465,14 @@ class _ProfileCard extends StatelessWidget {
                     if (isActive) ...<Widget>[
                       const SizedBox(width: 10),
                       RouteTag.green('当前'),
+                    ],
+                    if (subscription != null) ...<Widget>[
+                      const SizedBox(width: 10),
+                      RouteTag.green('订阅'),
+                    ],
+                    if (region == AddressRegion.domestic) ...<Widget>[
+                      const SizedBox(width: 10),
+                      RouteTag.warn('国内网段'),
                     ],
                   ],
                 ),
@@ -443,6 +519,10 @@ class _ProfileCard extends StatelessWidget {
               ],
               if (!isActive) ...<Widget>[
                 XvButton(label: '设为当前', onPressed: onActivate),
+                const SizedBox(width: 8),
+              ],
+              if (subscription != null && subscription!.url.isNotEmpty) ...<Widget>[
+                XvButton(label: '刷新', onPressed: onRefresh),
                 const SizedBox(width: 8),
               ],
               XvButton(

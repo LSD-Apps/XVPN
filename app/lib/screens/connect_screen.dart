@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import '../app_state.dart';
 import '../core/core_log.dart';
 import '../core/dns_monitor.dart';
+import '../core/node_region.dart';
 import '../core/screen_navigation.dart';
 import '../core/wireguard_handshake.dart';
 import '../format.dart';
@@ -149,16 +150,27 @@ class ConnectScreen extends StatelessWidget {
     // connecting 与 warmingUp 对「主控件该做什么」完全一致：都表示一次尝试
     // 正在飞，此时点它是取消。合并成一个判断，避免两处各写一遍后走偏。
     final busy = state.isConnecting;
+    // 失败态优先于「未连接」：一次失败的尝试必须在界面上留下痕迹。
+    //
+    // 此前失败后圆环退回中性灰、写着「未连接」，与「从没点过连接」长得一模一样
+    // ——一次失败被说成了「什么都没发生过」，而那条 SnackBar 四秒就消失了。
+    final failed = state.connectFailed;
 
     final ring = ConnectRing(
       size: compact ? ConnectRing.mobileSize : ConnectRing.desktopSize,
-      active: connected || busy,
+      tone: failed
+          ? ConnectRingTone.failed
+          : (connected || busy
+                ? ConnectRingTone.active
+                : ConnectRingTone.idle),
       icon: Icons.power_settings_new,
       // 预热与「连接中」必须分开说：内核其实已经就绪，用户此时点取消也是有
       // 意义的，含混成一句「连接中…」会让人以为还在启动阶段。
       title: state.isWarmingUp
           ? '正在建立隧道…'
-          : (busy ? '连接中…' : (connected ? '已连接' : '未连接')),
+          : (busy
+                ? '连接中…'
+                : (connected ? '已连接' : (failed ? '连接失败' : '未连接'))),
       // 预热期间叠加流转弧：这一段要等几秒到二十秒，光有一句静止的文案
       // 看不出程序在动还是卡住了。
       warmup: state.isWarmingUp,
@@ -166,7 +178,9 @@ class ConnectScreen extends StatelessWidget {
           ? TextStyle(
               fontSize: 15,
               fontWeight: FontWeight.w600,
-              color: connected ? XV.greenSoft : XV.muted,
+              color: failed
+                  ? XV.redSoft
+                  : (connected ? XV.greenSoft : XV.muted),
             )
           : null,
       // 建立隧道期间圆环是可点的，且必须一眼看出点它是「取消」：一份坏配置的
@@ -174,9 +188,11 @@ class ConnectScreen extends StatelessWidget {
       // 在连接中直接传 null，把整个取消诉求挡掉了。
       sublabel: busy
           ? '点击取消'
-          : (compact && connected
-                ? fmtDuration(state.elapsed)
-                : (compact ? '--:--:--' : null)),
+          : (failed
+                ? '点击重试'
+                : (compact && connected
+                      ? fmtDuration(state.elapsed)
+                      : (compact ? '--:--:--' : null))),
       onTap: busy ? state.cancelConnect : state.toggleConnection,
     );
 
@@ -225,6 +241,14 @@ class ConnectScreen extends StatelessWidget {
               _MetaItem(label: '分流', value: _splitDescription()),
             ],
           ),
+        if (state.connectFailed) ...<Widget>[
+          SizedBox(height: compact ? 8 : 12),
+          _ConnectFailureNotice(state: state),
+        ],
+        if (nodeRegionHint(state.activeNodeRegion) case final String hint) ...<Widget>[
+          SizedBox(height: compact ? 6 : 10),
+          Text(hint, style: XvText.caption.copyWith(color: XV.amberSoft)),
+        ],
         SizedBox(height: compact ? 0 : 16),
         if (!compact)
           Row(
@@ -1284,6 +1308,160 @@ Future<void> showProfilePicker(BuildContext context, AppState state) async {
 
 // ------------------------------------------------------------------ 子组件
 
+/// 上一次连接失败的原因，摆在圆环旁边。
+///
+/// 存在的理由：失败原因此前只有一条 4 秒的 SnackBar。而用户遇到连接失败时，
+/// 通常是看着界面等结果——等回来时提示已经消失，屏幕上只剩一个不说话的圆环。
+/// 圆环负责说「失败了」，这一行负责说「下一步能做什么」，两者缺一不可。
+///
+/// 这一行**刻意只有一句人话**，不再把内核的原始报错搬上来：那些句子（例如
+/// `parse rule-set: open /data/user/0/…: no such file or directory`）用户看不懂，
+/// 也没有能做的事，整整一段红色文字挂在连接页上，只会让人以为自己弄坏了什么。
+/// 原文收进「详情」，愿意看、要拿去反馈的人一步就能看到——台前一句话，幕后一个字不删。
+///
+/// 与「连接状态」卡里的 [_DiagnosisRow] 不是一回事：那条讲的是**分流判定**
+/// 出错（域名本该直连却失败），这条讲的是**这次连接根本没起来**。
+class _ConnectFailureNotice extends StatelessWidget {
+  const _ConnectFailureNotice({required this.state});
+
+  final AppState state;
+
+  @override
+  Widget build(BuildContext context) {
+    // 取不到原因时（理论上不会，[AppState.connectFailed] 已保证非空）整块不画，
+    // 而不是显示一行空的红色装饰。
+    final reason = state.connectFailure;
+    if (reason == null) return const SizedBox.shrink();
+    // 技术原文只在有得看的时候才给入口。像「还没有导入任何配置」这种处境本就没有
+    // 原文，摆一个点了没内容的「详情」比不摆更糟。
+    final detail = state.connectFailureDetail;
+
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: <Widget>[
+        Padding(
+          padding: const EdgeInsets.only(top: 2),
+          child: Icon(
+            Icons.error_outline,
+            size: 15,
+            color: XV.red,
+          ),
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text(
+            reason,
+            style: XvText.caption.copyWith(color: XV.redSoft),
+          ),
+        ),
+        if (detail != null) ...<Widget>[
+          const SizedBox(width: 8),
+          TapAction(
+            label: '详情',
+            onTap: () => _showDetail(context, detail),
+          ),
+        ],
+        const SizedBox(width: 8),
+        TapAction(label: '知道了', onTap: state.dismissConnectFailure),
+      ],
+    );
+  }
+
+  /// 技术原文的弹窗。
+  ///
+  /// 存在的理由：界面主视线只放一句人话，而**排查必须有原文**——内核报的是
+  /// 「哪个文件的哪一步失败」，那是唯一能定位的事实。两者不是取舍关系，只是
+  /// 谁在台前、谁在一步之后。
+  Future<void> _showDetail(BuildContext context, String detail) async {
+    await showDialog<void>(
+      context: context,
+      barrierColor: Colors.black.withValues(alpha: 0.6),
+      builder: (BuildContext dialogContext) {
+        final messenger = ScaffoldMessenger.maybeOf(context);
+        return Dialog(
+          backgroundColor: XV.panel,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(XV.rCard),
+            side: BorderSide(color: XV.line),
+          ),
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 620, maxHeight: 460),
+            child: Padding(
+              padding: const EdgeInsets.all(20),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: <Widget>[
+                  Text(
+                    '失败原因',
+                    style: TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w700,
+                      color: XV.text,
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    '内核或系统给出的原文。反馈问题时请把它一并附上。',
+                    style: XvText.caption,
+                  ),
+                  const SizedBox(height: 12),
+                  Flexible(
+                    child: Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: XV.field,
+                        border: Border.all(color: XV.line),
+                        borderRadius: BorderRadius.circular(XV.rCtl),
+                      ),
+                      child: SingleChildScrollView(
+                        child: SelectableText(
+                          detail,
+                          style: TextStyle(
+                            fontSize: 11.5,
+                            height: 1.6,
+                            color: XV.text,
+                            fontFamilyFallback: XV.monoFallback,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.end,
+                    children: <Widget>[
+                      XvButton(
+                        label: '复制',
+                        onPressed: () async {
+                          await Clipboard.setData(ClipboardData(text: detail));
+                          messenger?.showSnackBar(
+                            const SnackBar(
+                              content: Text('已复制失败原因'),
+                              duration: Duration(seconds: 2),
+                            ),
+                          );
+                        },
+                      ),
+                      const SizedBox(width: 10),
+                      XvButton(
+                        label: '关闭',
+                        kind: XvButtonKind.primary,
+                        onPressed: () => Navigator.of(dialogContext).pop(),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
 class _LatencyBadge extends StatelessWidget {
   const _LatencyBadge({required this.millis});
 
@@ -1583,8 +1761,8 @@ class _EmptyStateState extends State<_EmptyState> {
                         ),
                         const SizedBox(height: 10),
                         Text(
-                          '支持 WireGuard 的 .conf、OpenVPN 的 .ovpn\n'
-                          '或 Hysteria2 的 .yaml / .yml\n'
+                          '支持 WireGuard、OpenVPN、Shadowsocks、\n'
+                          'VMess / VLESS / Trojan 与 Hysteria2。\n'
                           '格式按内容自动识别，其余设置已经内置好了',
                           textAlign: TextAlign.center,
                           style: TextStyle(
@@ -1673,7 +1851,7 @@ class _EmptyStateState extends State<_EmptyState> {
                   ConstrainedBox(
                     constraints: const BoxConstraints(maxWidth: 430),
                     child: Text(
-                      '把 .conf、.ovpn 或 Hysteria2 的 .yaml / .yml 拖进来就行。'
+                      '把 .conf、.ovpn、YAML 或分享链接拖进来就行。'
                       '格式按内容自动识别，分流规则已经内置，不需要填写任何 IP 段、规则或路由表。',
                       textAlign: TextAlign.center,
                       style: TextStyle(
@@ -1740,7 +1918,7 @@ class _EmptyStateState extends State<_EmptyState> {
                                   borderRadius: BorderRadius.circular(5),
                                 ),
                                 child: Text(
-                                  '.conf / .ovpn / .yaml / .yml',
+                                  '.conf / .ovpn / .yaml / 分享链接',
                                   style: TextStyle(
                                     fontSize: 11,
                                     color: XV.green,
@@ -1780,9 +1958,8 @@ class _EmptyStateState extends State<_EmptyState> {
                   ),
                   const SizedBox(height: 22),
                   Text(
-                    '支持 WireGuard 的 .conf（含 wg-quick 导出）、OpenVPN 的 .ovpn，\n'
-                    '以及 Hysteria2 的 .yaml / .yml。协议按内容自动识别，改名也能导入\n'
-                    '配置只保存在本机，不会上传；导入后自动连接并完成分流',
+                    '支持 WireGuard、OpenVPN、Shadowsocks、VMess / VLESS / Trojan 与 Hysteria2。\n'
+                    '协议按内容自动识别，改名也能导入。配置只保存在本机，不会上传。',
                     textAlign: TextAlign.center,
                     style: TextStyle(
                       fontSize: 11.5,

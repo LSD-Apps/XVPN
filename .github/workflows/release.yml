@@ -68,25 +68,27 @@ jobs:
       - name: 检出代码
         uses: actions/checkout@v4
 
-      # app/assets/legal/ 是仓库根 LICENSE / NOTICE.md / THIRD-PARTY-NOTICES.md 的
-      # 副本（Flutter 的 asset 不能引用包目录之外的文件）。这里把根文件复制过去，
-      # 再断言 git 无差异：副本一旦过期，复制会改变工作区、git diff 非零，发布就
-      # 在这里失败，而不是发出「应用内许可与仓库根不一致」的安装包。
+      # app/assets/legal/LEGAL.md 是 docs/LEGAL.md 的副本（Flutter 的 asset 不能引用
+      # 包目录之外的文件）。这里把源文件复制过去，再断言 git 无差异：副本一旦过期，
+      # 复制会改变工作区、git diff 非零，发布就在这里失败，而不是发出「应用内法律
+      # 声明与仓库不一致」的安装包。
       # 本地同样的约束由 app/test/legal_assets_test.dart 用逐字节断言守住。
-      - name: 校验许可资产与仓库根一致
+      #
+      # 许可与第三方声明（LICENSE / NOTICE.md / THIRD-PARTY-NOTICES.md）**不**在这里
+      # 校验：它们不再作为 Flutter asset 随应用分发，应用内也没有任何界面读它们，
+      # 只在打包时放进压缩包根与 APK 的 assets/licenses/（见下方各平台任务）。
+      - name: 校验法律声明资产与源文件一致
         shell: bash
         run: |
           set -euo pipefail
+          test -f docs/LEGAL.md || { echo "::error::缺少 docs/LEGAL.md"; exit 1; }
           mkdir -p app/assets/legal
-          for legal in LICENSE NOTICE.md THIRD-PARTY-NOTICES.md; do
-            test -f "$legal" || { echo "::error::仓库根缺少 $legal"; exit 1; }
-            cp "$legal" "app/assets/legal/$legal"
-          done
+          cp docs/LEGAL.md app/assets/legal/LEGAL.md
           if ! git diff --exit-code -- app/assets/legal; then
-            echo "::error::app/assets/legal 与仓库根文件不一致（副本已过期）。请重新同步并提交后再发版。"
+            echo "::error::app/assets/legal/LEGAL.md 与 docs/LEGAL.md 不一致（副本已过期）。请重新同步并提交后再发版。"
             exit 1
           fi
-          echo "许可资产与仓库根一致。"
+          echo "法律声明资产与 docs/LEGAL.md 一致。"
 
       - name: 解析并校验版本
         id: version
@@ -443,9 +445,8 @@ jobs:
       # native assets 源集（src/main/assets 由 AGP 默认合并进 APK），随后用 APK
       # 内容校验兜底。APK 内的路径为 assets/licenses/<文件名>。
       # 注意：这是 **Android native assets**，不是 Flutter assets——Dart 的
-      # rootBundle 读不到。应用内「开源许可」界面读的是 app/assets/legal/ 下
-      # 同一批文件的 Flutter asset 副本（由 prepare 任务校验其与根文件一致），
-      # 两者用途不同，见 NOTICE.md。
+      # rootBundle 读不到，应用内也没有界面去读它（设置页「开源许可」只跳转到
+      # 项目主页）。它存在的意义就是「随 APK 一并分发」，见 NOTICE.md 第六节。
       - name: 把许可与声明放进 APK assets
         run: |
           set -euo pipefail
@@ -570,8 +571,11 @@ jobs:
             # checkout 仓库、工作区里没有 .git，创建 tag 会需要 git 上下文）。
             # tag 由推送触发本流水线的那一步创建，因此它必然已存在。
             retry gh release create "$TAG" --repo "$REPO" --verify-tag \
-              --title "XVPN $VER" \
-              --notes "XVPN $VER
+              --title "XVPN (幽门) $VER" \
+              --notes "XVPN (幽门) $VER
+
+          安装后显示的名字是「幽门」——启动器、窗口标题、托盘与系统 VPN 通知都用它；
+          仓库名、可执行文件名与附件名仍是 XVPN（附件不改名，旧版本才找得到升级包）。
 
           下载对应平台的压缩包，解压后运行 xvpn：
           - Windows x64：XVPN-$VER-windows-x64.zip
@@ -584,7 +588,8 @@ jobs:
           许可与对应源码：每个压缩包根部含 LICENSE（GPL-3.0-or-later 全文）、
           NOTICE.md（第三方组件、sing-box 附加条款与对应源码获取方式）与
           THIRD-PARTY-NOTICES.md（内核静态内嵌的 Go 依赖许可聚合）；APK 内为
-          assets/licenses/ 下的同名文件，应用内设置页「关于 → 开源许可」也能读到。
+          assets/licenses/ 下的同名文件。应用内设置页「关于 → 开源许可」只把
+          用户送到项目主页的许可章节，不再随包分发这些文本。
           本项目采用 GPL-3.0-or-later，对应源码即本仓库的 $TAG：
           https://github.com/LSD-Apps/XVPN/tree/$TAG
 

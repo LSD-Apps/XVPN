@@ -1,0 +1,4 @@
+# 自备 Trojan 服务端导出的分享链接示意（RFC 2606 保留域名，不可连通）。
+# 本仓库不提供节点。
+
+trojan://testpassword@trojan.example.net:443?security=tls&sni=trojan.example.net&type=tcp#example

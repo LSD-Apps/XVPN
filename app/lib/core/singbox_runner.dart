@@ -60,9 +60,13 @@ class CoreRuntime {
   ///
   /// 按 [assetDir]（出厂副本）检查，而配置里引用的是 [ruleSetDir]（可写副本）：
   /// 两者内容一致，但检查出厂副本才查得出「安装包本身缺文件」。
+  ///
+  /// 从 [RuleSetStore.builtins] 派生，而不是把文件名再抄一遍：抄一份的代价是
+  /// 「安装包里到底该有哪些 .srs」这件事有了两个答案，而它们会在新增内置规则集
+  /// 时分叉——安卓端就正是这样把默认启用的 `geosite-cn-extra` 漏在了解包之外。
   List<File> get ruleSets => <File>[
-    File('${assetDir.path}${Platform.pathSeparator}geosite-cn.srs'),
-    File('${assetDir.path}${Platform.pathSeparator}geoip-cn.srs'),
+    for (final BuiltinRuleSet ruleSet in RuleSetStore.builtins)
+      File('${assetDir.path}${Platform.pathSeparator}${ruleSet.fileName}'),
   ];
 
   /// 内核 PID 文件。正常关闭时内核已确认退出，这个文件只在「被强杀」的场景
@@ -925,11 +929,11 @@ class SingBoxRunner extends VpnCore {
 String missingKernelMessage(String path) {
   if (defaultTargetPlatform == TargetPlatform.linux) {
     return '缺少内核文件 sing-box——安装可能不完整，或它被安全软件删除了。'
-        '请重新安装 XVPN 以恢复该文件。'
+        '请重新安装幽门以恢复该文件。'
         '（应有位置：$path）';
   }
   return '缺少内核文件 sing-box.exe——它可能被杀毒软件隔离或删除了。'
-      '请在杀毒软件的隔离区里恢复它并加入白名单，或重新安装 XVPN。'
+      '请在杀毒软件的隔离区里恢复它并加入白名单，或重新安装幽门。'
       '（应有位置：$path）';
 }
 
@@ -949,7 +953,7 @@ bool isSingBoxProcessIdentity({String? comm, String? exePath}) {
 /// 规则库决定「哪些域名与 IP 走直连」，缺了它分流就无从谈起。它随安装包分发，
 /// 用户侧没有可操作的地方，因此只需说清「重新安装」这一条路，外加位置便于排查。
 String missingRuleSetMessage(String path) =>
-    '缺少内置规则库，直连与分流无法工作。请重新安装 XVPN 以恢复。'
+    '缺少内置规则库，直连与分流无法工作。请重新安装幽门以恢复。'
     '（缺失文件：$path）';
 
 /// 连接流程最多为「隧道就绪」等多久。

@@ -1,0 +1,4 @@
+# 自备 Shadowsocks 服务端导出的分享链接示意（RFC 2606 保留域名，不可连通）。
+# 真实密码与地址必须换成你自己的。本仓库不提供节点。
+
+ss://aes-256-gcm:testpassword@ss.example.net:8388#example

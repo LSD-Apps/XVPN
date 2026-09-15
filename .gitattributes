@@ -1,0 +1,8 @@
+# Legal texts are copied into Flutter assets. Force LF so Windows
+# core.autocrlf cannot make the repo-root copy and the asset copy differ.
+LICENSE text eol=lf
+NOTICE.md text eol=lf
+THIRD-PARTY-NOTICES.md text eol=lf
+app/assets/legal/** text eol=lf
+docs/LEGAL.md text eol=lf
+docs/LEGAL.en.md text eol=lf

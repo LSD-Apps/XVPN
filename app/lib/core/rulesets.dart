@@ -301,8 +301,8 @@ class RuleSetStore {
     BuiltinRuleSet(
       name: 'geoip-cn-extra',
       source: '由 scripts/build-cn-ip-ruleset.ps1 从 '
-          'gaoyifan/china-operator-ip（MIT）编译；重跑脚本即可刷新。'
-          '刷新后必须同时重跑 build-cn-ip-index.ps1——cn-ip.bin 由它派生',
+          'gaoyifan/china-operator-ip（MIT）的聚合表与分运营商表编译；'
+          '重跑脚本即可刷新。刷新后必须同时重跑 build-cn-ip-index.ps1——cn-ip.bin 由它派生',
       enabledByDefault: true,
     ),
   ];
@@ -385,6 +385,11 @@ class RuleSetStore {
   ///
   /// 返回可直接交给内核的目录。[targetDir] 为 null 时用 [writableDir]；
   /// 安卓端把解包目录显式传进来，避免它再去猜桌面端的路径规则。
+  ///
+  /// **不要**把 `cn-ip.bin` / `cn-ip.origin.json` 解到这个可写目录。
+  /// 「检查更新」只换 `.srs`；派生索引永远跟随时应用包。若把 origin.json
+  /// 首次复制过去，升级后旧指纹会盖住包内新指纹（`checkCnIpSync` 优先读
+  /// 目录里的 origin），脱节检查会对照过期记录，误报同源。
   static Directory ensure(Directory bundledDir, {Directory? targetDir}) {
     final target = resolveTargetDir(targetDir: targetDir);
     target.createSync(recursive: true);

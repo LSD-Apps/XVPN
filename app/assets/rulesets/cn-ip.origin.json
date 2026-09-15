@@ -1,0 +1,17 @@
+{
+  "format": "CIP2",
+  "ipv4Count": 5723,
+  "ipv6Count": 2133,
+  "sources": [
+    {
+      "file": "geoip-cn.srs",
+      "size": 34074,
+      "fnv1a": "86db315a9825aaef"
+    },
+    {
+      "file": "geoip-cn-extra.srs",
+      "size": 37462,
+      "fnv1a": "ae4bd7cb8955e0b4"
+    }
+  ]
+}

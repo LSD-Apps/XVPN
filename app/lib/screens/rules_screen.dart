@@ -160,6 +160,13 @@ class RulesScreen extends StatelessWidget {
             '启用/停用与更新规则库；编辑可改自定义源。',
             style: XvText.caption,
           ),
+          if (state.cnIpSync != null && !state.cnIpSync!.ok) ...<Widget>[
+            const SizedBox(height: 8),
+            Text(
+              state.cnIpSync!.detail,
+              style: TextStyle(fontSize: 12, color: XV.redSoft, height: 1.5),
+            ),
+          ],
           const SizedBox(height: 6),
           if (entries.isEmpty)
             Padding(

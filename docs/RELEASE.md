@@ -119,21 +119,23 @@ Apple 对 VPN 应用依 Guideline 5.4 审核，需要 `NEVPNManager` 与相应 e
       `THIRD-PARTY-NOTICES.md` 放进 Windows / Linux 压缩包根；Android APK 内含
       `assets/licenses/` 下的同名文件。CI 在打包后**断言**这些条目确实存在，
       避免「复制了但没进包」。
-- [x] **应用内「开源许可」界面**：设置页「关于」卡片新增入口，用
-      `showLicensePage` 展示 Flutter 自动聚合的依赖许可，并用
-      `LicenseRegistry.addLicense` 额外注册本项目的 `LICENSE`、`NOTICE.md` 与
-      `THIRD-PARTY-NOTICES.md`（见 `app/lib/core/licenses.dart`）。
-      三份文本作为 Flutter assets 声明在 `assets/legal/`，其副本与仓库根文件的
-      一致性由 `app/test/legal_assets_test.dart` 逐字节断言、并叠加 CI 的
-      「复制根文件后断言 git 无差异」双重把关。
-      **注意**：Android APK 内的 `assets/licenses/*` 是 **Android native assets**，
-      Dart 的 `rootBundle` 读不到；界面读的是 `assets/legal/` 下的 **Flutter assets**
-      副本，两者用途不同。
+- [x] **应用内「开源许可」入口只做跳转**：设置页「关于」卡片的入口用系统浏览器
+      打开项目主页的许可章节（`app/lib/core/links.dart` 的 `kLicenseUrl`）。
+      应用**不再**列举依赖许可，也**不再**把 `LICENSE` / `NOTICE.md` /
+      `THIRD-PARTY-NOTICES.md` 打进 Flutter assets——合计约 430 KB，其中绝大多数
+      是 111 个模块的聚合许可，没有人会在手机上逐条读，却要所有安装包一起背。
+      合规要求的是「接收者能拿到」，正文由仓库与各平台发布包承载即可。
+      `app/assets/legal/` 现在只剩 `LEGAL.md`（法律声明，离线必须读得到），
+      其副本一致性仍由 `app/test/legal_assets_test.dart` 逐字节断言。
+      **注意**：Android APK 内的 `assets/licenses/*` 是 **Android native assets**
+      （GPL 意义上随 APK 分发的文本），不再有 Flutter assets 副本，应用内也没有
+      任何界面读取它们。
 - [x] **内核静态依赖的第三方声明**：由
       [`scripts/build-third-party-notices.ps1`](../scripts/build-third-party-notices.ps1)
       对三个实际分发目标执行 `go list -deps` 求出真实链接的 Go 模块并集，生成
       [`THIRD-PARTY-NOTICES.md`](../THIRD-PARTY-NOTICES.md)（sing-box v1.14.0 下
-      111 个模块，含许可标识与全文），随产物与 APK 分发，应用内也能读到。
+      111 个模块，含许可标识与全文），随产物与 APK 分发，并在项目主页的许可章节
+      指向全文。
 - [x] **标准开源文件齐备**：[`CHANGELOG.md`](../CHANGELOG.md)（Keep a Changelog）、
       [`SECURITY.md`](../SECURITY.md)（私密漏洞报告）、
       [`CODE_OF_CONDUCT.md`](../CODE_OF_CONDUCT.md)（Contributor Covenant v2.1）；

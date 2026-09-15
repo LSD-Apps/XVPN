@@ -1,0 +1,5 @@
+# 自备订阅正文示意（RFC 2606 保留域名，不可连通）。
+# 本仓库不提供节点。把下面换成你自己服务器导出的分享链接，或改成你的订阅 URL。
+
+ss://aes-256-gcm:testpassword@ss.example.net:8388#ss-example
+vless://aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee@vless.example.net:443?type=tcp&security=tls&sni=vless.example.net#vless-example

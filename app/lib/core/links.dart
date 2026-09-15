@@ -8,6 +8,31 @@ import 'package:url_launcher/url_launcher.dart';
 /// 不至于散落在界面代码中。地址与仓库根目录的 CITATION.cff / index.html 一致。
 const String kRepoUrl = 'https://github.com/LSD-Apps/XVPN';
 
+/// 作者（LUSIDA）的官方网站，也是本项目的产品主页。
+///
+/// 与 [kRepoUrl] 并列而不是取代它：仓库是**源码**所在，官网是**产品**所在。
+/// 用户想下载、看说明、找联系方式，去官网；想看代码、提 issue、读许可全文，
+/// 去仓库。两者都摆出来，比只留一个再让人猜要诚实。
+///
+/// 「关于」卡里的「作者与官网」指向这里，正文里的 www.lusida.net 与它同源，
+/// 改地址时两处一起改（文案是硬编码的，没有从 URI 反推显示名）。
+const String kWebsiteUrl = 'https://www.lusida.net';
+
+/// 法律与使用声明（中文正文）。英文见同目录 `LEGAL.en.md`。
+const String kLegalUrl =
+    'https://github.com/LSD-Apps/XVPN/blob/main/docs/LEGAL.md';
+
+/// 开源许可与第三方组件声明。
+///
+/// 指向项目主页的「License」章节，**而不是包内的文本**：那三份文本
+/// （`LICENSE` 60 KB / `NOTICE.md` 15 KB / `THIRD-PARTY-NOTICES.md` 353 KB）
+/// 里绝大多数是 Flutter 与内核依赖的聚合许可，用户既不会在手机上逐条读，
+/// 也不该为它付出 400 KB 的包体。正文随仓库与各平台发布包分发，应用只负责
+/// 把人送到读得到全文的地方。
+///
+/// 页面里再分别指向三份全文；地址与仓库根 `index.html` 的 canonical 一致。
+const String kLicenseUrl = 'https://lsd-apps.github.io/XVPN/#license';
+
 /// 打开外部链接的函数签名。
 ///
 /// 之所以把它做成一个可注入的类型：widget 测试环境里没有浏览器，

@@ -20,7 +20,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
       ::CreateMutexW(nullptr, TRUE, L"Local\\XVPN-SingleInstance");
   if (single_instance != nullptr &&
       ::GetLastError() == ERROR_ALREADY_EXISTS) {
-    HWND existing = ::FindWindowW(nullptr, L"XVPN");
+    HWND existing = ::FindWindowW(nullptr, L"幽门");
     if (existing != nullptr) {
       ::ShowWindow(existing, SW_SHOW);
       ::ShowWindow(existing, SW_RESTORE);
@@ -57,7 +57,10 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   // 多显示器下窗口会贴在左上角，用户每次都要先把它拖到中间。
   // 具体换算（含 DPI 与任务栏避让）见 Win32Window::CenteredOrigin。
   Win32Window::Point origin = Win32Window::CenteredOrigin(size);
-  if (!window.Create(L"XVPN", origin, size)) {
+  // 窗口标题（也是任务栏与 Alt-Tab 里显示的名字）。用产品中文名。
+  // 单实例那一处 FindWindowW 必须用同一个字符串，否则第二次启动找不到
+  // 已开的窗口，会变成「点了图标没反应」。
+  if (!window.Create(L"幽门", origin, size)) {
     return EXIT_FAILURE;
   }
   window.SetQuitOnClose(true);

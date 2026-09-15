@@ -8,11 +8,12 @@ abstract: >-
   from core logs, and evidence-based automatic routing correction. Built on
   sing-box for Windows, Linux and Android with a shared Flutter UI. Ships no
   nodes or accounts; the user brings their own configuration.
+  Distributed under the product name 幽门.
 type: software
 license: GPL-3.0-or-later
 license-url: https://github.com/LSD-Apps/XVPN/blob/main/LICENSE
 repository-code: https://github.com/LSD-Apps/XVPN
-url: https://github.com/LSD-Apps/XVPN
+url: https://www.lusida.net
 version: 1.2.1
 date-released: 2026-09-14
 keywords:
@@ -33,6 +34,7 @@ keywords:
   - network
   - privacy
 authors:
-  - name: "LUSIDA（Start）"
+  - name: "LUSIDA"
+    website: https://www.lusida.net
     alias: LSD2024
     email: LSD2024@noreply.gitcode.com

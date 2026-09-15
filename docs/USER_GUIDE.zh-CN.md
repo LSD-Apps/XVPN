@@ -1,14 +1,18 @@
-# XVPN 使用指南
+# XVPN（幽门）使用指南
 
 面向第一次使用的读者：从「我有一台自己的服务器」到「在客户端里连上，并看懂分流」。
 
 读完本指南，你应当能独立完成：**准备配置 → 导入 → 连接 → 确认分流在工作 → 出问题时自己判断方向**。
 
+> **名字**：装好之后，启动器、任务栏、托盘与系统 VPN 通知里显示的是**幽门**；
+> 仓库名、可执行文件名与下载的发布附件仍是 `XVPN`。本指南里两者混用指同一个软件，
+> 但**照着屏幕核对时请找「幽门」**。
+
 | 章节 | 你将得到 |
 | --- | --- |
 | [开始之前](#开始之前三件必须先想清楚的事) | 产品边界与合法使用前提 |
 | [你需要准备什么](#你需要准备什么) | 开工前清单 |
-| [配置长什么样](#配置长什么样脱敏示意) | 三种协议客户端文件长什么样（脱敏） |
+| [配置长什么样](#配置长什么样脱敏示意) | 四种协议客户端文件长什么样（脱敏） |
 | [完整路径](#一条完整路径自建服务端--客户端分流) | 七步跟做 |
 | [界面地图](#界面地图五个页面各管什么) | 五个页面各管什么 |
 | [日常使用](#日常使用理得清) | 换配置、改规则、退出 |
@@ -53,6 +57,8 @@ English: [`USER_GUIDE.md`](USER_GUIDE.md) · 法律声明: [`LEGAL.md`](LEGAL.md
    - [WireGuard](https://www.wireguard.com/quickstart/)
    - [OpenVPN](https://openvpn.net/community-resources/)
    - [Hysteria2](https://v2.hysteria.network/)
+   - [Shadowsocks](https://shadowsocks.org/)
+   - [VMess / VLESS](https://github.com/XTLS/Xray-core) 或 [Trojan](https://github.com/trojan-gfw/trojan)
 3. 一份对应的**客户端配置**（见下一节）。
 4. 一台可安装 XVPN 的设备：Windows、Linux 或 Android。
 5. 从 [GitHub Releases](https://github.com/LSD-Apps/XVPN/releases) 下载的安装包（或按仓库 README 从源码构建）。
@@ -97,6 +103,24 @@ tls:
 
 也支持部分环境给出的分享链接，或 sing-box 出站 JSON。字段以你服务端实际导出为准。
 
+### Shadowsocks（常见为 `ss://` 分享链接）
+
+```
+ss://aes-256-gcm:<口令>@vpn.example.com:8388
+```
+
+也接受 SIP002 的 base64 userinfo，以及 sing-box 出站 JSON。多节点 Clash `proxies:` 走「自备订阅」入口。
+
+### VMess / VLESS / Trojan（常见为分享链接）
+
+```
+vmess://<base64 JSON>
+vless://<uuid>@vpn.example.com:443?type=tcp&security=tls&sni=vpn.example.com
+trojan://<口令>@vpn.example.com:443?security=tls&sni=vpn.example.com
+```
+
+也接受 sing-box 出站 JSON。多节点 Clash `proxies:` 走「自备订阅」入口。内核认识的传输：tcp / ws / grpc / http / httpupgrade / quic。Reality 必须带公钥（`pbk`）。
+
 **安全：** 配置含私钥/证书/口令。不要贴到公开 issue；求助时务必脱敏。
 
 ---
@@ -107,7 +131,7 @@ tls:
 
 ### 步骤 1 — 在服务器上准备好隧道服务
 
-在你的服务器上启用 WireGuard、OpenVPN 或 Hysteria2 的**服务端**（三选一即可）。
+在你的服务器上启用 WireGuard、OpenVPN、Hysteria2、Shadowsocks、VMess、VLESS 或 Trojan 的**服务端**（选一种即可）。
 
 **完成标志：** 用该协议的官方客户端或命令行，从另一台机器已经能连上。  
 若服务端本身连不通，换 XVPN 也不会变好。
@@ -119,6 +143,8 @@ tls:
 | WireGuard | `wg-quick` 风格 `.conf` | 按内容识别；建议 `.conf` |
 | OpenVPN | 客户端 `.ovpn`（常含内联证书） | 按内容识别；建议 `.ovpn` |
 | Hysteria2 | `.yaml` / `.yml`；或分享链接 / JSON | 均按内容识别 |
+| Shadowsocks | `ss://` 分享链接；或 JSON | 按内容识别；也可存成 `.txt` |
+| VMess / VLESS / Trojan | 分享链接；或 JSON | 按内容识别；也可存成 `.txt` |
 
 公司/学校 IT 发放的文件：一般**不必**自己装服务端，直接进入下一步。
 
@@ -128,7 +154,8 @@ tls:
 2. 按系统下载对应包（Windows / Linux / Android）。
 3. 解压到**用户目录**再启动，例如 Windows 的
    `%LOCALAPPDATA%\Programs\XVPN`、Linux 的 `~/.local/opt/xvpn`。
-4. 启动。
+4. 启动。第一次打开会先确认：本软件是客户端、不提供节点，用途由你自行负责。
+   确认只记在本机，设置页可再读全文。
 
 无账号、无注册。
 
@@ -141,15 +168,15 @@ tls:
 
 | 平台 | 怎么导入 |
 | --- | --- |
-| Windows | 拖入主窗口 / 「选择配置文件」 / 粘贴全文 |
+| Windows | 拖入主窗口 / 「选择配置文件」 / 「自备订阅」 |
 | Linux | 选择文件 / 粘贴 |
-| Android | 文件管理器「打开方式」→ XVPN，或应用内选择 / 粘贴 |
+| Android | 文件管理器「打开方式」→ 幽门，或应用内选择 / 粘贴 |
 
 成功后出现在「配置文件」列表。可保存多份；切换会按新配置重连。
 
 **导入失败时先查：**
 
-- 文件是否其实是订阅 URL、压缩包或说明文档（需要的是**单份客户端配置正文**）；
+- 文件是否其实是压缩包或说明文档（需要的是客户端配置正文，或你自己的订阅 URL / 多条分享链接）；
 - OpenVPN 是否缺证书块；WireGuard 是否缺 `PrivateKey` / `Peer`；
 - 文本是否被聊天软件改坏了换行或引号。
 
@@ -164,7 +191,7 @@ tls:
 
 连接页会显示状态、上下行速率、本次连接流量概况。
 
-**干净退出：** 桌面端关窗口默认进托盘、不断开（会提示仍在后台运行）；要用托盘「退出 XVPN」才会还原系统代理并结束内核。
+**干净退出：** 桌面端关窗口默认进托盘、不断开（会提示仍在后台运行）；要用托盘「退出幽门」才会还原系统代理并结束内核。
 
 ### 步骤 6 — 看懂「分流」（不必先懂 geosite）
 
@@ -260,7 +287,7 @@ tls:
 ## 常见问题
 
 **Q：我没有服务器，只有订阅链接，能用吗？**  
-A：本项目不提供、不解析订阅市场，也不协助获取第三方服务。若你合法持有**单份** WireGuard / OpenVPN / Hysteria2 客户端配置，可以导入；只有订阅 URL、没有标准客户端配置正文，不是当前设计目标。
+A：本项目不提供节点，也不协助获取第三方服务。若你**合法持有**自己的订阅 URL 或一份分享链接列表，可以用「自备订阅」导入；软件只拉取你填写的地址。没有合法来源的配置，不是本软件能解决的。
 
 **Q：必须三个协议都装在服务器上吗？**  
 A：不必。装一种并导出对应客户端配置即可。
@@ -272,7 +299,7 @@ A：不会。无账号、无分析、无后台。见 [`PRIVACY.md`](../PRIVACY.m
 A：可以。「分流规则」→「全局代理」（改动生效时机以界面说明为准，通常需重连）。
 
 **Q：服务端安装命令写在哪？**  
-A：不在本仓库。请用 WireGuard / OpenVPN / Hysteria2 **官方文档**或单位内部手册。
+A：不在本仓库。请用 WireGuard / OpenVPN / Hysteria2 / Shadowsocks / VMess / VLESS / Trojan **官方文档**或单位内部手册。
 
 **Q：为什么改了规则，网站还是旧行为？**  
 A：多数域名改判会在连接保持时热更新（约十几秒内）；分流**模式**切换往往要再连一次。仍不对就看「分流记录」里该域名实际命中了哪条。

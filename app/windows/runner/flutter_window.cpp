@@ -621,8 +621,8 @@ void FlutterWindow::InstallTrayIcon() {
   tray_icon_.uCallbackMessage = kTrayCallbackMessage;
   tray_icon_.hIcon = NormalTrayIcon();
   // 首帧之前 Dart 还没推来状态，先用品牌名占位；一旦收到 setTrayState
-  // （很快，外壳 initState 就会推一次）就会换成「XVPN <版本> · <状态>」。
-  wcscpy_s(tray_icon_.szTip, L"XVPN · 智能分流");
+  // （很快，外壳 initState 就会推一次）就会换成「幽门 <版本> · <状态>」。
+  wcscpy_s(tray_icon_.szTip, L"幽门 · 智能分流");
   tray_installed_ = Shell_NotifyIconW(NIM_ADD, &tray_icon_) == TRUE;
   if (tray_installed_) {
     // Vista+ 用 VERSION_4：气泡与点击回调行为更稳定；失败也不影响托盘本身。
@@ -700,7 +700,7 @@ void FlutterWindow::DestroyTrayIcons() {
 }
 
 void FlutterWindow::UpdateTrayIcon() {
-  std::wstring tooltip = L"XVPN";
+  std::wstring tooltip = L"幽门";
   if (!tray_version_.empty()) {
     tooltip += L" " + tray_version_;
   }
@@ -769,7 +769,7 @@ void FlutterWindow::NotifyRunningInBackground() {
       : L"已收至系统托盘，程序仍在后台运行。点击托盘图标可打开，右键可退出。";
 
   tray_icon_.uFlags = NIF_INFO | NIF_ICON | NIF_MESSAGE | NIF_TIP;
-  wcsncpy_s(tray_icon_.szInfoTitle, L"XVPN", _TRUNCATE);
+  wcsncpy_s(tray_icon_.szInfoTitle, L"幽门", _TRUNCATE);
   wcsncpy_s(tray_icon_.szInfo, body, _TRUNCATE);
   tray_icon_.dwInfoFlags = NIIF_INFO;
   Shell_NotifyIconW(NIM_MODIFY, &tray_icon_);
@@ -792,10 +792,10 @@ void FlutterWindow::ShowTrayMenu() {
   //   显示主界面
   //   ──
   //   <连接状态>（灰，纯信息；有则显示）
-  //   XVPN <版本>（灰，纯信息；有则显示）
+  //   幽门 <版本>（灰，纯信息；有则显示）
   //   发现新版本…（可点；有更新才显示，不依赖版本项是否出现）
   //   ──
-  //   退出 XVPN
+  //   退出幽门
   //
   // 「发现新版本」必须可点：它承载的是可操作信息。此前版本项与更新项绑在
   // 同一个 if (version) 里——版本字段偶发缺失时，更新入口会一起消失。
@@ -806,7 +806,7 @@ void FlutterWindow::ShowTrayMenu() {
   }
   if (!tray_version_.empty()) {
     AppendMenuW(menu, MF_STRING | MF_GRAYED, 0,
-                (L"XVPN " + tray_version_).c_str());
+                (L"幽门 " + tray_version_).c_str());
   }
   if (!tray_update_.empty()) {
     AppendMenuW(menu, MF_STRING, kTrayMenuUpdate,
@@ -814,7 +814,7 @@ void FlutterWindow::ShowTrayMenu() {
                     .c_str());
   }
   AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-  AppendMenuW(menu, MF_STRING, kTrayMenuQuit, L"退出 XVPN");
+  AppendMenuW(menu, MF_STRING, kTrayMenuQuit, L"退出幽门");
 
   // 弹菜单前必须把窗口设为前台，并在收起后补一条 WM_NULL，
   // 否则菜单会「点了不消失」——这是托盘菜单的经典坑。
@@ -872,7 +872,7 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
   }
 
   // 关闭主窗口 = 收进托盘，而不是退出程序。
-  // 返回 0 会阻止默认的销毁流程；真正退出只能走托盘菜单的「退出 XVPN」。
+  // 返回 0 会阻止默认的销毁流程；真正退出只能走托盘菜单的「退出幽门」。
   if (message == WM_CLOSE) {
     const bool was_visible = IsWindowVisible(hwnd) != FALSE;
     ShowWindow(hwnd, SW_HIDE);

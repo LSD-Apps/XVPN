@@ -39,10 +39,14 @@ const String _hysteria2 = 'hysteria2://pw@hy2.example.net:443/?sni=hy2.example.n
 
 void main() {
   group('声明的扩展名：一个扩展名只属于一个协议', () {
-    test('三个可导入协议的扩展名恰好是约定的那些', () {
+    test('可导入协议的扩展名恰好是约定的那些', () {
       expect(VpnProtocol.wireGuard.fileExtensions, <String>['conf']);
       // OpenVPN 让出 `.conf`（2.x 默认导出的正是它），只保留 `.ovpn`。
       expect(VpnProtocol.openVpn.fileExtensions, <String>['ovpn']);
+      expect(VpnProtocol.shadowsocks.fileExtensions, <String>['json', 'txt']);
+      expect(VpnProtocol.vmess.fileExtensions, isEmpty);
+      expect(VpnProtocol.vless.fileExtensions, isEmpty);
+      expect(VpnProtocol.trojan.fileExtensions, isEmpty);
       expect(VpnProtocol.hysteria2.fileExtensions, <String>['yaml', 'yml']);
     });
 
@@ -65,7 +69,7 @@ void main() {
     test('可导入扩展名的并集恰为约定集合（去重后）', () {
       expect(
         allSupportedExtensions.toSet(),
-        <String>{'conf', 'ovpn', 'yaml', 'yml'},
+        <String>{'conf', 'ovpn', 'json', 'txt', 'yaml', 'yml'},
       );
       // 文件选择器直接消费这个列表，重复项会让过滤项出现两遍。
       expect(allSupportedExtensions.length, allSupportedExtensions.toSet().length);
@@ -89,10 +93,31 @@ void main() {
       );
     });
 
+    test('命名为 .txt 的 Shadowsocks 分享链接解析为 Shadowsocks', () {
+      expect(
+        VpnProtocolFactory.parse(
+          'ss://aes-256-gcm:pw@ss.example.net:8388',
+          'node.txt',
+        ).protocol,
+        VpnProtocol.shadowsocks,
+      );
+    });
+
     test('命名为 .txt 的 Hysteria2 分享链接解析为 Hysteria2', () {
       expect(
         VpnProtocolFactory.parse(_hysteria2, 'node.txt').protocol,
         VpnProtocol.hysteria2,
+      );
+    });
+
+    test('命名为 .txt 的 VLESS 分享链接解析为 VLESS', () {
+      expect(
+        VpnProtocolFactory.parse(
+          'vless://aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee@vless.example.net:443'
+          '?type=tcp&security=tls&sni=vless.example.net',
+          'node.txt',
+        ).protocol,
+        VpnProtocol.vless,
       );
     });
 

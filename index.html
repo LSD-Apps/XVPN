@@ -3,13 +3,13 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>XVPN — split-tunnel VPN client for Windows, Linux &amp; Android</title>
-<meta name="description" content="XVPN is a split-tunnel VPN client for Windows, Linux and Android. Import your own WireGuard, OpenVPN or Hysteria2 profile; traffic matched by bundled rule sets goes direct, the rest uses your tunnel. Open source, GPL-3.0-or-later. No nodes, no accounts, collects no data.">
-<meta name="keywords" content="split-tunnel VPN client, WireGuard client, OpenVPN client, Hysteria2 client, sing-box GUI, Windows VPN, Linux VPN, Android VPN, open source VPN, BYO config">
+<title>XVPN (幽门) — split-tunnel VPN client for Windows, Linux &amp; Android</title>
+<meta name="description" content="XVPN is a split-tunnel VPN client for Windows, Linux and Android. Import your own WireGuard, OpenVPN, Hysteria2, Shadowsocks, VMess, VLESS or Trojan profile; traffic matched by bundled rule sets goes direct, the rest uses your tunnel. Open source, GPL-3.0-or-later. No nodes, no accounts, collects no data.">
+<meta name="keywords" content="split-tunnel VPN client, WireGuard client, OpenVPN client, Hysteria2 client, Shadowsocks client, VMess client, VLESS client, Trojan client, sing-box GUI, Windows VPN, Linux VPN, Android VPN, open source VPN, BYO config">
 <link rel="canonical" href="https://lsd-apps.github.io/XVPN/">
 <meta property="og:type" content="website">
-<meta property="og:title" content="XVPN — split-tunnel VPN client">
-<meta property="og:description" content="Bring your own WireGuard / OpenVPN / Hysteria2 profile. Automatic split tunnelling, DNS cross-validation, failure attribution. Windows · Linux · Android. GPL-3.0-or-later.">
+<meta property="og:title" content="XVPN (幽门) — split-tunnel VPN client">
+<meta property="og:description" content="Bring your own WireGuard / OpenVPN / Hysteria2 / Shadowsocks / VMess / VLESS / Trojan profile. Automatic split tunnelling, DNS cross-validation, failure attribution. Windows · Linux · Android. GPL-3.0-or-later.">
 <meta property="og:url" content="https://lsd-apps.github.io/XVPN/">
 <meta name="twitter:card" content="summary">
 <style>
@@ -59,16 +59,23 @@
 <body>
 <main>
 
-<h1>XVPN</h1>
+<h1>XVPN · 幽门</h1>
 <p class="tagline">A split-tunnel VPN client that just takes your <code>.conf</code>.</p>
 
 <p>XVPN is a <strong>config client</strong> for Windows, Linux and Android.
-You import your own WireGuard, OpenVPN or Hysteria2 profile; the app connects to
+You import your own WireGuard, OpenVPN, Hysteria2, Shadowsocks, VMess, VLESS or Trojan profile; the app connects to
 <strong>your</strong> server, sends rule-matched traffic <em>direct</em>, and sends
 the rest through <em>your</em> tunnel — then tells you <em>why</em> something failed
 when it does.</p>
 
-<p>It ships <strong>no</strong> nodes, servers, subscriptions or accounts.
+<p>Installed, it goes by its Chinese product name <strong>幽门</strong> — that is what
+the launcher, the taskbar, the tray and the Android VPN notification show. The
+repository, the executable and the release assets keep the name <code>XVPN</code>,
+so already-installed builds can still find their upgrade package.</p>
+
+<p>It ships <strong>no</strong> nodes, servers, or subscription addresses, and no
+accounts. A subscription URL is one <em>you</em> paste in; the app fetches it only
+when you ask, and never bundles or recommends one.
 Cryptography comes from <a href="https://github.com/SagerNet/sing-box">sing-box</a>.
 You bring a lawful config.</p>
 
@@ -79,14 +86,17 @@ You bring a lawful config.</p>
   <a href="https://github.com/LSD-Apps/XVPN">Source</a>
   <a href="privacy.html">Privacy</a>
   <a href="https://github.com/LSD-Apps/XVPN/blob/main/docs/LEGAL.md">Legal</a>
+  <a href="https://github.com/LSD-Apps/XVPN/blob/main/docs/LEGAL.en.md">Legal (EN)</a>
+  <a href="https://www.lusida.net">Author site</a>
 </div>
 
 <h2>Path in four steps</h2>
 <ol>
-  <li>Run a lawful WireGuard / OpenVPN / Hysteria2 <strong>server</strong> you control
+  <li>Run a lawful WireGuard / OpenVPN / Hysteria2 / Shadowsocks / VMess / VLESS / Trojan <strong>server</strong> you control
       (or use a profile your organisation issued). Server install lives in each
       protocol’s <strong>official</strong> docs — not here.</li>
-  <li>Export a client config (<code>.conf</code> / <code>.ovpn</code> / Hysteria2 YAML).</li>
+  <li>Export a client config (<code>.conf</code> / <code>.ovpn</code> / Hysteria2 YAML / <code>ss://</code>),
+      or — if you already have one — paste your own multi-node subscription URL.</li>
   <li>Install XVPN, import, connect.</li>
   <li>Confirm status: rates move; failures show local vs server vs rule.</li>
 </ol>
@@ -108,19 +118,45 @@ You bring a lawful config.</p>
       or backend. <a href="privacy.html">Privacy policy</a>.</li>
 </ul>
 
-<h2>License</h2>
-<p>GPL-3.0-or-later (required because the Android build links the GPL-licensed
-sing-box core into the same process). See
-<a href="https://github.com/LSD-Apps/XVPN/blob/main/NOTICE.md">NOTICE.md</a>.</p>
+<h2>Disclaimer</h2>
+<p>XVPN is a <strong>client</strong>, not a VPN service. It ships no nodes or
+subscription addresses, and no accounts — any subscription URL is one you supply
+yourself. You are responsible for using a lawful profile and server under the
+laws that apply to you. This page is not legal advice.
+See <a href="https://github.com/LSD-Apps/XVPN/blob/main/docs/LEGAL.en.md">LEGAL.en.md</a>
+and <a href="https://github.com/LSD-Apps/XVPN/blob/main/docs/LEGAL.md">LEGAL.md</a>.</p>
+
+<h2 id="license">License</h2>
+<p>XVPN is <strong>GPL-3.0-or-later</strong> (required because the Android build
+links the GPL-licensed sing-box core into the same process). Full texts:</p>
+<ul>
+  <li><a href="https://github.com/LSD-Apps/XVPN/blob/main/LICENSE">LICENSE</a> —
+      the GPL-3.0-or-later text that applies to this project;</li>
+  <li><a href="https://github.com/LSD-Apps/XVPN/blob/main/NOTICE.md">NOTICE.md</a> —
+      third-party components, sing-box’s additional terms, and how to get the
+      corresponding source;</li>
+  <li><a href="https://github.com/LSD-Apps/XVPN/blob/main/THIRD-PARTY-NOTICES.md">THIRD-PARTY-NOTICES.md</a> —
+      aggregated licences of the Go modules statically linked into the kernel
+      (111 modules).</li>
+</ul>
+<p class="note">The app itself does not bundle these texts: the in-app
+<em>About → Open source licences</em> entry opens this section, and the same
+files ship in the root of each release archive — so the licences stay readable
+without every install carrying ~430 KB of aggregated notices.</p>
+<p>Corresponding source for a release is the repository at that tag,
+e.g. <code>https://github.com/LSD-Apps/XVPN/tree/v&lt;version&gt;</code>.</p>
 
 <footer>
-  <p>Copyright (C) 2026 LUSIDA（Start）. Maintained by
+  <p>Copyright (C) 2026 LUSIDA.
+  <a href="https://www.lusida.net">www.lusida.net</a>. Maintained by
   <a href="https://github.com/LSD2024">LSD2024</a> /
   <a href="https://github.com/LSD-Apps">LSD-Apps</a>
   (<a href="https://github.com/LSD-Apps/XVPN/blob/main/AUTHORS">AUTHORS</a>).</p>
   <p>Independent project — not affiliated with sing-box / SagerNet.</p>
   <p>Client tool only; no nodes or services. You are responsible for lawful use of
   your configs and servers.
+  <a href="https://github.com/LSD-Apps/XVPN/blob/main/docs/LEGAL.en.md">docs/LEGAL.en.md</a>
+  ·
   <a href="https://github.com/LSD-Apps/XVPN/blob/main/docs/LEGAL.md">docs/LEGAL.md</a>.</p>
 </footer>
 

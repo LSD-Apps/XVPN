@@ -11,6 +11,13 @@
 #
 # 随包的 geoip-cn.srs（来自 SagerNet/sing-geoip）**整块缺失 8.0.0.0/8**：
 # 5742 条 IPv4 前缀里 `8.` 前缀为 **0 条**，而该段包含阿里云的国内区域。
+# 现同时下载：
+#   * china.txt / china6.txt：上游的「CN origin」聚合（会排除一批
+#     foreign-upstream ASN，因此不是全量）；
+#   * 分运营商表（电信 / 移动 / 联通 / 教育网 / 科技网 / 鹏博士 / Google CN）
+#     及其 IPv6。实测分表相对聚合各有对方没有的网段；RULES 第六节原先写的
+#     「其它运营商」缺口由此补上。编译会丢掉被超网覆盖的细前缀，所以输入
+#     CIDR 远多于最终索引增量。仍缺的是云厂商 / IDC 长尾，不在这份 BGP 源里。
 # 实测（本机直连 443）：
 #
 #   8.129.58.15     7 ms   国内
@@ -44,8 +51,9 @@
 #   * 缺口 5 个地址（8.128.4.1 / 8.129.58.15 / 8.131.70.224 / 8.134.207.26 /
 #     8.140.0.1）全部由 MISS 转为 HIT
 #
-# 注意：仍有两边都覆盖不到的国内长尾网段（例如实测中延迟仅 12–14 ms 却都不命中
-# 的 43.161.214.177 / 154.218.6.135）。本产物补的是**已定位的那块缺口**，
+# 注意：仍有两边与运营商分表都覆盖不到的国内长尾网段（例如实测中延迟仅
+# 12–14 ms 却都不命中的 43.161.214.177 / 154.218.6.135）。那些多半是云厂商
+# / IDC 段，不在这份 BGP 运营商通告里。本产物补的是**运营商通告能覆盖的缺口**，
 # 不是「补齐所有国内网段」。
 [CmdletBinding()]
 param(
@@ -118,78 +126,121 @@ if (Test-Path -LiteralPath $staging) {
 New-Item -ItemType Directory -Force -Path $staging | Out-Null
 
 $txtPath = Join-Path $staging 'china.txt'
+$txt6Path = Join-Path $staging 'china6.txt'
 $sourceJson = Join-Path $staging 'geoip-cn-extra.json'
 
 # 依次尝试的下载源。顺序即优先级：自定义域与 GitHub Pages 在国内可达性更好，
 # raw.githubusercontent.com 作为兜底（本机实测它时通时断）。
-$sourceUrls = if (-not [string]::IsNullOrWhiteSpace($SourceUrl)) {
-    @($SourceUrl)
-}
-else {
-    @(
-        'https://china-operator-ip.yfgao.com/china.txt',
-        'https://gaoyifan.github.io/china-operator-ip/china.txt',
-        'https://raw.githubusercontent.com/gaoyifan/china-operator-ip/ip-lists/china.txt'
+function Get-OperatorIpUrls([string]$Name) {
+    if (-not [string]::IsNullOrWhiteSpace($SourceUrl) -and $Name -eq 'china.txt') {
+        return @($SourceUrl)
+    }
+    return @(
+        "https://china-operator-ip.yfgao.com/$Name",
+        "https://gaoyifan.github.io/china-operator-ip/$Name",
+        "https://raw.githubusercontent.com/gaoyifan/china-operator-ip/ip-lists/$Name"
     )
 }
 
-[System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12
-$downloaded = $false
-$attemptErrors = New-Object System.Collections.Generic.List[string]
-
-foreach ($url in $sourceUrls) {
-    Write-Host "下载上游列表：$url"
-    $client = New-Object System.Net.WebClient
-    try {
-        $client.DownloadFile($url, $txtPath)
-        # 空文件或错误页会让后续步骤产出一个「看着成功」的空规则集，因此在这里挡。
-        if ((Get-Item -LiteralPath $txtPath).Length -lt 10000) {
-            throw "下载内容过小（$((Get-Item -LiteralPath $txtPath).Length) 字节），疑似错误页"
+function Save-OperatorList {
+    param(
+        [string]$Name,
+        [string]$Dest,
+        [int]$MinBytes,
+        [switch]$Required
+    )
+    $downloaded = $false
+    $attemptErrors = New-Object System.Collections.Generic.List[string]
+    foreach ($url in (Get-OperatorIpUrls $Name)) {
+        Write-Host "下载上游列表：$url"
+        $client = New-Object System.Net.WebClient
+        try {
+            $client.DownloadFile($url, $Dest)
+            if ((Get-Item -LiteralPath $Dest).Length -lt $MinBytes) {
+                throw "下载内容过小（$((Get-Item -LiteralPath $Dest).Length) 字节），疑似错误页或空表"
+            }
+            $downloaded = $true
+            break
         }
-        $downloaded = $true
-        break
+        catch {
+            $attemptErrors.Add("$url -> $($_.Exception.Message)")
+        }
+        finally {
+            $client.Dispose()
+        }
     }
-    catch {
-        $attemptErrors.Add("$url -> $($_.Exception.Message)")
+    if (-not $downloaded) {
+        $detail = "所有下载源都失败（$Name）：`n  " + ($attemptErrors -join "`n  ")
+        if ($Required) { throw $detail }
+        Write-Host "跳过 $Name（$detail）"
+        return $false
     }
-    finally {
-        $client.Dispose()
+    return $true
+}
+
+[System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12
+Save-OperatorList -Name 'china.txt' -Dest $txtPath -MinBytes 10000 -Required | Out-Null
+Save-OperatorList -Name 'china6.txt' -Dest $txt6Path -MinBytes 1000 -Required | Out-Null
+
+# 分运营商表。china.txt 用 origin_only + 排除 foreign-upstream ASN，
+# 不是「所有国内运营商通告的并集」。教育网 / 科技网 / 鹏博士相对聚合各有
+# 数十条独有前缀；三大运营商分表相对聚合更是各有数千条。空表（0 字节）跳过。
+$operatorLists = @(
+    'chinanet.txt', 'cmcc.txt', 'unicom.txt',
+    'cernet.txt', 'cstnet.txt', 'drpeng.txt', 'googlecn.txt',
+    'chinanet6.txt', 'cmcc6.txt', 'unicom6.txt',
+    'cernet6.txt', 'cstnet6.txt', 'drpeng6.txt', 'googlecn6.txt'
+)
+$operatorFiles = New-Object System.Collections.Generic.List[string]
+foreach ($name in $operatorLists) {
+    $dest = Join-Path $staging $name
+    if (Save-OperatorList -Name $name -Dest $dest -MinBytes 1) {
+        $operatorFiles.Add($dest)
     }
 }
 
-if (-not $downloaded) {
-    throw ("所有下载源都失败：`n  " + ($attemptErrors -join "`n  "))
-}
-
-# ── 解析：只接受 IPv4 CIDR
-#
-# 上游是纯 CIDR 列表，形如 `8.129.0.0/16`。注释与空行跳过；不符合 IPv4 CIDR
-# 形态的行一律跳过并计数——上游若改了格式，这里的计数会明显异常。
+# ── 解析：IPv4 与 IPv6 CIDR
 $cidrs = New-Object 'System.Collections.Generic.HashSet[string]'
 $skipped = 0
-foreach ($line in (Get-Content -LiteralPath $txtPath)) {
-    $text = $line.Trim()
-    if ($text.Length -eq 0 -or $text.StartsWith('#')) { continue }
-    if ($text -match '^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})/(\d{1,2})$') {
-        $len = [int]$matches[5]
-        if ($len -gt 32) { $skipped++; continue }
-        $ok = $true
-        foreach ($i in 1..4) { if ([int]$matches[$i] -gt 255) { $ok = $false; break } }
-        if (-not $ok) { $skipped++; continue }
-        [void]$cidrs.Add($text)
-        continue
+function Add-CidrFile([string]$Path) {
+    foreach ($line in (Get-Content -LiteralPath $Path)) {
+        $text = $line.Trim()
+        if ($text.Length -eq 0 -or $text.StartsWith('#')) { continue }
+        if ($text -match '^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})/(\d{1,2})$') {
+            $len = [int]$matches[5]
+            if ($len -gt 32) { $script:skipped++; continue }
+            $ok = $true
+            foreach ($i in 1..4) { if ([int]$matches[$i] -gt 255) { $ok = $false; break } }
+            if (-not $ok) { $script:skipped++; continue }
+            [void]$script:cidrs.Add($text)
+            continue
+        }
+        if ($text -match '^[0-9a-fA-F:]+/(\d{1,3})$' -and $text.Contains(':')) {
+            $len = [int]$matches[1]
+            if ($len -gt 128) { $script:skipped++; continue }
+            [void]$script:cidrs.Add($text.ToLowerInvariant())
+            continue
+        }
+        $script:skipped++
     }
-    $skipped++
 }
+Add-CidrFile $txtPath
+Add-CidrFile $txt6Path
+foreach ($path in $operatorFiles) { Add-CidrFile $path }
 
-if ($cidrs.Count -lt 1000) {
-    throw "只解析出 $($cidrs.Count) 条 CIDR，列表格式可能已变化（跳过 $skipped 行）"
+$v4 = @($cidrs | Where-Object { $_ -notmatch ':' }).Count
+$v6 = @($cidrs | Where-Object { $_ -match ':' }).Count
+if ($v4 -lt 1000) {
+    throw "只解析出 $v4 条 IPv4 CIDR，列表格式可能已变化（跳过 $skipped 行）"
+}
+if ($v6 -lt 100) {
+    throw "只解析出 $v6 条 IPv6 CIDR，china6.txt 可能没合并进来"
 }
 
 # 排序保证产物**可复现**：同一份上游内容每次构建得到逐字节相同的 .srs。
 $ordered = @($cidrs | Sort-Object)
 
-Write-Host ("解析出 {0} 条 IPv4 CIDR（跳过 {1} 行）" -f $ordered.Count, $skipped)
+Write-Host ("解析出 {0} 条 CIDR（IPv4 {1} / IPv6 {2}，跳过 {3} 行）" -f $ordered.Count, $v4, $v6, $skipped)
 
 $payload = [ordered]@{
     version = 1
@@ -222,7 +273,8 @@ if (-not $SkipSelfCheck) {
 
     # ① 必须补上的缺口（geoip-cn 对这些一律 MISS，本产物必须 HIT）
     foreach ($address in @(
-            '8.128.4.1', '8.129.58.15', '8.131.70.224', '8.134.207.26', '8.140.0.1'
+            '8.128.4.1', '8.129.58.15', '8.131.70.224', '8.134.207.26', '8.140.0.1',
+            '2001:250::1'
         )) {
         Assert-Match -Address $address -Expected $true
     }

@@ -1,14 +1,19 @@
 # Authors
 
-Copyright holder and primary author of XVPN:
+Copyright holder and primary author of XVPN / 幽门:
 
-- **LUSIDA（Start）**
+- **LUSIDA**
+  - Website: <https://www.lusida.net>
   - GitHub organization: [LSD-Apps](https://github.com/LSD-Apps)
   - Maintainer account: [LSD2024](https://github.com/LSD2024)
   - Commit identity used in this repository:
     `LSD2024 <LSD2024@noreply.gitcode.com>`
 
 Canonical repository: <https://github.com/LSD-Apps/XVPN>
+
+「幽门」是面向用户的产品名（应用图标、窗口标题、托盘、系统 VPN 通知都用它）；
+`XVPN` 是仓库与可执行文件的名字，两者指同一个软件。发布附件也因此仍叫
+`XVPN-<版本>-<平台>`：改名附件会让已经装好的旧版本找不到升级包。
 
 ## Attribution policy
 

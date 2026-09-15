@@ -4,6 +4,8 @@ import '../protocols/hysteria2_conf.dart';
 import '../protocols/openvpn_conf.dart';
 import '../protocols/parsed_profile.dart';
 import '../protocols/protocol_adapter.dart';
+import '../protocols/shadowsocks_conf.dart';
+import '../protocols/v2ray_conf.dart';
 import '../protocols/vpn_protocol.dart';
 import '../protocols/wireguard_conf.dart';
 import '../theme.dart';
@@ -53,8 +55,17 @@ class ConfigFormModel {
         model.transport = 'udp';
       case VpnProtocol.hysteria2:
         model.port = '443';
-      default:
-        break;
+      case VpnProtocol.shadowsocks:
+        model
+          ..port = '8388'
+          ..ssMethod = 'aes-256-gcm';
+      case VpnProtocol.vmess:
+      case VpnProtocol.vless:
+      case VpnProtocol.trojan:
+        model
+          ..port = '443'
+          ..v2Transport = 'tcp'
+          ..v2Tls = true;
     }
     return model;
   }
@@ -127,6 +138,33 @@ class ConfigFormModel {
           ..pinSha256 = conf.pinSha256
           ..displayName = conf.displayName
           ..notices = profile.notices;
+      case ShadowsocksProfile():
+        final conf = profile.conf;
+        model
+          ..server = conf.server
+          ..port = conf.port.toString()
+          ..ssMethod = conf.method
+          ..ssPassword = conf.password
+          ..ssPlugin = conf.plugin
+          ..ssPluginOpts = conf.pluginOpts
+          ..displayName = conf.displayName
+          ..notices = profile.notices;
+      case V2RayProfile():
+        final conf = profile.conf;
+        model
+          ..server = conf.server
+          ..port = conf.port.toString()
+          ..v2Secret = conf.secret
+          ..v2Transport = conf.transport.kind.name
+          ..v2Path = conf.transport.path
+          ..v2Host = conf.transport.host
+          ..v2ServiceName = conf.transport.serviceName
+          ..v2Flow = conf.flow
+          ..v2Tls = conf.tls?.enabled ?? conf.kind == V2RayKind.trojan
+          ..sni = conf.tls?.serverName
+          ..insecure = conf.tls?.insecure ?? false
+          ..displayName = conf.displayName
+          ..notices = profile.notices;
       default:
         break;
     }
@@ -185,6 +223,21 @@ class ConfigFormModel {
   String? pinSha256;
   String? displayName;
 
+  // ----------------------------------------------------------- Shadowsocks
+  String? ssMethod;
+  String? ssPassword;
+  String? ssPlugin;
+  String? ssPluginOpts;
+
+  // ----------------------------------------------------- VMess / VLESS / Trojan
+  String? v2Secret;
+  String? v2Transport;
+  String? v2Path;
+  String? v2Host;
+  String? v2ServiceName;
+  String? v2Flow;
+  bool v2Tls = true;
+
   /// 从已解析配置预填时附带的提示（例如 Amnezia 字段、缺带宽）。
   ///
   /// 不参与 toConfText；仅供确认导入对话框展示。
@@ -194,6 +247,7 @@ class ConfigFormModel {
   static String defaultName(VpnProtocol protocol) => switch (protocol) {
     VpnProtocol.wireGuard => 'WireGuard 配置',
     VpnProtocol.openVpn => 'OpenVPN 配置',
+    VpnProtocol.shadowsocks => 'Shadowsocks 配置',
     VpnProtocol.hysteria2 => 'Hysteria2 配置',
     _ => '${protocol.label} 配置',
   };
@@ -209,8 +263,11 @@ class ConfigFormModel {
   String toConfText() => switch (protocol) {
     VpnProtocol.wireGuard => _wireGuardText(),
     VpnProtocol.openVpn => _openVpnText(),
+    VpnProtocol.shadowsocks => _shadowsocksText(),
+    VpnProtocol.vmess ||
+    VpnProtocol.vless ||
+    VpnProtocol.trojan => _v2rayText(),
     VpnProtocol.hysteria2 => _hysteria2Text(),
-    _ => throw VpnConfigException('暂不支持编辑 ${protocol.label} 配置'),
   };
 
   /// OpenVPN 的账号密码。
@@ -405,6 +462,87 @@ class ConfigFormModel {
     return 'hysteria2://$authority/?$query$fragment';
   }
 
+  // --------------------------------------------------- 生成：Shadowsocks
+
+  /// 生成 SIP002 `ss://` 分享链接，与解析器同一条路径。
+  String _shadowsocksText() {
+    final host = _clean(server);
+    if (host == null) {
+      throw VpnConfigException('缺少服务器地址');
+    }
+    final port = _requirePort(this.port, fallback: 8388);
+    final method = (_clean(ssMethod) ?? '').toLowerCase();
+    if (method.isEmpty) {
+      throw VpnConfigException('缺少加密方法（例如 aes-256-gcm）');
+    }
+    if (!shadowsocksMethods.contains(method)) {
+      throw VpnConfigException(
+        '不支持的加密方法「$method」。请使用 aes-256-gcm 或 chacha20-ietf-poly1305。',
+      );
+    }
+    final password = ssPassword ?? '';
+    if (password.isEmpty && method != 'none') {
+      throw VpnConfigException('缺少密码');
+    }
+    return ShadowsocksConf(
+      server: host,
+      port: port,
+      method: method,
+      password: password,
+      source: ShadowsocksSource.link,
+      plugin: _clean(ssPlugin),
+      pluginOpts: _clean(ssPluginOpts),
+      displayName: _clean(displayName),
+    ).toShareLink();
+  }
+
+  String _v2rayText() {
+    final kind = switch (protocol) {
+      VpnProtocol.vmess => V2RayKind.vmess,
+      VpnProtocol.vless => V2RayKind.vless,
+      VpnProtocol.trojan => V2RayKind.trojan,
+      _ => throw VpnConfigException('内部错误：不是 V2Ray 系协议'),
+    };
+    final host = _clean(server);
+    if (host == null) {
+      throw VpnConfigException('缺少服务器地址');
+    }
+    final secret = v2Secret ?? '';
+    final net = (_clean(v2Transport) ?? 'tcp').toLowerCase();
+    final tlsEnabled = v2Tls || kind == V2RayKind.trojan;
+    return V2RayConf.parse(
+      V2RayConf(
+        kind: kind,
+        server: host,
+        port: _requirePort(port, fallback: 443),
+        secret: secret,
+        transport: V2RayTransport(
+          kind: switch (net) {
+            'ws' => V2RayTransportKind.ws,
+            'grpc' => V2RayTransportKind.grpc,
+            'http' => V2RayTransportKind.http,
+            'httpupgrade' => V2RayTransportKind.httpupgrade,
+            'quic' => V2RayTransportKind.quic,
+            _ => V2RayTransportKind.tcp,
+          },
+          path: _clean(v2Path),
+          host: _clean(v2Host),
+          serviceName: _clean(v2ServiceName),
+        ),
+        tls: tlsEnabled
+            ? V2RayTls(
+                security: V2RaySecurity.tls,
+                serverName: _clean(sni) ?? host,
+                insecure: insecure,
+              )
+            : null,
+        flow: _clean(v2Flow),
+        displayName: _clean(displayName),
+      ).toShareLink(),
+      kind,
+    ).toShareLink();
+  }
+
   // -------------------------------------------------------------- 小工具
 
   static String? _clean(String? value) {
@@ -517,6 +655,7 @@ class _ConfigFormDialogState extends State<_ConfigFormDialog> {
   late bool _insecure =
       widget.initial.protocol == VpnProtocol.hysteria2 &&
       widget.initial.insecure;
+  late bool _v2Tls = widget.initial.v2Tls;
   late bool _remoteCertTls =
       widget.initial.protocol == VpnProtocol.openVpn &&
       widget.initial.remoteCertTls;
@@ -589,6 +728,23 @@ class _ConfigFormDialogState extends State<_ConfigFormDialog> {
       'hy2.hopInterval' => initial.hopInterval,
       'hy2.pin' => initial.pinSha256,
       'hy2.displayName' => initial.displayName,
+      'ss.server' => initial.server,
+      'ss.port' => initial.port ?? defaults.port,
+      'ss.method' => initial.ssMethod ?? defaults.ssMethod,
+      'ss.password' => initial.ssPassword,
+      'ss.plugin' => initial.ssPlugin,
+      'ss.pluginOpts' => initial.ssPluginOpts,
+      'ss.displayName' => initial.displayName,
+      'v2.server' => initial.server,
+      'v2.port' => initial.port ?? defaults.port,
+      'v2.secret' => initial.v2Secret,
+      'v2.transport' => initial.v2Transport ?? defaults.v2Transport,
+      'v2.path' => initial.v2Path,
+      'v2.host' => initial.v2Host,
+      'v2.serviceName' => initial.v2ServiceName,
+      'v2.flow' => initial.v2Flow,
+      'v2.sni' => initial.sni,
+      'v2.displayName' => initial.displayName,
       _ => null,
     };
   }
@@ -661,8 +817,31 @@ class _ConfigFormDialogState extends State<_ConfigFormDialog> {
           ..hopInterval = _text('hy2.hopInterval')
           ..pinSha256 = _text('hy2.pin')
           ..displayName = _text('hy2.displayName');
-      default:
-        break;
+      case VpnProtocol.shadowsocks:
+        model
+          ..server = _text('ss.server')
+          ..port = _text('ss.port')
+          ..ssMethod = _text('ss.method')
+          ..ssPassword = _rawText('ss.password')
+          ..ssPlugin = _text('ss.plugin')
+          ..ssPluginOpts = _text('ss.pluginOpts')
+          ..displayName = _text('ss.displayName');
+      case VpnProtocol.vmess:
+      case VpnProtocol.vless:
+      case VpnProtocol.trojan:
+        model
+          ..server = _text('v2.server')
+          ..port = _text('v2.port')
+          ..v2Secret = _rawText('v2.secret')
+          ..v2Transport = _text('v2.transport')
+          ..v2Path = _text('v2.path')
+          ..v2Host = _text('v2.host')
+          ..v2ServiceName = _text('v2.serviceName')
+          ..v2Flow = _text('v2.flow')
+          ..v2Tls = _v2Tls
+          ..sni = _text('v2.sni')
+          ..insecure = _insecure
+          ..displayName = _text('v2.displayName');
     }
     return model;
   }
@@ -675,6 +854,7 @@ class _ConfigFormDialogState extends State<_ConfigFormDialog> {
       _error = null;
       // 切到另一个协议时它的布尔开关还没有语义，重置成默认值。
       _insecure = false;
+      _v2Tls = true;
       _remoteCertTls = false;
       _requiresCredentials = false;
     });
@@ -718,8 +898,11 @@ class _ConfigFormDialogState extends State<_ConfigFormDialog> {
     final fields = switch (_protocol) {
       VpnProtocol.wireGuard => _wireGuardFields(),
       VpnProtocol.openVpn => _openVpnFields(),
+      VpnProtocol.shadowsocks => _shadowsocksFields(),
+      VpnProtocol.vmess ||
+      VpnProtocol.vless ||
+      VpnProtocol.trojan => _v2rayFields(),
       VpnProtocol.hysteria2 => _hysteria2Fields(),
-      _ => const <Widget>[],
     };
 
     final body = _body(fields);
@@ -802,19 +985,24 @@ class _ConfigFormDialogState extends State<_ConfigFormDialog> {
   }
 
   Widget _protocolSelector() {
-    final labels = importableProtocols
-        .map((protocol) => protocol.label)
-        .toList(growable: false);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: <Widget>[
         _fieldLabel('协议'),
         const SizedBox(height: 5),
-        XvSegmented(
-          labels: labels,
-          index: importableProtocols.indexOf(_protocol),
-          expand: true,
-          onChanged: _switchProtocol,
+        // 七个协议塞进一条分段选择器会挤成无法点的窄条。改成可折行的芯片，
+        // 宽屏一行、窄屏自动换行，命中区仍按控件高度。
+        Wrap(
+          spacing: 6,
+          runSpacing: 6,
+          children: <Widget>[
+            for (var i = 0; i < importableProtocols.length; i++)
+              _ProtocolChip(
+                label: importableProtocols[i].label,
+                selected: importableProtocols[i] == _protocol,
+                onTap: () => _switchProtocol(i),
+              ),
+          ],
         ),
       ],
     );
@@ -1145,6 +1333,128 @@ class _ConfigFormDialogState extends State<_ConfigFormDialog> {
     _input('备注名', _ctl('hy2.displayName'), field: 'hy2.displayName'),
   ];
 
+  List<Widget> _shadowsocksFields() => <Widget>[
+    _section('服务器'),
+    _input(
+      '服务器地址',
+      _ctl('ss.server'),
+      field: 'ss.server',
+      hint: 'vpn.example.com',
+    ),
+    _input(
+      '服务器端口',
+      _ctl('ss.port'),
+      field: 'ss.port',
+      hint: '8388',
+      numeric: true,
+    ),
+    _input(
+      '加密方法',
+      _ctl('ss.method'),
+      field: 'ss.method',
+      hint: 'aes-256-gcm',
+      mono: true,
+    ),
+    _input(
+      '密码',
+      _ctl('ss.password'),
+      field: 'ss.password',
+      secret: true,
+      mono: true,
+    ),
+    _section('插件（可选）'),
+    _input(
+      'SIP003 插件',
+      _ctl('ss.plugin'),
+      field: 'ss.plugin',
+      hint: 'obfs-local',
+      mono: true,
+    ),
+    _input(
+      '插件参数',
+      _ctl('ss.pluginOpts'),
+      field: 'ss.pluginOpts',
+      hint: 'obfs=http;obfs-host=www.example.com',
+      mono: true,
+    ),
+    _input('备注名', _ctl('ss.displayName'), field: 'ss.displayName'),
+    _note(
+      '只填写你自己服务器导出的参数。内核认识 obfs-local 与 v2ray-plugin；'
+      '其它插件导入后多半连不上。',
+    ),
+  ];
+
+  List<Widget> _v2rayFields() {
+    final isTrojan = _protocol == VpnProtocol.trojan;
+    return <Widget>[
+      _section('服务器'),
+      _input(
+        '服务器地址',
+        _ctl('v2.server'),
+        field: 'v2.server',
+        hint: 'vpn.example.com',
+      ),
+      _input(
+        '服务器端口',
+        _ctl('v2.port'),
+        field: 'v2.port',
+        hint: '443',
+        numeric: true,
+      ),
+      _input(
+        isTrojan ? '密码' : 'UUID',
+        _ctl('v2.secret'),
+        field: 'v2.secret',
+        secret: true,
+        mono: true,
+      ),
+      _input(
+        '传输（tcp / ws / grpc）',
+        _ctl('v2.transport'),
+        field: 'v2.transport',
+        hint: 'tcp',
+        mono: true,
+      ),
+      _toggle(
+        '启用 TLS',
+        _v2Tls,
+        (value) => setState(() => _v2Tls = value),
+      ),
+      _input(
+        'SNI（可选）',
+        _ctl('v2.sni'),
+        field: 'v2.sni',
+        hint: 'vpn.example.com',
+      ),
+      _toggle(
+        '跳过证书校验（insecure）',
+        _insecure,
+        (value) => setState(() => _insecure = value),
+      ),
+      if (_protocol == VpnProtocol.vless)
+        _input(
+          'flow（可选，如 xtls-rprx-vision）',
+          _ctl('v2.flow'),
+          field: 'v2.flow',
+          mono: true,
+        ),
+      _section('WebSocket / gRPC（可选）'),
+      _input('path', _ctl('v2.path'), field: 'v2.path', mono: true),
+      _input('Host', _ctl('v2.host'), field: 'v2.host', mono: true),
+      _input(
+        'gRPC serviceName',
+        _ctl('v2.serviceName'),
+        field: 'v2.serviceName',
+        mono: true,
+      ),
+      _input('备注名', _ctl('v2.displayName'), field: 'v2.displayName'),
+      _note(
+        '只填写你自己服务器导出的参数。分享链接（vmess:// / vless:// / trojan://）'
+        '与 sing-box 出站 JSON 都可以导入。',
+      ),
+    ];
+  }
+
   // ------------------------------------------------------------- 通用控件
 
   Widget _buttons() {
@@ -1253,6 +1563,45 @@ class _ConfigFormDialogState extends State<_ConfigFormDialog> {
           child: XvSwitch(value: value, onChanged: onChanged),
         ),
       ],
+    );
+  }
+}
+
+class _ProtocolChip extends StatelessWidget {
+  const _ProtocolChip({
+    required this.label,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: selected ? XV.green.withValues(alpha: 0.16) : XV.field,
+      borderRadius: BorderRadius.circular(XV.rCtl),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(XV.rCtl),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(XV.rCtl),
+            border: Border.all(color: selected ? XV.green : XV.line),
+          ),
+          child: Text(
+            label,
+            style: TextStyle(
+              fontSize: 12,
+              fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
+              color: selected ? XV.green : XV.text,
+            ),
+          ),
+        ),
+      ),
     );
   }
 }

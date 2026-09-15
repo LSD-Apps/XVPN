@@ -1,4 +1,4 @@
-package net.lusida.xvpn
+package net.lusida.xvpnclient
 
 import android.app.Notification
 import android.app.NotificationChannel
@@ -10,11 +10,13 @@ import android.net.IpPrefix
 import android.net.LinkProperties
 import android.net.Network
 import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.net.VpnService
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.ParcelFileDescriptor
+import android.system.Os
 import android.util.Log
 import androidx.annotation.RequiresApi
 import libbox.CommandServer
@@ -112,6 +114,27 @@ class XvpnVpnService : VpnService(), PlatformInterface {
     private var tunFd: ParcelFileDescriptor? = null
     private val mainHandler = Handler(Looper.getMainLooper())
     private var defaultNetworkCallback: ConnectivityManager.NetworkCallback? = null
+
+    /// 上一条上报给内核的默认网卡名。
+    ///
+    /// 两个用处：一是网卡没变时不重复记诊断（回调很密集）；二是 WiFi 与蜂窝同时
+    /// 在线时优先沿用同一条，别让内核每次改判都重建直连出站。
+    private var lastDefaultInterface: String? = null
+
+    /// 网卡枚举受限这件事只诊断一次，避免内核反复取网卡时刷满 diag.log。
+    private var interfaceDiagDone = false
+
+    /// 平台网卡回调的调用序次。
+    ///
+    /// 内核「什么时候要网卡、要了几次、我们给了什么」是这类故障唯一的事实，
+    /// 而它在界面上一个字都不显示。只记最前面几次：这不是运行日志，是启动剖面。
+    private var platformDiagCount = 0
+
+    private fun diagPlatform(message: String) {
+        if (platformDiagCount >= 8) return
+        platformDiagCount++
+        diag(message)
+    }
 
     /**
      * 连接过程的落盘诊断。
@@ -297,7 +320,9 @@ class XvpnVpnService : VpnService(), PlatformInterface {
     override fun openTun(options: TunOptions): Int {
         diag("openTun enter, mtu=${options.mtu}")
         val builder = Builder()
-        builder.setSession("XVPN")
+        // 会话名。系统「VPN 已连接」通知与设置里的 VPN 条目都显示它，
+        // 因此这里是用户可见的应用名，跟随中文名。
+        builder.setSession("幽门")
         builder.setMtu(options.mtu)
 
         var hasAddress = false
@@ -381,49 +406,204 @@ class XvpnVpnService : VpnService(), PlatformInterface {
      *
      * 内核靠它决定直连走哪张网卡。不实现的话 `auto_detect_interface` 拿不到
      * 默认接口，直连部分会失败——表现是「直连站点打不开、其余正常」。
+     *
+     * **必须排除 VPN 网络本身**，理由见 [pickDefaultNetwork]。
      */
     override fun startDefaultInterfaceMonitor(listener: InterfaceUpdateListener) {
+        diagPlatform("内核请求默认接口监听")
         stopDefaultInterfaceMonitor()
         val manager = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return
         val callback = object : ConnectivityManager.NetworkCallback() {
-            override fun onAvailable(network: Network) = reportDefaultInterface(manager, network, listener)
+            override fun onAvailable(network: Network) = reportDefaultInterface(manager, listener)
             override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) =
-                reportDefaultInterface(manager, network, listener)
+                reportDefaultInterface(manager, listener)
+
+            override fun onLost(network: Network) = reportDefaultInterface(manager, listener)
         }
         defaultNetworkCallback = callback
+        // 用 LISTEN 模式（registerNetworkCallback）而不是 registerDefaultNetworkCallback：
+        // 后者在 Android 9 起把**我们自己的 VPN** 当成默认网络返回，正好是我们最不
+        // 想要的那一张。LISTEN 模式配上 NOT_VPN 要求，拿到的是「所有物理网络」，
+        // 由 [pickDefaultNetwork] 挑一张最合适的。
+        val request = NetworkRequest.Builder()
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_RESTRICTED)
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+            .build()
         try {
-            manager.registerDefaultNetworkCallback(callback)
+            manager.registerNetworkCallback(request, callback)
         } catch (e: Throwable) {
-            Log.w(TAG, "注册默认网络回调失败", e)
+            Log.w(TAG, "注册网络回调失败", e)
         }
-        // 注册回调不会立刻触发一次，这里主动报一次，避免内核等不到初始接口。
-        manager.activeNetwork?.let { reportDefaultInterface(manager, it, listener) }
+        // 注册回调不会立刻触发一次，这里主动报一次。
+        //
+        // 这一步是**关键路径**：内核此刻正同步等这张网卡（见 [reportDefaultInterface]
+        // 的说明），而回调是异步的，赶不上。
+        reportDefaultInterface(manager, listener, retries = 10)
     }
 
+    /**
+     * 从系统的所有网络里挑出**真正该走的物理出口**。
+     *
+     * 为什么不能直接用 `activeNetwork`：Android 9 起，默认网络对我们这种
+     * VPN 应用返回的就是**自己的 tun**（上游 SFA 为此专门用 requestNetwork /
+     * registerBestMatchingNetworkCallback 绕开这件事）。把 tun0 报成默认出口，
+     * 内核就会把「直连出站」也绑到 tun0 上——那正是 `auto_detect_interface`
+     * 要避免的路由回环：对端地址的握手包自己先进了隧道。
+     *
+     * 症状很容易被误读成「节点坏了」：内核起得来、TUN 也建好了、界面说已连接，
+     * 但对端**一次都收不到连接**，而直连（命中规则集的那部分）同样不通。
+     *
+     * 稳定优先：上一条报过的网卡只要还在候选里就继续用它。内核每次改判都要重建
+     * 直连出站，WiFi 与蜂窝之间来回改判没有任何好处。
+     */
+    private fun pickDefaultNetwork(manager: ConnectivityManager): Network? {
+        val candidates = ArrayList<Pair<Network, Int>>()
+        for (network in orderedNetworks(manager)) {
+            val caps = manager.getNetworkCapabilities(network) ?: continue
+            // 排除 VPN 网络（包括我们自己的 tun0）：内核要的是物理出口。
+            if (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)) continue
+            if (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) continue
+            var score = 0
+            if (caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)) score += 4
+            if (caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)) score += 2
+            if (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) score += 1
+            candidates.add(network to score)
+        }
+        if (candidates.isEmpty()) return null
+        val last = lastDefaultInterface
+        if (last != null) {
+            candidates.firstOrNull { manager.getLinkProperties(it.first)?.interfaceName == last }
+                ?.let { return it.first }
+        }
+        return candidates.maxByOrNull { it.second }?.first
+    }
+
+    /// 默认网络排在最前，其余按系统给的顺序。
+    private fun orderedNetworks(manager: ConnectivityManager): List<Network> {
+        val ordered = ArrayList<Network>()
+        manager.activeNetwork?.let { ordered.add(it) }
+        manager.allNetworks.forEach { network -> if (!ordered.contains(network)) ordered.add(network) }
+        return ordered
+    }
+
+    /// 上报默认接口。
+    ///
+    /// **必须同步调 [InterfaceUpdateListener.updateDefaultInterface]，不要 post 到
+    /// 其它线程。** 这不是风格偏好，是实测出来的：
+    ///
+    ///   * 内核在 `startOrReloadService` 里**同步等**这张网卡——它不返回，内核就
+    ///     继续往下走，然后立刻取网卡列表、立刻建直连出站。实测时序：请求监听
+    ///     → 5ms 后我们算出结果 → 21ms 后内核取列表 → 再 1ms 就报
+    ///     `no available network interface`；
+    ///   * 那 21ms 就是全部预算。`mainHandler.post` 要等主线程把手上的活干完
+    ///     （点击「连接」之后正是界面最忙的时候），窗口只有一个帧的量级，而内核
+    ///     不会为了等一个回调而暂停启动。实测改进之前 **5 次连接 5 次都错过**，
+    ///     不是偶发竞态——这也解释了为什么它看起来像「安卓上一连就失败」。
+    ///
+    /// 上游（SFA 的 `DefaultNetworkMonitor`）同样是在这里直接回调、不切线程；它甚至
+    /// 会在拿不到地址时重试若干次，理由一样：这一步必须在内核提问之前完成。
+    ///
+    /// [retries] 只给启动那条路：内核只等这一次机会，而网络刚切换时
+    /// `LinkProperties` 可能还没就绪。回调路径不重试——它有下一次回调兜底。
     private fun reportDefaultInterface(
         manager: ConnectivityManager,
-        network: Network,
         listener: InterfaceUpdateListener,
+        retries: Int = 0,
     ) {
-        try {
-            val linkProperties = manager.getLinkProperties(network) ?: return
-            val name = linkProperties.interfaceName ?: return
-            val index = networkInterfaceIndex(name)
-            if (index <= 0) return
-            val caps = manager.getNetworkCapabilities(network)
-            val expensive = caps?.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED) == false
-            // constrained 对应「受限网络」（如强制门户），不是「是不是 VPN」。
-            val constrained = caps?.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_RESTRICTED) == false
-            mainHandler.post { listener.updateDefaultInterface(name, index, expensive, constrained) }
-        } catch (e: Throwable) {
-            Log.w(TAG, "上报默认接口失败", e)
+        for (attempt in 0..retries) {
+            if (attempt > 0) {
+                // 等网络就绪；上限 10×100ms，与上游取同一个量级。
+                try {
+                    Thread.sleep(100)
+                } catch (e: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    return
+                }
+            }
+            try {
+                val network = pickDefaultNetwork(manager)
+                if (network == null) {
+                    // 系统此刻一张物理网卡都没有（飞行模式等）。如实上报「没有默认
+                    // 接口」——空名字 + -1 是内核认的那一种（上游同样这么发）。
+                    // 留着上一条已消失的网卡名，只会让内核去绑一张不存在的网卡。
+                    if (lastDefaultInterface != null || retries > 0) {
+                        diagPlatform("没有可用的物理网卡，上报空默认接口")
+                        lastDefaultInterface = null
+                        listener.updateDefaultInterface("", -1, false, false)
+                    }
+                    return
+                }
+                val linkProperties = manager.getLinkProperties(network) ?: continue
+                val name = linkProperties.interfaceName ?: continue
+                val index = networkInterfaceIndex(name)
+                if (index <= 0) continue
+                val caps = manager.getNetworkCapabilities(network)
+                val expensive = caps?.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED) == false
+                // constrained 对应「受限网络」（如强制门户），不是「是不是 VPN」。
+                val constrained = caps?.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_RESTRICTED) == false
+                if (name == lastDefaultInterface) {
+                    // 同一条网卡重复上报没有意义，也没必要记诊断——回调很密集。
+                    listener.updateDefaultInterface(name, index, expensive, constrained)
+                    return
+                }
+                diagPlatform("上报默认接口 $name index=$index")
+                lastDefaultInterface = name
+                listener.updateDefaultInterface(name, index, expensive, constrained)
+                return
+            } catch (e: Throwable) {
+                Log.w(TAG, "上报默认接口失败", e)
+                return
+            }
         }
     }
 
-    private fun networkInterfaceIndex(name: String): Int = try {
-        java.net.NetworkInterface.getByName(name)?.index ?: -1
-    } catch (e: Throwable) {
-        -1
+    /// 网卡的**内核 ifindex**。
+    ///
+    /// 两条路都留着，是因为 `java.net` 这条不可靠：Android 11 起收紧了接口枚举，
+    /// 部分 ROM 上 `NetworkInterface` 的枚举会返回空（Lantern 等下游项目为此专门
+    /// 加过兜底）。而这里的调用方**按 index 过滤网卡**——取不到 index 就等于把
+    /// 这张网卡丢掉，于是列表为空，内核起手的每一次直连都报
+    /// `Get "http://127.0.0.1:xxxxx/…": no available network interface`。
+    ///
+    /// 后果不是「直连站点打不开」那么轻：规则集投递（热更新）属于内核启动流程，
+    /// 它一失败内核整个起不来，用户看到的是「一连就失败」，而界面上只有那句
+    /// 读不懂的原话。
+    ///
+    /// [Os.if_nametoindex] 是安全的退路：它就是一次 `ioctl(SIOCGIFINDEX)`，不做
+    /// 枚举、不受上面那条收紧影响，返回的也是同一个内核 ifindex——两条路的结果
+    /// 可以互换。
+    private fun networkInterfaceIndex(name: String): Int {
+        try {
+            val index = java.net.NetworkInterface.getByName(name)?.index ?: -1
+            if (index > 0) return index
+        } catch (e: Throwable) {
+            // 受限 ROM：不在这里放弃，继续走下面那条不依赖枚举的路。
+        }
+        val index = try {
+            Os.if_nametoindex(name)
+        } catch (e: Throwable) {
+            -1
+        }
+        if (index <= 0) {
+            warnInterfaceEnumeration("拿不到网卡 $name 的 ifindex")
+        } else {
+            diagPlatform("java.net 给不出 $name 的 ifindex，已用 Os.if_nametoindex 兜底")
+        }
+        return index
+    }
+
+    /// 接口枚举受限的诊断。只记一次。
+    ///
+    /// 这件事曾经**完全不可见**：内核只报一句 `no available network interface`，
+    /// 既没说是哪张网卡、也没说为什么，排查只能靠猜。现在它会落在 diag.log 里。
+    private fun warnInterfaceEnumeration(detail: String) {
+        if (interfaceDiagDone) return
+        interfaceDiagDone = true
+        diag(
+            "网卡枚举受限（$detail）：java.net 与 Os.if_nametoindex 都没给出结果。" +
+                "内核会因此拿不到出口网卡，直连出站报 no available network interface",
+        )
     }
 
     override fun closeDefaultInterfaceMonitor(listener: InterfaceUpdateListener) {
@@ -431,6 +611,7 @@ class XvpnVpnService : VpnService(), PlatformInterface {
     }
 
     private fun stopDefaultInterfaceMonitor() {
+        lastDefaultInterface = null
         val callback = defaultNetworkCallback ?: return
         defaultNetworkCallback = null
         try {
@@ -480,6 +661,13 @@ class XvpnVpnService : VpnService(), PlatformInterface {
             }
         } catch (e: Throwable) {
             Log.w(TAG, "枚举网络接口失败", e)
+        }
+        // 空列表必然意味着内核的直连出站不可用（见 [networkInterfaceIndex]）。
+        // 它是**静默**的：内核只会丢一句 no available network interface，界面上
+        // 只剩「连接失败」。在这里记一笔，下一次排查不用再从内核日志倒推。
+        diagPlatform("内核请求网卡列表，返回 ${list.size} 张：${list.joinToString(",") { it.name }}")
+        if (list.isEmpty()) {
+            warnInterfaceEnumeration("网卡列表为空")
         }
         return networkInterfaceIterator(list)
     }
@@ -674,7 +862,9 @@ class XvpnVpnService : VpnService(), PlatformInterface {
             Notification.Builder(this)
         }
         return builder
-            .setContentTitle("XVPN 运行中")
+            // 通知标题。常驻通知是用户在系统里唯一能看到「隧道还开着」的地方，
+            // 用产品名而不是仓库名。
+            .setContentTitle("幽门运行中")
             .setContentText("智能分流已启用：命中规则集的流量直连，其余走隧道")
             .setSmallIcon(R.drawable.ic_stat_xvpn)
             .setOngoing(true)

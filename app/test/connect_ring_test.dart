@@ -3,21 +3,26 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:xvpn/theme.dart';
 import 'package:xvpn/widgets/connect_ring.dart';
 
-/// 圆环的预热态流转弧。
+/// 圆环的预热态流转弧与失败态。
 ///
-/// 这一组重点锁两件事：
+/// 这一组重点锁三件事：
 ///   1. 预热时**确实在动**（用户能看出程序没卡住），非预热时不空转；
-///   2. 构建后立即销毁不会崩——这是实现过程中真实踩到的崩溃（controller 用
+///   2. 失败态同样不空转——它已经停下来等用户重试了；
+///   3. 构建后立即销毁不会崩——这是实现过程中真实踩到的崩溃（controller 用
 ///      `late final` 惰性初始化，非预热态直到 dispose 才第一次求值，那一刻
 ///      Ticker 已无处可挂）。
-Widget _host({required bool warmup, bool active = true, VoidCallback? onTap}) {
+Widget _host({
+  required bool warmup,
+  ConnectRingTone tone = ConnectRingTone.active,
+  VoidCallback? onTap,
+}) {
   return MaterialApp(
     theme: buildXvTheme(XvPalette.dark),
     home: Scaffold(
       body: Center(
         child: ConnectRing(
           size: ConnectRing.mobileSize,
-          active: active,
+          tone: tone,
           icon: Icons.power_settings_new,
           title: warmup ? '正在建立隧道…' : '已连接',
           warmup: warmup,
@@ -95,5 +100,21 @@ void main() {
     await tester.pump();
 
     expect(taps, 1, reason: '预热期间用户点断开是合理诉求，动画不该拦住它');
+  });
+
+  testWidgets('失败态不空转：它已经停了，需要的是重试而不是继续转', (WidgetTester tester) async {
+    // warmup 与 failed 同时给出时以失败为准——实践中不会这么传（连接页按
+    // 状态机选色调），但接口允许，行为就必须是确定的。
+    await tester.pumpWidget(
+      _host(warmup: true, tone: ConnectRingTone.failed),
+    );
+    await tester.pump(const Duration(milliseconds: 16));
+    await tester.pump(const Duration(milliseconds: 100));
+
+    expect(
+      tester.binding.hasScheduledFrame,
+      isFalse,
+      reason: '失败态还在转圈会读成「还在试」，而事实是它已经停下来等用户动作了',
+    );
   });
 }

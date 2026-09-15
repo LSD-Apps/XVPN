@@ -1,436 +1,168 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
-import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:xvpn/core/licenses.dart';
+import 'package:xvpn/app_state.dart';
 import 'package:xvpn/core/links.dart';
-import 'package:xvpn/screens/licenses_dialog.dart';
+import 'package:xvpn/screens/settings_screen.dart';
 import 'package:xvpn/theme.dart';
+import 'package:xvpn/theme_controller.dart';
 import 'package:xvpn/widgets/common.dart';
 
-/// 应用内「开源许可」界面必须能读到随包附带的许可全文，并按内容本身的格式
-/// 渲染——`NOTICE.md` / `THIRD-PARTY-NOTICES.md` 是 Markdown，`LICENSE` 是
-/// GPL-3.0 的纯文本。
+/// 设置页「开源许可」入口。
 ///
-/// 这条测试针对的是一个具体的失败模式：许可文件「被塞进了安装包」但用户读不到，
-/// 或者读到了却是一堆字面量标记（`## 一、…`、`| a | b |`）。这里同时验证：
-///   1. 三个 asset 真的能被 `rootBundle` 读到（副本没漏进 pubspec / 与根文件一致）；
-///   2. 由这些 asset 构造出的许可条目里确实有 GPL 正文与第三方声明；
-///   3. 自绘的许可视图能列出条目、点开全文、筛选与返回；
-///   4. Markdown 条目渲染成标题 / 真实表格 / 链接，而不是字面量标记；纯文本
-///      （GPL）仍按段落渲染，尖括号占位不会被 Markdown 解析吞掉；
-///   5. 347 KB 的内核依赖声明能限时打开，并且只构建视口附近的分段。
+/// 守的是一个**取舍**：许可必须可获取，但不必长在应用里。此前应用内自绘了一个
+/// 完整的许可浏览界面，并把 `LICENSE` / `NOTICE.md` / `THIRD-PARTY-NOTICES.md`
+/// （合计约 430 KB，含 111 个模块的聚合许可）一起打进安装包供它读取。现在那三份
+/// 文本随仓库与各平台发布包分发，应用只把人送到读得到全文的地方。
 ///
-/// 关于 `runAsync`：`rootBundle.loadString` 是真实异步 I/O，而 `testWidgets`
-/// 的测试体跑在 `FakeAsync` 下——直接 await 会一直等不到（微任务不被冲刷）。
-/// 因此真实 I/O 一律放进 `tester.runAsync`。生产代码没有 FakeAsync，不受影响。
+/// 因此本文件同时守住三件事：
+///   1. 入口点了真的会打开项目主页的许可章节，而不是一个已经拆掉的应用内页面；
+///   2. 打开的失败路径有出路（给出可手动访问的地址），不是点了没反应；
+///   3. 本项目**不再**往 `LicenseRegistry` 里注册任何条目——也就是
+///      「没有必要列举所有 license」这句要求的机器可验证形式；
+///   4. 同一张卡上的「作者与官网」也真的会打开官网（共用同一条失败路径）。
 void main() {
-  /// 一份结构完整的小 Markdown 夹具：标题、粗体、行内代码、GFM 表格与链接。
-  /// 域名用 RFC 2606 保留的 `example.net`，不指向任何真实站点。
-  LicenseEntryWithLineBreaks markdownSample() =>
-      const LicenseEntryWithLineBreaks(<String>[
-        'Test · Markdown 示例',
-      ], '''
-# 一级标题
-
-普通段落，含 **加粗** 与 `内联代码`。
-
-## 依赖表
-
-| 名称 | 许可 |
-| --- | --- |
-| alpha | MIT |
-| beta | BSD-3-Clause |
-
-### 链接
-
-[示例站点](https://example.net/xvpn)
-''');
-
-  testWidgets('assets/legal 下的许可文件可被应用读取', (WidgetTester tester) async {
-    await tester.runAsync(() async {
-      for (final asset in bundledLicenseAssets) {
-        final text = await rootBundle.loadString(asset.asset);
-        expect(text, isNotEmpty, reason: '${asset.asset} 读不到或为空');
-      }
-      final gpl = await rootBundle.loadString('assets/legal/LICENSE');
-      expect(gpl, contains('GNU GENERAL PUBLIC LICENSE'));
-      expect(gpl, contains('Version 3'));
-      // 第三方声明（尤其是内核静态依赖）必须真的在包里，而不只是被注册。
-      final thirdParty = await rootBundle.loadString(
-        'assets/legal/THIRD-PARTY-NOTICES.md',
-      );
-      expect(thirdParty, contains('BSD-3-Clause'));
-      expect(thirdParty, contains('Apache-2.0'));
-    });
-  });
-
-  testWidgets('许可条目里能取到 GPL 全文与第三方声明', (WidgetTester tester) async {
-    final entries = await tester.runAsync(loadBundledLicenseEntries);
-    expect(entries, isNotNull);
-    final all = entries!;
-
-    final gplEntries = all.where(
-      (LicenseEntry e) => e.packages.contains('XVPN · 本项目许可（GPL-3.0-or-later）'),
-    );
-    expect(gplEntries, isNotEmpty, reason: '许可页应包含本项目自身条目');
-    final gplText = gplEntries.first.paragraphs
-        .map((LicenseParagraph p) => p.text)
-        .join('\n');
-    expect(gplText, contains('GNU GENERAL PUBLIC LICENSE'));
-    expect(gplText, contains('Version 3'));
-
-    // 第三方条目也要在，而不是只有 Flutter 自动生成的依赖许可。
-    expect(
-      all.any(
-        (LicenseEntry e) =>
-            e.packages.contains('XVPN · 第三方组件与许可') ||
-            e.packages.contains('XVPN · 内核静态依赖（sing-box 及其 Go 依赖）'),
-      ),
-      isTrue,
-      reason: '第三方声明必须在许可页可见',
-    );
-  });
-
-  /// 读出 `LicenseRegistry` 里的全部条目。
+  /// 渲染桌面端设置页到「关于」卡片可见为止。
   ///
-  /// 走的是生产路径：`registerBundledLicenses()` 注册本项目三个 asset，注册表
-  /// 被遍历时它们才真正读文件。测试环境里 Flutter 自己的 `NOTICES.Z` 注册器
-  /// 被刻意关掉（`flutter_test` 的 `initLicenses` 是空实现），因此这里读到的
-  /// 就是本项目那三条。
-  Future<List<LicenseEntry>> loadRegistryEntries(WidgetTester tester) async {
-    registerBundledLicenses();
-    final entries = await tester.runAsync(
-      () => LicenseRegistry.licenses.toList(),
-    );
-    return entries ?? const <LicenseEntry>[];
-  }
-
-  /// 收集屏幕上全部已构建文字（`Text`、含 `Text.rich`，以及裸 `RichText`）。
-  ///
-  /// 为什么需要它：Markdown 渲染出来的标题/段落是 `Text.rich`，要断言「字面量
-  /// 标记没有漏出来」（`## `、`**`、`| ---`）就得把它们拼起来整体看，而不是
-  /// 逐个 `find.text` 猜。
-  String renderedText(WidgetTester tester) {
-    final buffer = StringBuffer();
-    for (final Element element in find.byType(Text).evaluate()) {
-      final Text text = element.widget as Text;
-      buffer.writeln(text.data ?? text.textSpan?.toPlainText() ?? '');
-    }
-    for (final Element element in find.byType(RichText).evaluate()) {
-      buffer.writeln((element.widget as RichText).text.toPlainText());
-    }
-    return buffer.toString();
-  }
-
-  /// 渲染许可视图本体并冲刷注入的 loader。
-  ///
-  /// 直接以 `body` 的形式渲染 [LicensesDialog]：这里关心的是列表/全文两级切换，
-  /// 入口本身由下面的用例单独覆盖。条目通过 `loadEntries` 注入，从而避开
-  /// `FakeAsync` 下的真实 I/O。
-  Future<void> pumpLicenses(
+  /// 入口在页面最底部，矮窗口下要先滚过去；这里给一个够高的视口再 `ensureVisible`
+  /// 兜一次，避免用例因为「控件在视口外」而假失败。
+  Future<void> pumpSettings(
     WidgetTester tester, {
-    required List<LicenseEntry> entries,
-    required XvPalette palette,
-    Size size = const Size(1000, 760),
     ExternalUrlLauncher? openExternalUrl,
   }) async {
-    // 调色板是全局变量，用例之间必须复位，否则会给后续用例留下亮色。
-    applyPalette(palette);
-    addTearDown(() => applyPalette(XvPalette.dark));
-    tester.view.physicalSize = size;
+    tester.view.physicalSize = const Size(1200, 1400);
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.reset);
+
+    final state = AppState();
+    addTearDown(state.dispose);
+    final theme = ThemeController();
+    addTearDown(theme.dispose);
+
     await tester.pumpWidget(
       MaterialApp(
-        theme: buildXvTheme(palette),
+        theme: buildXvTheme(XvPalette.dark),
         home: Scaffold(
-          backgroundColor: XV.bg,
-          body: LicensesDialog(
-            loadEntries: () async => entries,
-            // 默认注入一个不弹浏览器的实现：真实 `launchInBrowser` 在测试里
-            // 没有平台通道，会走到「打开失败」分支。
+          body: SettingsScreen(
+            state: state,
+            compact: false,
+            theme: theme,
             openExternalUrl: openExternalUrl ?? (Uri uri) async => true,
           ),
         ),
       ),
     );
-    await tester.pump();
+    await tester.pumpAndSettle();
   }
 
-  testWidgets('新的许可视图列出本项目自己的条目', (WidgetTester tester) async {
-    final entries = await loadRegistryEntries(tester);
-    await pumpLicenses(tester, entries: entries, palette: XvPalette.dark);
+  Finder licenseButton() => find.widgetWithText(XvButton, '查看');
 
-    // 本项目三条都必须出现，而不是只剩 Flutter 聚合来的依赖许可。
-    expect(find.textContaining('本项目许可'), findsOneWidget);
-    expect(find.textContaining('第三方组件与许可'), findsOneWidget);
-    expect(find.textContaining('内核静态依赖'), findsOneWidget);
-    expect(tester.takeException(), isNull);
-  });
+  /// 「关于」卡里的另一个外部入口。
+  ///
+  /// 与「开源许可」放在同一个文件里，而不是另开一个：它们共用同一条失败路径
+  /// （[_openExternal]），用户看到的也是同一张卡上的两行。分开写会让人以为
+  /// 「点了打不开浏览器」这件事只对其中一行成立。
+  Finder websiteButton() => find.widgetWithText(XvButton, '访问');
 
-  testWidgets('纯文本条目（GPL）仍按段落渲染，返回回到列表', (WidgetTester tester) async {
-    final entries = await loadRegistryEntries(tester);
-    await pumpLicenses(tester, entries: entries, palette: XvPalette.dark);
-
-    await tester.tap(find.textContaining('本项目许可'));
-    await tester.pumpAndSettle();
-
-    // 正文必须真的在，且仍是可选中复制的段落（GPL 的 ASCII 版式不能交给
-    // Markdown 解析——`<name of author>` 会被当标签吞掉）。
-    expect(find.textContaining('GNU GENERAL PUBLIC LICENSE'), findsOneWidget);
-    expect(find.byType(LicenseParagraphLine), findsWidgets);
-    expect(find.byType(SelectionArea), findsOneWidget);
-    expect(find.byType(MarkdownBody), findsNothing);
-
-    await tester.tap(find.text('返回'));
-    await tester.pumpAndSettle();
-
-    expect(find.byType(XvSearchField), findsOneWidget);
-    expect(find.textContaining('GNU GENERAL PUBLIC LICENSE'), findsNothing);
-  });
-
-  testWidgets('Markdown 条目渲染成标题/表格，不再出现字面量标记', (
-    WidgetTester tester,
-  ) async {
-    await pumpLicenses(
-      tester,
-      entries: <LicenseEntry>[markdownSample()],
-      palette: XvPalette.dark,
-    );
-
-    await tester.tap(find.textContaining('Markdown 示例'));
-    await tester.pumpAndSettle();
-    expect(tester.takeException(), isNull);
-
-    final rendered = renderedText(tester);
-    // 标题的 `#` 前缀、粗体的 `**`、表格的竖线/分隔行都不能以字面量出现。
-    expect(rendered, isNot(contains('## ')), reason: '标题不应带 ## 前缀');
-    expect(rendered, isNot(contains('### ')), reason: '标题不应带 ### 前缀');
-    expect(rendered, isNot(contains('# 一级标题')));
-    expect(rendered, isNot(contains('**')), reason: '粗体不应带 ** 标记');
-    expect(rendered, isNot(contains('| ---')), reason: '表格分隔行不应原样出现');
-    expect(rendered, isNot(contains('| 名称 |')), reason: '表格不应是竖线文本');
-    // 标题文字本身要在（去掉 # 之后）。
-    expect(rendered, contains('一级标题'));
-    expect(rendered, contains('依赖表'));
-    expect(rendered, contains('加粗'));
-
-    // GFM 表格必须渲染成真正的 Table，而不是一行行竖线文本。
-    expect(find.byType(Table), findsOneWidget);
-    expect(find.byType(MarkdownBody), findsWidgets);
-    // 选择能力不能丢：整段仍由 SelectionArea 包着（用户要复制 GPL 正文）。
-    expect(find.byType(SelectionArea), findsOneWidget);
-  });
-
-  testWidgets('真实的 NOTICE.md 条目按 Markdown 渲染', (WidgetTester tester) async {
-    final entries = await loadRegistryEntries(tester);
-    await pumpLicenses(tester, entries: entries, palette: XvPalette.dark);
-
-    await tester.tap(find.textContaining('第三方组件与许可'));
-    await tester.pumpAndSettle();
-    expect(tester.takeException(), isNull);
-
-    final rendered = renderedText(tester);
-    expect(rendered, contains('第三方组件与许可'));
-    expect(rendered, contains('零、本项目的授权声明'));
-    expect(rendered, isNot(contains('## ')), reason: '标题不应带 ## 前缀');
-    expect(rendered, isNot(contains('**')), reason: '粗体不应带 ** 标记');
-  });
-
-  testWidgets('正文里的链接交给应用自己的打开实现', (WidgetTester tester) async {
+  testWidgets('「作者与官网」入口把作者与产品主页摆出来，而不是藏在仓库里', (WidgetTester tester) async {
     final opened = <Uri>[];
-    await pumpLicenses(
+    await pumpSettings(
       tester,
-      entries: <LicenseEntry>[markdownSample()],
-      palette: XvPalette.dark,
       openExternalUrl: (Uri uri) async {
         opened.add(uri);
         return true;
       },
     );
 
-    await tester.tap(find.textContaining('Markdown 示例'));
-    await tester.pumpAndSettle();
-
-    await tester.tap(find.textContaining('示例站点'));
-    await tester.pump();
-
-    expect(opened, <Uri>[Uri.parse('https://example.net/xvpn')]);
-  });
-
-  testWidgets('搜索框按组件名筛选条目', (WidgetTester tester) async {
-    final entries = await loadRegistryEntries(tester);
-    await pumpLicenses(tester, entries: entries, palette: XvPalette.dark);
-
-    // 只有一个输入框（搜索），直接输入即可。
-    await tester.enterText(find.byType(TextField), '第三方');
-    await tester.pumpAndSettle();
-
-    expect(find.textContaining('第三方组件与许可'), findsOneWidget);
-    expect(find.textContaining('本项目许可'), findsNothing);
-    expect(find.textContaining('内核静态依赖'), findsNothing);
-
-    // 清除后恢复完整列表。
-    await tester.tap(find.text('清除'));
-    await tester.pumpAndSettle();
-    expect(find.textContaining('本项目许可'), findsOneWidget);
-    expect(find.textContaining('内核静态依赖'), findsOneWidget);
-  });
-
-  testWidgets('347 KB 的内核依赖条目：真实表格渲染成 Table，懒建且限时打开', (
-    WidgetTester tester,
-  ) async {
-    final entries = await loadRegistryEntries(tester);
-
-    final huge = entries.firstWhere(
-      (LicenseEntry e) => e.packages.any(
-        (String p) => p.contains('内核静态依赖'),
-      ),
-    );
-    // 真实文档按顶层标题能切成多少段——用作「只建了视口附近」的对照。
-    final raw = (huge as LicenseEntryWithLineBreaks).text;
-    final totalSections = splitMarkdownSections(raw).length;
+    expect(find.text('作者与官网'), findsOneWidget);
     expect(
-      totalSections,
-      greaterThan(50),
-      reason: '内核依赖声明应当确实能被切成很多段（实际 $totalSections）',
+      find.textContaining('LUSIDA'),
+      findsOneWidget,
+      reason: '作者名字要直接写在卡上：用户不该为了知道这是谁做的东西去翻安装包属性',
     );
-
-    await pumpLicenses(tester, entries: entries, palette: XvPalette.dark);
-    final stopwatch = Stopwatch()..start();
-    await tester.tap(find.textContaining('内核静态依赖'));
+    await tester.ensureVisible(websiteButton());
     await tester.pumpAndSettle();
-    stopwatch.stop();
-    // 实测值：见本用例输出。
-    debugPrint('347 KB 条目打开至稳定：${stopwatch.elapsedMilliseconds} ms');
+    await tester.tap(websiteButton());
+    await tester.pumpAndSettle();
 
-    expect(tester.takeException(), isNull, reason: '打开大条目不能抛异常');
     expect(
-      stopwatch.elapsedMilliseconds,
-      lessThan(2000),
-      reason: '整份 Markdown 一次性渲染会卡住首帧，必须保持在预算内',
+      opened,
+      <Uri>[Uri.parse(kWebsiteUrl)],
+      reason: '点「访问」必须打开官网——它与仓库并列，不是同一个地址的两种写法',
     );
-    // 真实的 GFM 表格（`## 依赖总览`）必须渲染成真正的 Table。
-    expect(find.byType(Table), findsWidgets);
-    final rendered = renderedText(tester);
-    expect(rendered, isNot(contains('| ---')), reason: '表格分隔行不应以字面量出现');
-
-    // 懒建：实际构建的分段数应远小于总段数。
-    final built = find.byType(MarkdownBody).evaluate().length;
-    expect(built, greaterThan(0), reason: '至少要把可视范围内的正文建出来');
-    expect(
-      built,
-      lessThan(totalSections),
-      reason: 'ListView.builder 必须懒建（实际建出 $built / $totalSections 段）',
-    );
-  });
-
-  testWidgets('暗色与亮色两套调色板下都不溢出、不抛异常', (WidgetTester tester) async {
-    final entries = await loadRegistryEntries(tester);
-    for (final palette in <XvPalette>[XvPalette.dark, XvPalette.light]) {
-      await pumpLicenses(tester, entries: entries, palette: palette, size: const Size(1000, 760));
-      expect(tester.takeException(), isNull, reason: '列表在 ${palette.bg} 下不应溢出');
-
-      await tester.tap(find.textContaining('本项目许可'));
-      await tester.pumpAndSettle();
-      expect(tester.takeException(), isNull, reason: '全文在 ${palette.bg} 下不应溢出');
-    }
-  });
-
-  testWidgets('Markdown 条目在暗色/亮色/窄屏下都不溢出', (WidgetTester tester) async {
-    for (final palette in <XvPalette>[XvPalette.dark, XvPalette.light]) {
-      await pumpLicenses(
-        tester,
-        entries: <LicenseEntry>[markdownSample()],
-        palette: palette,
-        size: const Size(1000, 760),
-      );
-      await tester.tap(find.textContaining('Markdown 示例'));
-      await tester.pumpAndSettle();
-      expect(
-        tester.takeException(),
-        isNull,
-        reason: 'Markdown 全文在 ${palette.bg} 下不应溢出',
-      );
-    }
-
-    await pumpLicenses(
-      tester,
-      entries: <LicenseEntry>[markdownSample()],
-      palette: XvPalette.dark,
-      size: const Size(390, 780),
-    );
-    await tester.tap(find.textContaining('Markdown 示例'));
-    await tester.pumpAndSettle();
-    expect(tester.takeException(), isNull, reason: '窄屏下 Markdown 条目不应溢出');
-  });
-
-  testWidgets('窄屏整屏铺开，返回与关闭都可用', (WidgetTester tester) async {
-    final entries = await loadRegistryEntries(tester);
-    await pumpLicenses(
-      tester,
-      entries: entries,
-      palette: XvPalette.dark,
-      size: const Size(390, 780),
-    );
-
-    expect(find.byType(XvSearchField), findsOneWidget);
-    await tester.tap(find.textContaining('本项目许可'));
-    await tester.pumpAndSettle();
-
-    expect(find.textContaining('GNU GENERAL PUBLIC LICENSE'), findsOneWidget);
-    await tester.tap(find.text('返回'));
-    await tester.pumpAndSettle();
-    expect(find.byType(XvSearchField), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('条目读取失败时给出说明而不是崩溃', (WidgetTester tester) async {
-    applyPalette(XvPalette.dark);
-    addTearDown(() => applyPalette(XvPalette.dark));
-    await tester.pumpWidget(
-      MaterialApp(
-        theme: buildXvTheme(XvPalette.dark),
-        home: Scaffold(
-          body: LicensesDialog(
-            loadEntries: () async => throw StateError('asset 缺失'),
-          ),
-        ),
-      ),
+  test('官网与仓库是两个不同的地址，且都走 https', () {
+    final site = Uri.parse(kWebsiteUrl);
+    final repo = Uri.parse(kRepoUrl);
+    expect(site.scheme, 'https');
+    expect(site.host, 'www.lusida.net');
+    expect(
+      site.host,
+      isNot(repo.host),
+      reason: '官网是产品所在、仓库是源码所在；合成一个会让「下载」和「读代码」互相抢入口',
     );
-    await tester.pump();
+  });
 
-    expect(find.textContaining('读取许可条目失败'), findsOneWidget);
+  testWidgets('「开源许可」入口打开项目主页的许可章节', (WidgetTester tester) async {
+    final opened = <Uri>[];
+    await pumpSettings(
+      tester,
+      openExternalUrl: (Uri uri) async {
+        opened.add(uri);
+        return true;
+      },
+    );
+
+    expect(find.text('开源许可'), findsOneWidget, reason: '入口本身仍在');
+    await tester.ensureVisible(licenseButton());
+    await tester.pumpAndSettle();
+    await tester.tap(licenseButton());
+    await tester.pumpAndSettle();
+
+    expect(
+      opened,
+      <Uri>[Uri.parse(kLicenseUrl)],
+      reason: '点「查看」必须把人送到公开的许可声明，不是弹一个空窗',
+    );
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('入口打开的是自绘许可视图，而不是 Material 的许可页', (
-    WidgetTester tester,
-  ) async {
-    registerBundledLicenses();
-    await tester.pumpWidget(
-      MaterialApp(
-        theme: buildXvTheme(XvPalette.dark),
-        home: Scaffold(
-          body: Builder(
-            builder: (BuildContext context) => Center(
-              child: XvButton(
-                label: '查看',
-                onPressed: () => showLicensesDialog(context),
-              ),
-            ),
-          ),
-        ),
-      ),
+  test('许可地址指向项目主页的许可章节，而不是包内文件', () {
+    final uri = Uri.parse(kLicenseUrl);
+    expect(uri.scheme, 'https');
+    expect(uri.host, 'lsd-apps.github.io');
+    expect(
+      uri.fragment,
+      'license',
+      reason: '要落到页面的许可章节；锚点写错会静默停在页首',
     );
+  });
 
-    await tester.tap(find.text('查看'));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 400));
+  testWidgets('打不开浏览器时给出可手动访问的地址，而不是静默', (WidgetTester tester) async {
+    await pumpSettings(tester, openExternalUrl: (Uri uri) async => false);
 
-    expect(find.byType(LicensesDialog), findsOneWidget);
-    expect(find.byType(LicensePage), findsNothing);
+    await tester.ensureVisible(licenseButton());
+    await tester.pumpAndSettle();
+    await tester.tap(licenseButton());
+    await tester.pumpAndSettle();
+
+    expect(
+      find.textContaining(kLicenseUrl),
+      findsOneWidget,
+      reason: '没有默认浏览器时，用户至少要把地址抄走',
+    );
+  });
+
+  testWidgets('不再向 LicenseRegistry 注册本项目的许可条目', (WidgetTester tester) async {
+    // Flutter 自己的 NOTICES.Z 注册器在 flutter_test 里被刻意关掉（`initLicenses`
+    // 是空实现），因此这里读到空清单，就等于「应用不再列举任何随包许可」。
+    final entries = await tester.runAsync(() => LicenseRegistry.licenses.toList());
+    expect(
+      entries,
+      isEmpty,
+      reason: '本项目不再注册许可条目；要恢复「列举所有 license」请先改这条断言的意图',
+    );
   });
 }

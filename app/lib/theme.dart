@@ -27,6 +27,7 @@ class XvPalette {
     required this.amber,
     required this.amberSoft,
     required this.red,
+    required this.redDeep,
     required this.redSoft,
     required this.switchOff,
     required this.knob,
@@ -91,6 +92,11 @@ class XvPalette {
   final Color amber;
   final Color amberSoft;
   final Color red;
+
+  /// 红色的暗端。与 [greenDeep] 同一个用途：给圆环这类需要「渐变而不是纯色」
+  /// 的地方提供一个能压住亮色的深端，否则红色圆环只能靠降低透明度凑，
+  /// 结果是一片发灰的粉，看起来像禁用而不是出错。
+  final Color redDeep;
   final Color redSoft;
 
   // 组件专用
@@ -129,6 +135,7 @@ class XvPalette {
     amber: Color(0xFFFFB443),
     amberSoft: Color(0xFFFFCD80),
     red: Color(0xFFFF6B6B),
+    redDeep: Color(0xFF9B2C2C),
     redSoft: Color(0xFFFF9A9A),
     switchOff: Color(0xFF2A3242),
     knob: Color(0xFFFFFFFF),
@@ -173,6 +180,7 @@ class XvPalette {
     amber: Color(0xFFB8790A),
     amberSoft: Color(0xFF8A5A00),
     red: Color(0xFFD63A3A),
+    redDeep: Color(0xFF9E2626),
     redSoft: Color(0xFFA82C2C),
     switchOff: Color(0xFFD3D3DE),
     knob: Color(0xFFFFFFFF),
@@ -232,6 +240,7 @@ class XV {
   static Color get amber => _current.amber;
   static Color get amberSoft => _current.amberSoft;
   static Color get red => _current.red;
+  static Color get redDeep => _current.redDeep;
   static Color get redSoft => _current.redSoft;
 
   static Color get switchOff => _current.switchOff;

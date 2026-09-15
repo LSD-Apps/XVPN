@@ -4,6 +4,13 @@ import 'package:flutter/material.dart';
 
 import '../theme.dart';
 
+/// 圆环的色调。
+///
+/// 三态而不是「亮 / 灭」两态，是因为**失败与未连接是两件不同的事**：
+/// 一次尝试失败后只把圆环退回中性灰并写着「未连接」，等于把「试过、失败了」
+/// 说成「从来没试过」——失败没有留下任何痕迹，重试也没有落点。
+enum ConnectRingTone { idle, active, failed }
+
 /// 连接状态圆环。
 ///
 /// 对应原型里的 `.ring`：`conic-gradient(from 200deg, green, #17795A 55%, green)`
@@ -13,11 +20,13 @@ import '../theme.dart';
 /// [warmup] 为 true 时会叠一圈**流转弧**：内核已就绪、隧道还不能载流量，这期间
 /// 界面既不该显示「已连接」（用户会以为能用），也不该只给一句静止的文案——
 /// 那样看不出程序在动还是卡住了。流转弧回答的正是「它还在动吗」。
+///
+/// [ConnectRingTone.failed] 用的是红色渐变加一层更重的红光晕，见该枚举的说明。
 class ConnectRing extends StatefulWidget {
   const ConnectRing({
     super.key,
     required this.size,
-    required this.active,
+    required this.tone,
     required this.icon,
     required this.title,
     this.titleStyle,
@@ -29,8 +38,8 @@ class ConnectRing extends StatefulWidget {
 
   final double size;
 
-  /// true 时使用绿色渐变并发光（已连接 / 连接中），false 时为中性灰。
-  final bool active;
+  /// 圆环的色调：中性（未连接）/ 活跃（已连接、连接中）/ 失败（上一次尝试失败）。
+  final ConnectRingTone tone;
 
   final IconData icon;
   final String title;
@@ -39,7 +48,7 @@ class ConnectRing extends StatefulWidget {
   final double? iconSize;
   final VoidCallback? onTap;
 
-  /// 是否处于「隧道正在建立」的预热态。
+  /// 是否处于「隧道正在建立」的预热态。只在 [ConnectRingTone.active] 下有意义。
   final bool warmup;
 
   // 供卡片复用，避免各处硬编码圆环尺寸。
@@ -61,6 +70,13 @@ class _ConnectRingState extends State<ConnectRing>
 
   late final AnimationController _controller;
 
+  /// 是否正在画流转弧。
+  ///
+  /// 只有**活跃**色调才转：失败态下转圈会读成「还在试」，而事实是它已经停了
+  /// 并需要一个动作（重试）。把两个条件收在一处，免得三个调用点各判一次。
+  bool get _sweeping =>
+      widget.warmup && widget.tone == ConnectRingTone.active;
+
   @override
   void initState() {
     super.initState();
@@ -71,7 +87,7 @@ class _ConnectRingState extends State<ConnectRing>
     // 直接抛「_updateTickerModeNotifier was called after dispose」。
     // widget 建好就被立刻移走（列表刷新、测试里 pump 一次再替换）时必崩。
     _controller = AnimationController(vsync: this, duration: sweepPeriod);
-    if (widget.warmup) _controller.repeat();
+    if (_sweeping) _controller.repeat();
   }
 
   @override
@@ -79,9 +95,9 @@ class _ConnectRingState extends State<ConnectRing>
     super.didUpdateWidget(oldWidget);
     // 只在预热态转动。连上之后还转会让「已连接」看起来仍不稳定；停掉动画
     // 同时也停掉了每帧重绘，不白耗电。
-    if (widget.warmup && !_controller.isAnimating) {
+    if (_sweeping && !_controller.isAnimating) {
       _controller.repeat();
-    } else if (!widget.warmup && _controller.isAnimating) {
+    } else if (!_sweeping && _controller.isAnimating) {
       _controller.stop();
       _controller.value = 0;
     }
@@ -95,7 +111,16 @@ class _ConnectRingState extends State<ConnectRing>
 
   @override
   Widget build(BuildContext context) {
-    final ringColor = widget.active ? XV.green : XV.muted2;
+    final ringColor = switch (widget.tone) {
+      ConnectRingTone.idle => XV.muted2,
+      ConnectRingTone.active => XV.green,
+      ConnectRingTone.failed => XV.red,
+    };
+    final titleColor = switch (widget.tone) {
+      ConnectRingTone.idle => XV.muted,
+      ConnectRingTone.active => XV.greenSoft,
+      ConnectRingTone.failed => XV.redSoft,
+    };
     final size = widget.size;
 
     final content = Column(
@@ -114,7 +139,7 @@ class _ConnectRingState extends State<ConnectRing>
               TextStyle(
                 fontSize: 12,
                 fontWeight: FontWeight.w600,
-                color: widget.active ? XV.greenSoft : XV.muted,
+                color: titleColor,
               ),
         ),
         if (widget.sublabel != null) ...<Widget>[
@@ -143,12 +168,12 @@ class _ConnectRingState extends State<ConnectRing>
           height: size,
           // 只有预热态才把动画值接进绘制：其余状态仍然是一次性绘制，
           // 「已连接」下不会因为一个恒为 0 的动画每帧重绘。
-          child: widget.warmup
+          child: _sweeping
               ? AnimatedBuilder(
                   animation: _controller,
                   builder: (BuildContext context, Widget? child) => CustomPaint(
                     painter: _RingPainter(
-                      active: widget.active,
+                      tone: widget.tone,
                       sweep: _controller.value,
                     ),
                     child: child,
@@ -156,7 +181,7 @@ class _ConnectRingState extends State<ConnectRing>
                   child: Center(child: content),
                 )
               : CustomPaint(
-                  painter: _RingPainter(active: widget.active),
+                  painter: _RingPainter(tone: widget.tone),
                   child: Center(child: content),
                 ),
         ),
@@ -166,9 +191,9 @@ class _ConnectRingState extends State<ConnectRing>
 }
 
 class _RingPainter extends CustomPainter {
-  _RingPainter({required this.active, this.sweep});
+  _RingPainter({required this.tone, this.sweep});
 
-  final bool active;
+  final ConnectRingTone tone;
 
   /// 流转弧的进度（0–1）。为 null 表示不绘制流转弧。
   final double? sweep;
@@ -181,6 +206,24 @@ class _RingPainter extends CustomPainter {
   static const double _cssStartDeg = 200;
   static const double _degToRad = math.pi / 180;
 
+  /// 环体与光晕用的三个渐变 stop 的取色。
+  ///
+  /// 失败态刻意取 [XV.red] / [XV.redDeep] / [XV.red]，与绿色那组同构：
+  /// 只把主色换掉，环的「亮—深—亮」节奏不变，看上去才是同一枚圆环在报错，
+  /// 而不是另一个控件。
+  List<Color> get _baseColors => switch (tone) {
+    ConnectRingTone.idle => <Color>[XV.ringOffA, XV.ringOffB, XV.ringOffA],
+    ConnectRingTone.active => <Color>[XV.green, XV.greenDeep, XV.green],
+    ConnectRingTone.failed => <Color>[XV.red, XV.redDeep, XV.red],
+  };
+
+  /// 主色：内圆径向高光与内圈细描边都取它。
+  Color get _accent => switch (tone) {
+    ConnectRingTone.idle => XV.blue,
+    ConnectRingTone.active => XV.green,
+    ConnectRingTone.failed => XV.red,
+  };
+
   @override
   void paint(Canvas canvas, Size size) {
     final center = Offset(size.width / 2, size.height / 2);
@@ -190,9 +233,8 @@ class _RingPainter extends CustomPainter {
     final bounds = Rect.fromCircle(center: center, radius: outerRadius);
 
     final stops = <double>[0.0, 0.55, 1.0];
-    final baseColors = active
-        ? <Color>[XV.green, XV.greenDeep, XV.green]
-        : <Color>[XV.ringOffA, XV.ringOffB, XV.ringOffA];
+    final baseColors = _baseColors;
+    final glowing = tone != ConnectRingTone.idle;
 
     SweepGradient gradientWith(double alpha) => SweepGradient(
       startAngle: start,
@@ -204,15 +246,19 @@ class _RingPainter extends CustomPainter {
     );
 
     // 1. 外发光：对应 box-shadow: 0 0 46px -8px rgba(46,230,168,.35)
-    if (active) {
+    //
+    //    失败态比绿色更重（透明度更高、晕更宽）：它对应用户必须看到的结论，
+    //    不是一种「还可以」的状态。这也是「失败标红光晕」这条要求的落点。
+    if (glowing) {
+      final failed = tone == ConnectRingTone.failed;
       canvas.drawCircle(
         center,
         ringRadius,
         Paint()
           ..style = PaintingStyle.stroke
-          ..strokeWidth = 7
-          ..shader = gradientWith(0.35).createShader(bounds)
-          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 9),
+          ..strokeWidth = failed ? 9 : 7
+          ..shader = gradientWith(failed ? 0.5 : 0.35).createShader(bounds)
+          ..maskFilter = MaskFilter.blur(BlurStyle.normal, failed ? 12 : 9),
       );
     }
 
@@ -237,7 +283,7 @@ class _RingPainter extends CustomPainter {
     canvas.drawCircle(center, innerRadius, Paint()..color = XV.ringInner);
 
     // 4. 内圆径向高光：radial-gradient(circle at 50% 42%, rgba(46,230,168,.16), transparent 62%)
-    final glowColor = active ? XV.green : XV.blue;
+    final accent = _accent;
     canvas.drawCircle(
       center,
       innerRadius,
@@ -246,7 +292,13 @@ class _RingPainter extends CustomPainter {
           center: const Alignment(0, -0.16),
           radius: 0.62,
           colors: <Color>[
-            glowColor.withValues(alpha: active ? 0.16 : 0.06),
+            accent.withValues(
+              alpha: switch (tone) {
+                ConnectRingTone.idle => 0.06,
+                ConnectRingTone.active => 0.16,
+                ConnectRingTone.failed => 0.20,
+              },
+            ),
             Colors.transparent,
           ],
         ).createShader(Rect.fromCircle(center: center, radius: innerRadius)),
@@ -259,9 +311,11 @@ class _RingPainter extends CustomPainter {
       Paint()
         ..style = PaintingStyle.stroke
         ..strokeWidth = 1
-        ..color = (active ? XV.green : XV.line).withValues(
-          alpha: active ? 0.16 : 0.9,
-        ),
+        ..color = switch (tone) {
+          ConnectRingTone.idle => XV.line.withValues(alpha: 0.9),
+          ConnectRingTone.active => XV.green.withValues(alpha: 0.16),
+          ConnectRingTone.failed => XV.red.withValues(alpha: 0.24),
+        },
     );
   }
 
@@ -317,5 +371,5 @@ class _RingPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(_RingPainter old) =>
-      old.active != active || old.sweep != sweep;
+      old.tone != tone || old.sweep != sweep;
 }

@@ -483,6 +483,72 @@ void main() {
             '生效，而用户此刻正打不开那个站点：\n$logs',
       );
     }, skip: skipReason, timeout: const Timeout(Duration(seconds: 120)));
+
+    test('反方向纠正：学成直连后，运行中的内核把该目标从拦下改成放行', () async {
+      final table = AutoRouteTable();
+      final host = AutoRouteRuleSetHost(table);
+      final refs = await host.start(updateInterval: const Duration(milliseconds: 500));
+      addTearDown(host.stop);
+
+      final target = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      addTearDown(() => target.close(force: true));
+      target.listen((HttpRequest r) async {
+        r.response.write('ok');
+        await r.response.close();
+      });
+
+      final mixedPort = await _freePort();
+      final configFile = File(
+        '${Directory.systemTemp.path}${Platform.pathSeparator}xvpn-hot-direct.json',
+      );
+      addTearDown(() {
+        if (configFile.existsSync()) configFile.deleteSync();
+      });
+      configFile.writeAsStringSync(
+        SingBoxConfigBuilder.encode(
+          _hotLiveConfig(refs!, mixedPort, unmatchedBlocked: true),
+        ),
+      );
+
+      final core = await Process.start(exe.absolute.path, <String>[
+        'run',
+        '-c',
+        configFile.path,
+      ]);
+      final logs = StringBuffer();
+      core.stdout.transform(utf8.decoder).listen(logs.write);
+      core.stderr.transform(utf8.decoder).listen(logs.write);
+      addTearDown(() => core.kill(ProcessSignal.sigkill));
+
+      await _waitUntil(
+        () async =>
+            await _proxyStatus(mixedPort, 'cn-longtail.example', target.port) ==
+            502,
+      );
+      expect(
+        await _proxyStatus(mixedPort, 'cn-longtail.example', target.port),
+        502,
+        reason: '基线应走 final=block：\n$logs',
+      );
+
+      expect(table.recordDomesticAnswer('cn-longtail.example').added, isFalse);
+      expect(table.recordDomesticAnswer('cn-longtail.example').added, isTrue);
+      expect(
+        table.match('cn-longtail.example')?.preference,
+        RoutePreference.forceDirect,
+      );
+
+      await _waitUntil(
+        () async =>
+            await _proxyStatus(mixedPort, 'cn-longtail.example', target.port) ==
+            200,
+      );
+      expect(
+        await _proxyStatus(mixedPort, 'cn-longtail.example', target.port),
+        200,
+        reason: '学成直连后内核应放行到本地目标，无需重连：\n$logs',
+      );
+    }, skip: skipReason, timeout: const Timeout(Duration(seconds: 120)));
   });
 }
 
@@ -492,7 +558,11 @@ void main() {
 /// `block` 出站，这样「命中规则集」与「没命中」有**确定性**的不同结果——命中被拦
 /// （502），没命中落到 `ip_is_private` 走直连（200）。真隧道是连不上的，靠超时去
 /// 区分会让这条用例又慢又不稳。
-Map<String, Object?> _hotLiveConfig(RouteRuleSetRefs refs, int mixedPort) {
+Map<String, Object?> _hotLiveConfig(
+  RouteRuleSetRefs refs,
+  int mixedPort, {
+  bool unmatchedBlocked = false,
+}) {
   return <String, Object?>{
     'log': <String, Object?>{'level': 'error'},
     // direct 出站必须带 domain_resolver，否则它是「空出站」，
@@ -550,7 +620,6 @@ Map<String, Object?> _hotLiveConfig(RouteRuleSetRefs refs, int mixedPort) {
           ],
           'outbound': 'blocked',
         },
-        <String, Object?>{'ip_is_private': true, 'outbound': OutboundTags.direct},
         <String, Object?>{
           'rule_set': <String>[
             AutoRouteRuleSetTags.userDirect,
@@ -558,8 +627,13 @@ Map<String, Object?> _hotLiveConfig(RouteRuleSetRefs refs, int mixedPort) {
           ],
           'outbound': OutboundTags.direct,
         },
+        if (!unmatchedBlocked)
+          <String, Object?>{
+            'ip_is_private': true,
+            'outbound': OutboundTags.direct,
+          },
       ],
-      'final': OutboundTags.direct,
+      'final': unmatchedBlocked ? 'blocked' : OutboundTags.direct,
     },
   };
 }

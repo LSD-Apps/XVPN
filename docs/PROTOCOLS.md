@@ -18,7 +18,11 @@ lib/protocols/
 ├── openvpn_conf.dart        OpenVPN .ovpn 解析器 + OpenVpnProfile
 ├── openvpn_adapter.dart     OpenVPN 适配器
 ├── hysteria2_conf.dart      Hysteria2 解析器（链接 / YAML / JSON）+ Hysteria2Profile
-└── hysteria2_adapter.dart   Hysteria2 适配器
+├── hysteria2_adapter.dart   Hysteria2 适配器
+├── shadowsocks_conf.dart    Shadowsocks 解析器（ss:// / JSON）+ ShadowsocksProfile
+├── shadowsocks_adapter.dart Shadowsocks 适配器
+├── v2ray_conf.dart          VMess / VLESS / Trojan 共用解析（分享链接 / JSON）
+└── v2ray_adapter.dart       三个薄适配器，传输层与 TLS 只实现一次
 ```
 
 设计要点：
@@ -60,6 +64,10 @@ lib/protocols/
 | WireGuard | `wg-quick` 的 `.conf` | `endpoints[].type = wireguard` | ✅ 已用真实服务器验证 |
 | OpenVPN | 客户端 `.ovpn`（含内联证书） | `endpoints[].type = openvpn-client` | ✅ 已通过官方 `sing-box check` |
 | Hysteria2 | `.yaml` / `.yml`（分享链接与 sing-box 出站 JSON 也能解析） | `outbounds[].type = hysteria2` | ✅ 已通过官方 `sing-box check`（两种入站） |
+| Shadowsocks | `ss://` 分享链接（SIP002 两种编码 + 旧式整串 base64）与 sing-box 出站 JSON | `outbounds[].type = shadowsocks` | ✅ 已通过官方 `sing-box check`（两种入站） |
+| VMess | `vmess://`（base64 JSON）与 sing-box 出站 JSON | `outbounds[].type = vmess` | ✅ 已通过官方 `sing-box check`（两种入站） |
+| VLESS | `vless://uuid@host:port?params` 与 sing-box 出站 JSON | `outbounds[].type = vless` | ✅ 已通过官方 `sing-box check`（两种入站） |
+| Trojan | `trojan://password@host:port?params` 与 sing-box 出站 JSON | `outbounds[].type = trojan` | ✅ 已通过官方 `sing-box check`（两种入站） |
 
 ### OpenVPN 实现中踩到的坑（供后续参考）
 
@@ -246,44 +254,63 @@ UDP 链路上大量探测直接失败、成功的那部分延迟也高一个量�
 
 ## 四、后续协议
 
-### 4.1 Shadowsocks（优先级最高，成本最低）
+### 4.1 Shadowsocks（已实现）
 
-* 入口格式：`ss://` 分享链接（两种编码：`base64(method:password)@host:port`
-  与新式的 URL-safe base64 全串）、以及 SIP002 的 `ss://.../?plugin=`。
-* 内核映射：`outbounds[] = { type: "shadowsocks", method, password, server,
-  server_port, plugin, plugin_opts }`。
-* 难点：分享链接有两种编码变体；带插件的（`obfs`、`v2ray-plugin`）需要把
-  `plugin` 参数翻译成内核字段。
+入口为 `ss://` 分享链接与 sing-box 出站 JSON，映射到 `outbounds[].type = shadowsocks`。
+实现要点：
 
-### 4.2 VMess / VLESS / Trojan（三者可一起做）
+* SIP002 的 userinfo 既可能是百分号编码的 `method:password`，也可能是
+  URL-safe base64；还有旧客户端把整段 `method:password@host:port` 做成一坨
+  base64。三种都要认，认错一种用户只会看到「连不上」。
+* 加密方法必须是内核认识的小写名字；不认识的在解析阶段拒绝，而不是让内核 FATAL。
+* `plugin` query 拆成内核的 `plugin` + `plugin_opts`。随包内核认识
+  `obfs-local` 与 `v2ray-plugin`；其它插件会 warn。
+* 不做 Clash YAML 作为单节点入口：本项目不引入 `yaml` 包。多节点 Clash
+  `proxies:` 由订阅解析器用缩进扫描处理。
 
-* VMess：`vmess://base64(JSON)`，JSON 里含 `add`/`port`/`id`/`aid`/`net`/
-  `tls`/`host`/`path`/`sni`。**注意 `aid` 有的是数字有的是字符串**，
-  各家客户端导出的字段类型不统一，需要容错解析。
-* VLESS / Trojan：`vless://uuid@host:port?params#name`、
-  `trojan://password@host:port?params#name`，参数在 query 里
-  （`type`/`security`/`sni`/`flow`/`path`/`host`）。
-* 内核映射：上表三个都对应 `outbounds[]` 的对应类型，加 `tls` 与
-  `transport`（ws / grpc / httpupgrade）子对象。
-* 难点：传输层与 TLS 参数组合较多，建议先用真实节点做参数穷举测试。
+### 4.2 VMess / VLESS / Trojan（已实现）
 
-### 4.3 订阅链接（影响面最大的一项）
+三者共用 `v2ray_conf.dart`：传输层（tcp / ws / grpc / http / httpupgrade / quic）
+与 TLS（none / tls / reality）只实现一次，适配器只声明 `kind`。
 
-现实中绝大多数用户拿到的是**一条订阅地址**，而不是配置文件。这需要：
+* VMess：`vmess://base64(JSON)`。`aid` 既接受数字也接受字符串。
+* VLESS / Trojan：query 里读 `type` / `security` / `sni` / `flow` / `path` / `host`。
+  Trojan 未声明 `security` 时默认启用 TLS。Reality 缺公钥在解析阶段拒绝。
+* VLESS 出站带 `packet_encoding: xudp`；`flow` 只允许空或 `xtls-rprx-vision`。
+* 不做 Clash YAML：与 Shadowsocks 同一条约束；多节点走订阅入口。
+* 三个协议都不独占文件扩展名（`.json` / `.txt` 已归 Shadowsocks 约定），按内容识别。
 
-1. 新增「订阅」这一配置来源（与「文件导入」并列，而不是塞进协议适配器）；
-2. 拉取内容后按 `subscription-userinfo` 响应头解析流量用量；
-3. 自动识别订阅内容格式（Base64 的分享链接列表 / Clash YAML / sing-box JSON）；
-4. 支持定时更新与多节点选择——此时 `VpnProfile` 需要从「单节点」扩展为
-   「节点集合 + 当前选中项」。
+### 4.3 订阅链接（已实现）
 
-建议在完成 4.1～4.2 中的任意两个之后再动这一项，因为它会引入配置模型的变化。
+现实中不少用户拿到的是**一条订阅地址**，而不是单份配置。本项目把订阅当成
+**配置来源**，与「选文件 / 手填」并列：
+
+1. 用户粘贴自己已有的 `http(s)` 地址，或导入多条分享链接 / Clash `proxies:` /
+   sing-box `outbounds[]`；
+2. 拉取时读取 `subscription-userinfo` 响应头（有则记下，没有也不失败）；
+3. 每种正文拆成多条已支持协议的节点，写入配置列表；认不出的记进「跳过」；
+4. 有 URL 的可以刷新。节点地区：服务器是 IP 时用 `cn-ip.bin` 判定，主机名在
+   连接前保持「未判定」。若节点落在国内网段，连接页给一句说明——智能分流
+   仍把境外目标送进这条隧道。
+
+**不做的：** 不内置任何订阅 URL，不提供节点，不引入 `yaml` 包（Clash 列表用
+缩进扫描）。定时后台刷新也不做：刷新是用户点的，避免在用户不知情时打出站请求。
+
+**同一个节点出现在两份来源里仍是同一条配置。** 配置的身份是「协议 + 正文」，
+而归属是一份**集合**：先导入的文件与后粘贴的订阅若含同一个节点，它同时属于
+两者。记成单一归属会让另一份来源的刷新与删除算错——刷新一份订阅时把归属抢走，
+删掉某个共享节点时看不见另一份来源还在用它。
+
+**来源的身份**：有 URL 的按 URL（换个地址就是另一份来源，旧的那份不会被动）；
+没有 URL 的按「名字 + 首个节点」——用同一个名字再导入同一份内容是替换，内容
+变了则当成另一份来源并存。这条规则保守在**宁可多出一条来源，也不误删你的节点**。
 
 ### 4.4 Clash / sing-box 原生配置
 
-* Clash YAML：需要引入 YAML 解析（`yaml` 包），并把 `proxies` 映射到内核出站。
-* sing-box JSON：可以直接透传 `outbounds`，但要剥离与本 App 冲突的
-  `route` / `dns` 段（分流策略必须由本 App 掌控）。
+* Clash YAML：订阅入口解析 `proxies:` 列表，映射到已支持协议的 sing-box 出站
+  JSON。复杂 YAML（锚点、merge、SSR 等）跳过并说明。单节点文件仍不走 YAML。
+* sing-box JSON：多出站整份配置按 `outbounds[]` 拆开；与本 App 冲突的
+  `route` / `dns` 段直接丢弃——分流策略仍由本 App 掌控。
 
 ## 五、暂不支持的方向
 

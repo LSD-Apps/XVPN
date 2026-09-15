@@ -7,13 +7,18 @@ import 'package:flutter/foundation.dart';
 
 import 'core/app_presets.dart';
 import 'core/auto_route.dart';
+import 'core/cn_ip_index.dart';
+import 'core/cn_ip_sync.dart';
 import 'core/core_log.dart';
 import 'core/dns_monitor.dart';
 import 'core/domain_check.dart';
 import 'core/mtu_probe.dart';
+import 'core/node_region.dart';
 import 'core/record_buffer.dart';
+import 'core/route_pack.dart';
 import 'core/rulesets.dart';
 import 'core/secret_protector.dart';
+import 'core/subscription_fetch.dart';
 import 'core/singbox_runner.dart';
 import 'core/startup_self_check.dart';
 import 'core/store.dart';
@@ -25,6 +30,7 @@ import 'format.dart';
 import 'models.dart';
 import 'protocols/parsed_profile.dart';
 import 'protocols/protocol_adapter.dart';
+import 'protocols/subscription.dart';
 
 /// 全局状态。界面只依赖它，不直接接触内核。
 ///
@@ -40,6 +46,7 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
     this.store,
     SecretProtector? protector,
     this.ruleSetFetcher,
+    this.subscriptionFetcher,
   }) : protector = protector ?? SecretProtector.forPlatform() {
     // 恢复必须在构造里同步做完：界面第一次 build 时就应该拿到已保存的配置，
     // 否则会先闪一下「导入配置」的空状态。
@@ -57,6 +64,10 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
   /// 缺省走 [RuleSetStore.fetch]：真实实现只此一条，注入点存在的意义是让
   /// 「新增一个自定义规则集」这条路径能被自动化验证，而不必真的联网。
   final Future<List<int>?> Function(String url)? ruleSetFetcher;
+
+  /// 订阅 URL 的拉取。缺省走 [fetchSubscription]；测试注入假实现，不碰网络。
+  final Future<SubscriptionFetchResult> Function(String url)?
+      subscriptionFetcher;
 
   /// 账号密码的落盘保护。见 [SecretProtector]。
   ///
@@ -77,6 +88,13 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
   /// 记的是「意图」而不是「事实」：重开应用时据此恢复到用户离开时的样子，
   /// 而不是每次都要手动点一次圆环。
   bool _wantConnected = false;
+
+  /// 是否已在本机确认过法律与使用声明。
+  ///
+  /// 全新安装默认未确认，启动后挡住界面直到用户点「我已了解」。
+  /// 没有持久化（测试 / 演示）时视为已确认，否则每个 widget 测试都会被挡。
+  /// 升级上来的旧存档没有这个字段：视为已确认，避免突然挡住老用户。
+  bool _legalNoticeAcknowledged = true;
 
   /// 当前在飞的连接尝试的取消令牌。null 表示没有用户发起的尝试在飞
   /// （未连接、已连接，或正在自动重连）。
@@ -111,6 +129,7 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
   static const searchResultLimit = 300;
 
   final List<VpnProfile> _profiles = <VpnProfile>[];
+  final List<ProfileSubscription> _subscriptions = <ProfileSubscription>[];
 
   /// 分流记录。环形缓冲，最新的在索引 0。
   ///
@@ -174,6 +193,25 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
   DateTime? _connectedSince;
   DateTime _ruleSetUpdatedAt = DateTime(2026, 2, 14);
 
+  /// 上一次连接尝试失败的原因，**已经是一句用户能读懂的话**。
+  ///
+  /// 与 [_lastError] **刻意分开**，因为它们要活的时间完全不同：[_lastError] 是
+  /// 一次性的通知，界面用 SnackBar 呈现，四秒后消失并当场清空。若圆环的失败态
+  /// 也挂在它上面，用户看到的就只是圆环从「连接中」直接退回「未连接」——
+  /// 一次失败被说成了「从来没试过」，重试也没有落点。
+  ///
+  /// 这一份留到下一次尝试开始、连上、用户主动断开或清除为止。**不落盘**：
+  /// 上一次运行留下来的失败原因对现在没有任何意义，重启后应当回到中性态。
+  String? _connectFailure;
+
+  /// 失败原因的**技术原文**（内核或平台抛出来的那一句），只喂给「详情」弹窗。
+  ///
+  /// 与 [_connectFailure] 分开，是因为它们给两种人看：主视线上的那一句给只想
+  /// 「知道下一步点什么」的用户，这里这一句给愿意翻日志、要把问题报出来的人。
+  /// 原文一个字都不删——排查时它是唯一的事实来源，界面上少显示它，不构成把它
+  /// 丢掉的理由。没有技术原文时（例如「还没有导入配置」）为 null。
+  String? _connectFailureDetail;
+
   /// 规则集（内置 + 自定义）。默认是两份出厂规则集，均启用。
   ///
   /// 恢复时若存档里有 `ruleSets` 键就整份采用——「删掉一个内置规则集」因此
@@ -220,7 +258,37 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
   VpnCore get core => _core;
   VpnStatus get status => _status;
   AppSettings get settings => _settings;
+
+  /// 本机是否已确认法律与使用声明。未确认时界面盖一层说明，不能先连上再读。
+  bool get legalNoticeAcknowledged => _legalNoticeAcknowledged;
+
+  /// 用户确认已了解「自备合法配置、用途自负」。只记在本机，可在设置页再读全文。
+  void acknowledgeLegalNotice() {
+    if (_legalNoticeAcknowledged) return;
+    _legalNoticeAcknowledged = true;
+    notifyListeners();
+    _persist();
+  }
+
   List<VpnProfile> get profiles => List<VpnProfile>.unmodifiable(_profiles);
+
+  List<ProfileSubscription> get subscriptions =>
+      List<ProfileSubscription>.unmodifiable(_subscriptions);
+
+  ProfileSubscription? subscriptionById(String? id) {
+    if (id == null) return null;
+    for (final item in _subscriptions) {
+      if (item.id == id) return item;
+    }
+    return null;
+  }
+
+  /// 当前节点服务器是否落在国内网段。主机名在连接前无法判定。
+  AddressRegion get activeNodeRegion {
+    final profile = activeProfile;
+    if (profile == null) return AddressRegion.unknown;
+    return classifyNodeRegion(_core.cnIpIndex, profile.parsed);
+  }
 
   /// 分流记录视图。
   ///
@@ -252,10 +320,30 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
   List<double> get downHistory => List<double>.unmodifiable(_downHistory);
   List<double> get upHistory => List<double>.unmodifiable(_upHistory);
   String? get lastError => _lastError;
+
+  /// 上一次连接尝试失败的原因（一句人话）；没有失败过时为 null。
+  /// 见 [_connectFailure]。
+  String? get connectFailure => _connectFailure;
+
+  /// 同一个失败的技术原文，供「详情」弹窗展示；没有则为 null。
+  /// 见 [_connectFailureDetail]。
+  String? get connectFailureDetail => _connectFailureDetail;
+
+  /// 是否应当把圆环画成失败态：失败过、而且现在既没连上也没在重试。
+  ///
+  /// 「没在重试」这一条不能省：用户点了重试之后圆环必须立刻回到「连接中」，
+  /// 否则他按下的动作在界面上没有任何回应，只会以为按钮坏了。
+  bool get connectFailed =>
+      _connectFailure != null && !isConnected && !isConnecting;
+
   DateTime get ruleSetUpdatedAt => _ruleSetUpdatedAt;
 
   /// 规则集视图。界面只读它，改动一律走这里的方法。
   List<RuleSetEntry> get ruleSets => List<RuleSetEntry>.unmodifiable(_ruleSets);
+
+  /// `cn-ip.bin` 与当前 geoip `.srs` 是否同源。未检查过时为 null。
+  CnIpSyncReport? get cnIpSync => _cnIpSync;
+  CnIpSyncReport? _cnIpSync;
   double get downBps => _downBps;
   double get upBps => _upBps;
 
@@ -483,6 +571,8 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
     required String fileName,
     String? username,
     String? password,
+    String? subscriptionId,
+    bool autoConnect = true,
   }) {
     final parsed = VpnProtocolFactory.parse(
       text,
@@ -492,9 +582,21 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
     );
     // 以「协议 + 文本」作为身份：同一份配置重复导入会覆盖而不是新增。
     final id = stableHash('${parsed.protocol.name}|$text');
-    final profile = VpnProfile(id: id, name: fileName, parsed: parsed);
-
     final existing = _profiles.indexWhere((p) => p.id == id);
+    // 归属是累加的：这份节点既然出现在来源 A 又被来源 B 导入，那它就同时属于
+    // 两者。不清空原有归属，否则后导入的那一份会把节点从先前的来源里「抢走」，
+    // 而那份来源的刷新与删除仍以为自己管着它。
+    final subs = <String>{
+      if (existing >= 0) ..._profiles[existing].subscriptionIds,
+      ?subscriptionId,
+    };
+    final profile = VpnProfile(
+      id: id,
+      name: fileName,
+      parsed: parsed,
+      subscriptionIds: subs,
+    );
+
     if (existing >= 0) {
       _profiles[existing] = profile;
     } else {
@@ -514,10 +616,176 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
       return ImportOutcome.needsCredentials;
     }
 
-    if (_settings.autoConnectOnImport && _status == VpnStatus.disconnected) {
+    if (autoConnect &&
+        _settings.autoConnectOnImport &&
+        _status == VpnStatus.disconnected) {
       unawaited(connect());
     }
     return ImportOutcome.imported;
+  }
+
+  /// 导入用户自备的多节点清单。不会自动连接——有多条时不该替用户挑。
+  SubscriptionImportResult importSubscription({
+    required SubscriptionDocument document,
+    required String name,
+    String? url,
+    String? replaceId,
+  }) {
+    final ready = materialize(document);
+    if (ready.nodes.isEmpty) {
+      throw VpnConfigException(
+        ready.skipped.isEmpty
+            ? '这份内容里没有可导入的节点'
+            : '没有可导入的节点：${ready.skipped.join('；')}',
+      );
+    }
+    final id = replaceId ??
+        ((url != null && url.isNotEmpty)
+            ? stableHash('sub|$url')
+            : stableHash('sub|$name|${ready.nodes.first.text}'));
+    final previousActive = _activeProfileId;
+    _detachSubscription(id);
+    _subscriptions.removeWhere((ProfileSubscription s) => s.id == id);
+    _subscriptions.add(
+      ProfileSubscription(
+        id: id,
+        name: name,
+        url: url ?? '',
+        fetchedAt: DateTime.now(),
+        userinfo: ready.userinfo,
+      ),
+    );
+    String? firstId;
+    for (final node in ready.nodes) {
+      importConf(
+        text: node.text,
+        fileName: node.name,
+        subscriptionId: id,
+        autoConnect: false,
+      );
+      firstId ??= _activeProfileId;
+    }
+    if (previousActive != null &&
+        _profiles.any((VpnProfile p) => p.id == previousActive)) {
+      _activeProfileId = previousActive;
+    } else {
+      _activeProfileId = firstId;
+    }
+    notifyListeners();
+    _persist();
+    return SubscriptionImportResult(
+      imported: ready.nodes.length,
+      skipped: ready.skipped,
+    );
+  }
+
+  Future<SubscriptionImportResult> importSubscriptionFromUrl(
+    String url, {
+    String? name,
+  }) async {
+    final fetch = subscriptionFetcher ?? fetchSubscription;
+    final result = await fetch(url);
+    final raw = parseSubscriptionBody(
+      result.body,
+      userinfo: result.userinfo,
+      fallbackName: name ?? '节点',
+    );
+    if (raw == null || raw.nodes.isEmpty) {
+      throw VpnConfigException(
+        '订阅正文不是分享链接列表、sing-box JSON 或多条 Clash proxies',
+      );
+    }
+    final uri = Uri.tryParse(url.trim());
+    return importSubscription(
+      document: raw,
+      name: name ?? uri?.host ?? '订阅',
+      url: url.trim(),
+    );
+  }
+
+  Future<SubscriptionImportResult> refreshSubscription(String id) async {
+    final existing = subscriptionById(id);
+    if (existing == null || existing.url.isEmpty) {
+      throw VpnConfigException('这份导入没有可刷新的地址，请重新粘贴订阅 URL');
+    }
+    final fetch = subscriptionFetcher ?? fetchSubscription;
+    final result = await fetch(existing.url);
+    final raw = parseSubscriptionBody(
+      result.body,
+      userinfo: result.userinfo,
+      fallbackName: existing.name,
+    );
+    if (raw == null || raw.nodes.isEmpty) {
+      throw VpnConfigException('刷新后的正文里没有可导入的节点');
+    }
+    return importSubscription(
+      document: raw,
+      name: existing.name,
+      url: existing.url,
+      replaceId: id,
+    );
+  }
+
+  /// 把某份订阅的归属从配置上摘掉——**只**摘这一份。
+  ///
+  /// 只属于它的配置一并删除（那是刷新前的旧节点）；同时属于别处的配置必须留下，
+  /// 否则刷新一份来源会把另一份来源的节点也删掉，而用户看到的是一份完好的列表
+  /// 突然少了几条。
+  void _detachSubscription(String id) {
+    final leftover = <VpnProfile>[];
+    for (final profile in _profiles) {
+      if (!profile.subscriptionIds.contains(id)) {
+        leftover.add(profile);
+        continue;
+      }
+      final rest = <String>{...profile.subscriptionIds}..remove(id);
+      if (rest.isEmpty) {
+        _profileTexts.remove(profile.id);
+        _profileCredentials.remove(profile.id);
+        continue;
+      }
+      leftover.add(
+        VpnProfile(
+          id: profile.id,
+          name: profile.name,
+          parsed: profile.parsed,
+          subscriptionIds: rest,
+        ),
+      );
+    }
+    _profiles
+      ..clear()
+      ..addAll(leftover);
+  }
+
+  /// 这份配置所属的、带 URL 因而**可以刷新**的订阅来源。
+  ///
+  /// 一份配置可能同时属于多份来源，刷新其中任意一份都会把它更新到最新，
+  /// 因此取第一个即可：按钮只做一件事，不摆出「刷新哪一份」的选择题。
+  ProfileSubscription? refreshableSubscriptionOf(VpnProfile profile) {
+    for (final id in profile.subscriptionIds) {
+      final sub = subscriptionById(id);
+      if (sub != null && sub.url.isNotEmpty) return sub;
+    }
+    return null;
+  }
+
+  /// 把一份规则包写入自动纠正表，变成手工规则。
+  int importRoutePackText(String text) {
+    final table = _core.autoRoute;
+    if (table == null) {
+      throw VpnConfigException('当前内核不支持域名分流规则');
+    }
+    final added = importRoutePack(table, parseRoutePack(text));
+    notifyListeners();
+    _persist();
+    return added;
+  }
+
+  String exportRoutePackText() {
+    final table = _core.autoRoute;
+    if (table == null) return '';
+    return exportRoutePack(table).encode();
   }
 
   /// 这份配置是否「需要账号密码但还没填」。
@@ -568,7 +836,12 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
     final index = _profiles.indexWhere((VpnProfile p) => p.id == targetId);
     if (index < 0) return;
 
-    _profiles[index] = VpnProfile(id: targetId, name: name, parsed: parsed);
+    _profiles[index] = VpnProfile(
+      id: targetId,
+      name: name,
+      parsed: parsed,
+      subscriptionIds: _profiles[index].subscriptionIds,
+    );
     _profileCredentials[targetId] = (username: username, password: password);
     _lastError = null;
     notifyListeners();
@@ -595,9 +868,17 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
   void removeProfile(String id) {
     final wasActive = _activeProfileId == id;
     final wasRunning = _status != VpnStatus.disconnected;
+    final subIds = _profileById(id)?.subscriptionIds ?? const <String>{};
     _profiles.removeWhere((p) => p.id == id);
     _profileTexts.remove(id);
     _profileCredentials.remove(id);
+    // 来源记录只在**没有任何配置**再用它时删除：删掉一份共享的节点不等于
+    // 删掉整份订阅，否则另一份来源下还挂着的节点会失去刷新入口。
+    for (final subId in subIds) {
+      if (!_profiles.any((VpnProfile p) => p.subscriptionIds.contains(subId))) {
+        _subscriptions.removeWhere((ProfileSubscription s) => s.id == subId);
+      }
+    }
     if (wasActive) {
       _activeProfileId = _profiles.isEmpty ? null : _profiles.first.id;
       if (_profiles.isEmpty) {
@@ -618,6 +899,7 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
     final profile = activeProfile;
     if (profile == null) {
       _lastError = '还没有导入任何配置';
+      _failConnect(_lastError!);
       notifyListeners();
       return;
     }
@@ -625,8 +907,12 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
     //
     // 真让它连下去，内核会照常启动、界面显示「已连接」，然后所有网页都打不开，
     // 内核日志里只有一句握手失败——用户完全无从判断问题出在一行没填的输入框上。
+    //
+    // 这一句是**指令**而不是报错，因此原样显示在失败行上：它说的正是用户下一步
+    // 要做的事，而其余的技术细节在这个处境里根本不存在。
     if (_needsCredentials(profile.id)) {
       _lastError = '「${profile.name}」需要账号密码，请先在配置页填写后再连接';
+      _failConnect(_lastError!);
       notifyListeners();
       return;
     }
@@ -637,6 +923,8 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
     final attempt = ConnectAttempt(++_connectGeneration);
     _connectAttempt = attempt;
     _lastError = null;
+    // 上一轮的失败结论到此为止：新一轮正在进行，圆环该回到「连接中」。
+    _clearConnectFailure();
     // 先记意图再拨号：中途失败时下次启动会重试，符合用户「我要连着」的预期。
     _wantConnected = true;
     _persist();
@@ -676,6 +964,8 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
     _connectAttempt?.cancel();
     _connectAttempt = null;
     _wantConnected = false;
+    // 用户主动断开：上一次的失败结论随之作废，圆环回到中性态。
+    _clearConnectFailure();
     _persist();
     await _core.disconnect();
   }
@@ -703,6 +993,8 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
     // 还原，那是必须让用户知道的事实——因此先清掉本轮留下的提示，随后的
     // 清理仍可写入新的错误。
     _lastError = null;
+    // 失败结论一并撤掉：用户已经表态不要连了，圆环不该继续红着。
+    _clearConnectFailure();
     _persist();
     // 清理动作与 [disconnect] 完全共用（内核、系统代理、PID 文件只有一套
     // 收尾）；区别只在语义：这里先作废令牌，让在飞的那一轮自己收手。
@@ -926,12 +1218,16 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
   void _restore() {
     final data = store?.load();
     if (data == null || data.isEmpty) {
+      // 没有持久化：测试与演示不挡界面。有目录却没有存档：全新安装，要确认。
+      _legalNoticeAcknowledged = store == null;
       // 首次启动没有存档，但**默认启用的预置仍要安装**：它不是存档数据，
       // 而是随代码分发的默认行为。忘了这一步的表现是「开关显示已启用、
       // 路由里却什么都没有」，而且只有全新安装才会遇到。
       _syncAppPresets();
       return;
     }
+    // 键缺失 = 本字段出现之前的存档，当作已经确认过。
+    _legalNoticeAcknowledged = data['legalNoticeAcknowledged'] as bool? ?? true;
 
     final savedProfiles = data['profiles'];
     if (savedProfiles is List) {
@@ -953,7 +1249,14 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
             password: password,
           );
           final id = stableHash('${parsed.protocol.name}|$text');
-          _profiles.add(VpnProfile(id: id, name: name, parsed: parsed));
+          _profiles.add(
+            VpnProfile(
+              id: id,
+              name: name,
+              parsed: parsed,
+              subscriptionIds: _readSubscriptionIds(item),
+            ),
+          );
           _profileTexts[id] = text;
           _profileCredentials[id] = (username: username, password: password);
         } on Object {
@@ -968,6 +1271,25 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
       _activeProfileId = activeId;
     } else if (_profiles.isNotEmpty) {
       _activeProfileId = _profiles.first.id;
+    }
+
+    final savedSubs = data['subscriptions'];
+    if (savedSubs is List) {
+      for (final item in savedSubs) {
+        if (item is! Map) continue;
+        final id = item['id'];
+        final name = item['name'];
+        if (id is! String || name is! String) continue;
+        _subscriptions.add(
+          ProfileSubscription(
+            id: id,
+            name: name,
+            url: item['url'] as String? ?? '',
+            fetchedAt: DateTime.tryParse(item['fetchedAt'] as String? ?? ''),
+            userinfo: item['userinfo'] as String?,
+          ),
+        );
+      }
     }
 
     final settings = data['settings'];
@@ -1039,7 +1361,18 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
   Future<void> refreshRuleSetSizes() async {
     final Directory? dir = await _core.ruleSetUpdateDir();
     if (dir == null || _disposed) return;
-    if (RuleSetStore.refreshSizes(_ruleSets, targetDir: dir)) {
+    var changed = RuleSetStore.refreshSizes(_ruleSets, targetDir: dir);
+    final sync = await checkCnIpSync(
+      ruleSetDir: dir,
+      index: _core.cnIpIndex,
+    );
+    if (_cnIpSync?.ok != sync.ok || _cnIpSync?.detail != sync.detail) {
+      _cnIpSync = sync;
+      changed = true;
+    } else {
+      _cnIpSync = sync;
+    }
+    if (changed && !_disposed) {
       notifyListeners();
       _persist();
     }
@@ -1149,6 +1482,25 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
     return (username: null, password: null);
   }
 
+  /// 恢复一份配置的订阅归属。
+  ///
+  /// 同时认早期的单值写法 `subscriptionId`：订阅功能上线前的存档（以及开发
+  /// 中途留下的存档）因此不需要用户重新导入。认不出来时返回空集合——那只是
+  /// 少一个「刷新」按钮，不该让这份配置恢复失败。
+  Set<String> _readSubscriptionIds(Object? item) {
+    if (item is! Map) return const <String>{};
+    final list = item['subscriptionIds'];
+    if (list is List) {
+      return <String>{
+        for (final value in list)
+          if (value is String && value.isNotEmpty) value,
+      };
+    }
+    final single = item['subscriptionId'];
+    if (single is String && single.isNotEmpty) return <String>{single};
+    return const <String>{};
+  }
+
   /// 落盘。任何一处失败都不影响界面，只是这次不持久化。
   void _persist() {
     final target = store;
@@ -1165,11 +1517,25 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
               <String, Object?>{
                 'name': p.name,
                 'text': text,
+                // 排序后落盘：集合的迭代顺序不该让存档每次都不一样。
+                if (p.subscriptionIds.isNotEmpty)
+                  'subscriptionIds': p.subscriptionIds.toList()..sort(),
                 ..._credentialFields(p.id),
               },
         ],
+        'subscriptions': <Object?>[
+          for (final ProfileSubscription s in _subscriptions)
+            <String, Object?>{
+              'id': s.id,
+              'name': s.name,
+              if (s.url.isNotEmpty) 'url': s.url,
+              if (s.fetchedAt != null) 'fetchedAt': s.fetchedAt!.toIso8601String(),
+              if (s.userinfo != null) 'userinfo': s.userinfo,
+            },
+        ],
         'activeProfileId': _activeProfileId,
         'wantConnected': _wantConnected,
+        'legalNoticeAcknowledged': _legalNoticeAcknowledged,
         'settings': <String, Object?>{
           'autoConnectOnImport': _settings.autoConnectOnImport,
           'splitMode': _settings.splitMode.index,
@@ -1214,6 +1580,33 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
     if (_lastError == null) return;
     _lastError = null;
     notifyListeners();
+  }
+
+  /// 撤掉圆环上的失败态。
+  ///
+  /// 只在用户明确表示「知道了」时调用。断开与重新连接各自清得掉它，因此这不是
+  /// 唯一的出口——它的用处是那些**看了一眼仍不想重连**的场景（例如刚发现配置
+  /// 里服务器地址写错了），用户不该被迫连一次才能把红色去掉。
+  void dismissConnectFailure() {
+    if (_connectFailure == null) return;
+    _clearConnectFailure();
+    notifyListeners();
+  }
+
+  /// 记一次连接失败。两个字段必须成对动。
+  ///
+  /// 单独一个入口是为了不再四处手写「只清了一个、忘了另一个」——那种遗漏的表现
+  /// 是红色圆环已经撤掉，点「详情」却还能看到上一轮的技术原文。
+  ///
+  /// [summary] 是给用户看的那句话；[detail] 是技术原文，没有就不传。
+  void _failConnect(String summary, {String? detail}) {
+    _connectFailure = summary;
+    _connectFailureDetail = detail;
+  }
+
+  void _clearConnectFailure() {
+    _connectFailure = null;
+    _connectFailureDetail = null;
   }
 
   /// 由界面层主动上报错误（例如启动参数里的配置文件读取失败）。
@@ -1529,6 +1922,8 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
     switch (status) {
       case VpnStatus.connected:
         _connectedSince = DateTime.now();
+        // 连上了：上一次的失败结论已经过期，圆环必须回到「已连接」。
+        _clearConnectFailure();
         _startTicker();
         // 首次连接会把出厂规则集解包到可写目录（`RuleSetStore.ensure` 在内核
         // 解析运行路径时执行）。解包之后才量得到大小，因此这里再补一次——否则
@@ -1783,6 +2178,22 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
   @override
   void onError(String message) {
     _lastError = message;
+    // 只有在**连接过程中**报的错才升级成「圆环失败态」。
+    //
+    // 这个条件不能放宽成「没连上就算」：导入失败、规则库更新失败、系统代理没能
+    // 还原都会走到 [reportError] 或这里，而它们与「刚才那次连接」毫无关系——
+    // 让它们把圆环染红，等于用一个不相干的错误告诉用户「你的连接失败了」。
+    //
+    // 健康自愈那类通知也正因此被排除在外：它们发生在已经连上的隧道上，
+    // 那时状态是 connected，不是 connecting。
+    //
+    // 上主视线的是 [connectFailureSummary] 这一句人话，不是 [message] 的原文：
+    // 内核抛出来的东西常常是 `parse rule-set: open /data/user/0/…: no such file
+    // or directory`，把它整段挂在连接页上，用户看不懂、也没有能做的事，唯一
+    // 的实际效果是让人以为自己弄坏了什么。原文留在「详情」里，一步就能看到。
+    if (_status == VpnStatus.connecting) {
+      _failConnect(connectFailureSummary, detail: message);
+    }
     notifyListeners();
   }
 
@@ -1852,6 +2263,18 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
     super.dispose();
   }
 }
+
+/// 连接失败时挂在圆环旁边的那一句。
+///
+/// 刻意**不**把内核的原文搬上主视线：`parse rule-set: open /data/user/0/…: no
+/// such file or directory` 这类句子，用户看不懂，也没有能做的事——把它整段显示
+/// 出来，实际效果只是让人以为自己弄坏了什么。原文一步之遥（「详情」），愿意看
+/// 的人照样看得到。
+///
+/// 这里也刻意不做「智能分类」。内核的报错有几十种，凭字符串猜出来的结论一旦猜
+/// 错，就会把用户引到错误的方向；「没能连上服务器」是唯一一句对所有这些情况都
+/// 成立、且不需要用户懂技术的话。
+const String connectFailureSummary = '没能连上服务器';
 
 /// 分流记录页的筛选条件。
 enum RouteFilter { all, proxy, direct }

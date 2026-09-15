@@ -24,8 +24,8 @@ const String _template = '''
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>隐私政策 · XVPN Privacy Policy</title>
-<meta name="description" content="XVPN 隐私政策：不收集任何个人数据。Privacy policy for XVPN — collects no personal data.">
+<title>隐私政策 · 幽门 Privacy Policy</title>
+<meta name="description" content="幽门（XVPN）隐私政策：不收集任何个人数据。Privacy policy for XVPN — collects no personal data.">
 <style>
   :root {
     color-scheme: light dark;
@@ -74,12 +74,13 @@ const String _template = '''
 <main>
 __BODY__
 <footer>
-  <p>本页面是 <a href="https://gitcode.com/start-ai/XVPN">XVPN</a> 的隐私政策，
+  <p>本页面是 <a href="https://www.lusida.net">幽门</a>（仓库名
+  <a href="https://gitcode.com/start-ai/XVPN">XVPN</a>）的隐私政策，
   同时用于满足 Google Play 与 App Store 的商店要求。
   源文件为仓库根目录的 <code>PRIVACY.md</code>，随源码一起版本管理，
   因此每一次修改都有公开记录可查。</p>
-  <p>This page is the privacy policy for XVPN and serves the Google Play and
-  App Store requirements. Source: <code>PRIVACY.md</code>.</p>
+  <p>This page is the privacy policy for XVPN (幽门) and serves the Google Play
+  and App Store requirements. Source: <code>PRIVACY.md</code>.</p>
 </footer>
 </main>
 </body>

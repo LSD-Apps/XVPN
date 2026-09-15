@@ -158,6 +158,11 @@ void main() {
       expect(state.settings.autoConnectOnImport, isFalse);
       expect(state.settings.splitMode, SplitMode.globalProxy);
       expect(state.settings.logSplits, isFalse);
+      expect(
+        state.legalNoticeAcknowledged,
+        isTrue,
+        reason: '旧存档没有该字段，升级上来不应突然挡住老用户',
+      );
     });
 
     test('存档损坏时退回空状态，而不是崩溃', () {
@@ -184,6 +189,31 @@ void main() {
       addTearDown(state.dispose);
       expect(state.profiles, hasLength(1));
       expect(state.profiles.single.name, 'wg.conf');
+    });
+  });
+
+  group('法律声明确认', () {
+    test('没有持久化时不挡界面', () {
+      final state = AppState();
+      addTearDown(state.dispose);
+      expect(state.legalNoticeAcknowledged, isTrue);
+    });
+
+    test('全新安装尚未确认', () {
+      final state = AppState(store: store);
+      addTearDown(state.dispose);
+      expect(state.legalNoticeAcknowledged, isFalse);
+    });
+
+    test('确认后写入存档，重启仍有效', () {
+      final first = AppState(store: store);
+      first.acknowledgeLegalNotice();
+      expect(first.legalNoticeAcknowledged, isTrue);
+      first.dispose();
+
+      final second = AppState(store: store);
+      addTearDown(second.dispose);
+      expect(second.legalNoticeAcknowledged, isTrue);
     });
   });
 

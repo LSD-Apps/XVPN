@@ -1,4 +1,4 @@
-package net.lusida.xvpn
+package net.lusida.xvpnclient
 
 import android.app.Activity
 import android.content.Intent
@@ -86,6 +86,17 @@ class MainActivity : FlutterActivity() {
                 // 自动更新：Dart 侧已下载并校验过 SHA-256，这里只负责把它
                 // 交给系统安装器。真正的安装动作由系统界面完成，应用无法静默安装。
                 "installApk" -> installApk(call.argument<String>("path").orEmpty(), result)
+                // 账号密码的密钥：见 [CredentialKeyStore]。只做「取回 / 生成」
+                // 这一件事，加解密在 Dart 侧同步完成（那里解释了为什么）。
+                "generateCredentialKey" -> result.success(CredentialKeyStore.generate())
+                "unwrapCredentialKey" -> {
+                    val wrapped = call.argument<String>("wrapped").orEmpty()
+                    if (wrapped.isEmpty()) {
+                        result.error("bad_argument", "缺少要解开的凭据密钥", null)
+                    } else {
+                        result.success(CredentialKeyStore.unwrap(wrapped))
+                    }
+                }
                 else -> result.notImplemented()
             }
         }

@@ -1,0 +1,47 @@
+name: 缺陷报告 / Bug
+description: 程序行为与预期不符。不要在这里要节点或订阅。
+title: "[缺陷] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        本项目是**自备配置的客户端**，不提供节点、订阅或账号。
+        相关请求会被直接关闭。法律边界：[`docs/LEGAL.md`](https://github.com/LSD-Apps/XVPN/blob/main/docs/LEGAL.md)。
+  - type: checkboxes
+    id: boundaries
+    attributes:
+      label: 提交前
+      options:
+        - label: 我不是在要节点、订阅、账号或「怎么获取线路」。
+          required: true
+        - label: 我使用的是自己有权使用的服务器，或机构正式发放的客户端配置。
+          required: true
+        - label: 下文已去掉私钥、证书、真实服务器地址、账号密码。
+          required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: 现象
+      description: 你做了什么、期望什么、实际发生什么。
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: 诊断信息
+      description: 连接页「连接状态」卡片的内容（自检、DNS、流量分布）。不要贴内核完整日志里的密钥。
+    validations:
+      required: true
+  - type: textarea
+    id: config
+    attributes:
+      label: 配置形态（已脱敏）
+      description: 协议类型与字段结构即可，例如「WireGuard，一个 Peer」。不要贴真实 Endpoint / 私钥。
+  - type: input
+    id: version
+    attributes:
+      label: 版本与平台
+      description: 设置页底部的版本号；Windows / Linux / Android。
+    validations:
+      required: true

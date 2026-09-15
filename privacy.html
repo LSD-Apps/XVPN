@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>隐私政策 · XVPN Privacy Policy</title>
-<meta name="description" content="XVPN 隐私政策：不收集任何个人数据。Privacy policy for XVPN — collects no personal data.">
+<title>隐私政策 · 幽门 Privacy Policy</title>
+<meta name="description" content="幽门（XVPN）隐私政策：不收集任何个人数据。Privacy policy for XVPN — collects no personal data.">
 <style>
   :root {
     color-scheme: light dark;
@@ -52,10 +52,10 @@
 <body>
 <main>
 <h1 id="--privacy-policy">隐私政策 · Privacy Policy</h1>
-<p><strong>XVPN</strong> · 最后更新：2026-09-12</p>
+<p><strong>幽门（仓库与可执行文件名：XVPN）</strong> · 最后更新：2026-09-15</p>
 <hr />
 <h2 id="">摘要</h2>
-<p><strong>XVPN 不收集、不上传、不共享你的任何个人数据。</strong> 它没有账号体系、没有
+<p><strong>幽门不收集、不上传、不共享你的任何个人数据。</strong> 它没有账号体系、没有
 分析统计、没有广告 SDK、没有崩溃上报。你的配置文件与连接记录只保存在你自己的
 设备上。</p>
 <p>以下逐项说明它到底碰了哪些数据，以及为什么。我们宁可写得啰嗦，也不写
@@ -168,6 +168,11 @@
 <td>重开应用时恢复</td>
 </tr>
 <tr>
+<td>订阅地址</td>
+<td>只有<strong>你自己粘贴</strong>的 <code>http(s)</code> 地址</td>
+<td>让「刷新」能重新拉取同一地址；软件不内置任何地址</td>
+</tr>
+<tr>
 <td>设置项</td>
 <td>主题、分流模式、是否记录日志等</td>
 <td>记住你的选择</td>
@@ -209,14 +214,15 @@ WireGuard 的私钥、OpenVPN 的客户端证书与私钥、Hysteria2 的认证�
 </tr>
 <tr>
 <td>Android</td>
-<td><strong>尚未接入</strong>系统 Keystore</td>
-<td>目前始终为明文（接入 Keystore 后会自动升级，旧数据仍可读）</td>
+<td>系统 <strong>Keystore</strong>：Keystore 里的一把不可导出密钥包住一把随机数据密钥，账号密码由后者加密</td>
+<td>极少见：系统 Keystore 不可用、或拿不到应用私有目录时；界面提示「未加密」</td>
 </tr>
 </tbody>
 </table>
-<p>DPAPI 密文与 Linux 钥匙串条目都<strong>绑定当前用户</strong>：换个 Windows 账户、换台机器
-或换一个 Linux 用户就解不开。这是保护本身的特性，不是缺陷——此时应用会让你
-重新填一次密码，而不是把无法解密的凭据当成明文使用。</p>
+<p>DPAPI 密文、Linux 钥匙串条目与 Android 的 Keystore 密钥都<strong>绑定当前设备 / 当前
+用户</strong>：换个 Windows 账户、换台机器、或从云备份恢复出来就解不开。这是保护本身的
+特性，不是缺陷——此时应用会让你重新填一次密码，而不是把无法解密的凭据当成明文
+使用。</p>
 <p><strong>3. 应用私有目录受系统沙箱保护。</strong>
 其他应用无法读取（Android 由系统沙箱强制，桌面端由文件权限与用户账户隔离）。
 <strong>卸载应用会一并删除这些数据</strong>，删除后需要重新导入配置。</p>
@@ -276,6 +282,12 @@ WireGuard 的私钥、OpenVPN 的客户端证书与私钥、Hysteria2 的认证�
 <td>更新分流规则库。不点击则不会发生</td>
 </tr>
 <tr>
+<td><strong>你自己粘贴的订阅地址</strong></td>
+<td><strong>仅当你导入或刷新该订阅时</strong></td>
+<td>一次 GET 请求（带 <code>User-Agent: XVPN</code>，不带设备标识）；若响应带 <code>subscription-userinfo</code> 头则一并记下用量</td>
+<td>拉取<strong>你自己</strong>提供的节点列表。地址由你提供，我们不内置、不知道也无从推荐</td>
+</tr>
+<tr>
 <td><code>api.github.com</code>（GitHub Releases API）</td>
 <td><strong>每次启动时一次</strong>（设置页也可手动「检查更新」重试）</td>
 <td>仅这一次 HTTPS 请求本身，不带设备标识</td>
@@ -300,6 +312,10 @@ WireGuard 的私钥、OpenVPN 的客户端证书与私钥、Hysteria2 的认证�
 <li>
 <p><strong>内核不自带任何服务器。</strong> 它连接的服务器地址来自<strong>你导入的配置</strong>，
 数据直接在你的设备与你自己的服务器之间传输，<strong>不经过我们</strong>。</p>
+</li>
+<li>
+<p><strong>订阅只在你点击时拉取</strong>，没有定时后台刷新，也不会替你轮询地址；软件不内置
+任何订阅地址，因此在你粘贴之前，它不知道任何节点列表的存在。</p>
 </li>
 <li>
 <p>DNS 探测查询的是<strong>固定的探测域名</strong>（用于测量解析器健康状况），
@@ -406,12 +422,13 @@ WireGuard 的私钥、OpenVPN 的客户端证书与私钥、Hysteria2 的认证�
 若要通过 GitHub Pages 发布，启用 Pages 后指向本文件即可。</sub></p>
 
 <footer>
-  <p>本页面是 <a href="https://gitcode.com/start-ai/XVPN">XVPN</a> 的隐私政策，
+  <p>本页面是 <a href="https://www.lusida.net">幽门</a>（仓库名
+  <a href="https://gitcode.com/start-ai/XVPN">XVPN</a>）的隐私政策，
   同时用于满足 Google Play 与 App Store 的商店要求。
   源文件为仓库根目录的 <code>PRIVACY.md</code>，随源码一起版本管理，
   因此每一次修改都有公开记录可查。</p>
-  <p>This page is the privacy policy for XVPN and serves the Google Play and
-  App Store requirements. Source: <code>PRIVACY.md</code>.</p>
+  <p>This page is the privacy policy for XVPN (幽门) and serves the Google Play
+  and App Store requirements. Source: <code>PRIVACY.md</code>.</p>
 </footer>
 </main>
 </body>

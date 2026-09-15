@@ -23,8 +23,9 @@ app/android/app/release/
 # Dart 的 rootBundle 读不到，仅用于满足「许可证随 APK 分发」）。
 # 内容可在打包前重新生成，且真正随包分发的是产物里的副本而不是工作区这份，
 # 因此不入库——避免生成物被误提交。
-# 注意：应用内「开源许可」界面读的是 app/assets/legal/（Flutter assets），
-# 与这个 Android native assets 目录用途不同，不要混淆。
+# 注意：应用内不再有任何许可浏览界面（设置页「开源许可」只跳到项目主页），
+# 这些文本也没有 Flutter assets 副本，不要与 app/assets/legal/ 混淆——那里
+# 只剩离线必须读得到的 LEGAL.md。
 app/android/app/src/main/assets/licenses/
 
 # 发布产物：scripts/build-release.ps1 与 GitHub Actions 的本地输出目录。

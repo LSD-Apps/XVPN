@@ -235,6 +235,8 @@ assets/bin/sing-box.exe check -c build\ovpn.json
 ## 六、不要做的事
 
 - **不要提交假功能。** 见上文「界面承诺了什么，代码就必须真的做什么」。
+- **不要把本项目变成节点市场或接入服务。** 内置节点、订阅抓取、邀请码、
+  「怎么获取线路」的文档或话术一律不接受。法律边界见 [`docs/LEGAL.md`](docs/LEGAL.md)。
 - **不要在未验证的情况下断言内核行为。** 本项目所有协议相关的断言都实测过；
   请不要引入「看文档觉得应该是这样」的代码。文档与实现的差异正是踩坑的来源。
 - **不要引入不必要的依赖。** 本项目刻意保持依赖精简
@@ -325,6 +327,5 @@ assets/bin/sing-box.exe check -c build\ovpn.json
 ## 九、许可
 
 本项目采用 **GPL-3.0-or-later**（受内核许可约束，原因见 [`NOTICE.md`](NOTICE.md)）。
-法律与使用声明见 [`docs/LEGAL.md`](docs/LEGAL.md)。
-
-提交贡献即表示你同意以同一许可发布你的贡献。
+法律与使用声明见 [`docs/LEGAL.md`](docs/LEGAL.md)（英文 [`docs/LEGAL.en.md`](docs/LEGAL.en.md)）。
+提交贡献即表示你同意以同一许可发布你的贡献，并接受上述使用边界。

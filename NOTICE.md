@@ -6,7 +6,7 @@
 ## 零、本项目的授权声明
 
 ```
-XVPN — Copyright (C) 2026 LUSIDA（Start）
+XVPN（幽门） — Copyright (C) 2026 LUSIDA — https://www.lusida.net
 
 This program is free software: you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -49,7 +49,7 @@ GPL-3.0-or-later，本项目与它组合作品，采用同一版本范围最清�
     该哈希已复核：仓库内这一文件与官方 tar.gz 中的 `sing-box` 成员**逐字节一致**，
     即本项目再分发的内核是**未经修改**的上游二进制。
     上游压缩包内另有 `libcronet.so`，本项目**不**分发它；
-    本项目支持的协议（WireGuard / OpenVPN / Hysteria2）不依赖该库。
+    本项目支持的协议（WireGuard / OpenVPN / Hysteria2 / Shadowsocks / VMess / VLESS / Trojan）不依赖该库。
   - Android：`app/android/app/libs/libbox.aar`，由 gomobile 编译，
     作为**进程内原生库**加载（`VpnService` 提供 TUN）。
 
@@ -98,8 +98,12 @@ https://github.com/SagerNet/sing-box/tree/v1.14.0
 
 - **文件**：[`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md)（约 350 KB，111 个模块）；
 - **分发**：Windows / Linux 压缩包根目录、Android APK 的 `assets/licenses/`；
-  应用内「开源许可」界面同样可以读到（作为单独的包条目）；
 - **可复现**：`pwsh scripts/build-third-party-notices.ps1` 会重新生成它。
+
+> 这份聚合声明**不再**打进应用界面所读的 asset：设置页「开源许可」改为跳到
+> 项目主页的许可章节，在那里按需指向全文。理由见本文件第六节——合规要求的是
+> 「接收者能拿到」，而不是「长在安装包里」；把它并进应用的 Flutter assets 只会
+> 让每个安装包多背 350 KB。
 
 依赖集合不是照抄 `go.mod`，而是对**三个实际分发目标**分别执行
 `go list -deps` 得到的真实链接集合的并集（构建标签
@@ -134,12 +138,25 @@ CC0-1.0 / MPL-2.0 / Unlicense 各 1）与许可全文。
 | --- | --- | --- |
 | `app/assets/rulesets/geosite-cn.srs` | [SagerNet/sing-geosite](https://github.com/SagerNet/sing-geosite) `rule-set` 分支 | 域名规则集 |
 | `app/assets/rulesets/geoip-cn.srs` | [SagerNet/sing-geoip](https://github.com/SagerNet/sing-geoip) `rule-set` 分支 | IP 规则集 |
-| `app/assets/rulesets/cn-ip.bin` | 由 `geoip-cn.srs` 派生 | 见下 |
-| `app/assets/rulesets/geosite-cn-extra.srs` | 由 [felixonmars/dnsmasq-china-list](https://github.com/felixonmars/dnsmasq-china-list) 编译 | 国内域名补充（**默认不启用**） |
+| `app/assets/rulesets/geoip-cn-extra.srs` | 由 [gaoyifan/china-operator-ip](https://github.com/gaoyifan/china-operator-ip) 编译 | 国内 IP 补充（聚合 + 分运营商，IPv4 + IPv6，**默认启用**） |
+| `app/assets/rulesets/cn-ip.bin` | 由 `geoip-cn.srs` 与 `geoip-cn-extra.srs` 合并派生 | CIP2 前缀索引，见下 |
+| `app/assets/rulesets/cn-ip.origin.json` | 生成 `cn-ip.bin` 时写下的来源指纹 | 运行时同源校验 |
+| `app/assets/rulesets/geosite-cn-extra.srs` | 由 [felixonmars/dnsmasq-china-list](https://github.com/felixonmars/dnsmasq-china-list) 编译 | 国内域名补充（**默认启用**） |
 
-`cn-ip.bin` 是本项目从 `geoip-cn.srs` 摊平出来的 `geoip-cn` 前缀索引
-（由 `app/tool/build_cn_ip_index.dart` 生成），属于对上游数据的**格式转换**，
-不是独立数据源。它同样按上游规则库的条款分发。
+`cn-ip.bin` 是本项目从 `geoip-cn.srs` **与** `geoip-cn-extra.srs` 摊平出来的前缀索引
+（CIP2：IPv4 + IPv6，由 `app/tool/build_cn_ip_index.dart` 生成），属于对上游数据的
+**格式转换**，不是独立数据源。它同样按上游规则库的条款分发。`cn-ip.origin.json`
+记录生成时两份 `.srs` 的指纹，规则集更新后若没重算索引，分流规则页会标明脱节。
+
+`geoip-cn-extra.srs` 由 `scripts/build-cn-ip-ruleset.ps1` 从
+`gaoyifan/china-operator-ip` 的 `china.txt` / `china6.txt` **以及**分运营商表
+（chinanet / cmcc / unicom / cernet / cstnet / drpeng / googlecn，含 IPv6）
+编译而来（**格式转换**）。`china.txt` 是 origin_only 聚合，不是分表并集。
+
+> **上游许可情况（本次已核实）**：`gaoyifan/china-operator-ip` 为 **MIT**
+> （Copyright (c) 2018 Yifan Gao）。与 GPL-3.0-or-later 兼容。归属信息保留在此处。
+> 重跑 `scripts/build-cn-ip-ruleset.ps1` 后再跑 `scripts/build-cn-ip-index.ps1`
+> 即可刷新该产物与派生索引。
 
 `geosite-cn-extra.srs` 由 `scripts/build-cn-domain-ruleset.ps1` 从
 `accelerated-domains.china.conf` 编译而来（**格式转换**，不是独立数据源）。
@@ -183,6 +200,7 @@ CC0-1.0 / MPL-2.0 / Unlicense 各 1）与许可全文。
 | `ffi` | 2.2.0 | BSD-3-Clause |
 | `flutter_markdown_plus` | 1.0.12 | BSD-3-Clause |
 | `http` | 1.6.0 | BSD-3-Clause |
+| `pointycastle` | 4.0.0 | MIT |
 | `url_launcher` | 6.3.2 | BSD-3-Clause |
 | `url_launcher_android` | 6.3.33 | BSD-3-Clause |
 | `url_launcher_linux` | 3.2.3 | BSD-3-Clause |
@@ -191,22 +209,31 @@ CC0-1.0 / MPL-2.0 / Unlicense 各 1）与许可全文。
 | `markdown`（开发期工具 + 运行时传递依赖） | 7.3.1 | BSD-3-Clause |
 | `flutter_lints`（仅开发期） | 6.0.0 | BSD-3-Clause |
 
-`flutter_markdown_plus` 用于应用内「开源许可」界面渲染 Markdown 正文，其传递
+`flutter_markdown_plus` 用于应用内「法律与使用声明」界面渲染 Markdown 正文，其传递
 依赖为 `markdown` / `meta` / `path`（均为 BSD-3-Clause）。其中 `meta` 与 `path`
 本就随 Flutter SDK 进入依赖图；`markdown` 此前只被 `tool/build_privacy_html.dart`
 这个开发期工具用到、标注为「仅开发期」，现在同时是 `flutter_markdown_plus` 的
 运行时传递依赖，**会进入应用产物**，因此上表不再把它标成仅开发期。
 
-BSD-3-Clause 与 Apache-2.0 均与 GPL-3.0 兼容。Flutter SDK 本身为
+`pointycastle` 用于安卓端 `auth-user-pass` 账号密码的 AES-256-GCM 加解密（Keystore
+里的包装密钥不可导出、只能经 Java 侧异步调用，因此数据本身要由 Dart 侧同步加密；
+见 [`docs/RESILIENCE.md`](docs/RESILIENCE.md) 第 4.1 节）。它的传递依赖为 `convert`
+（3.1.2，BSD-3-Clause）。它是纯 Dart 实现，无需平台通道。
+
+MIT、BSD-3-Clause 与 Apache-2.0 均与 GPL-3.0 兼容。Flutter SDK 本身为
 BSD-3-Clause。
 
 > **关于 Flutter 自动生成的 `NOTICES.Z`**：Flutter 构建会把 Dart/Flutter
 > 依赖（含 Flutter 引擎与上述包）的许可证合并成 `data/flutter_assets/NOTICES.Z`
-> 放进桌面端 bundle（Android 端在 `flutter_assets` 内），因此这些声明**已随
-> 二进制分发**。应用内「开源许可」界面（设置页「关于」卡片）用 `showLicensePage`
-> 展示这份聚合许可，并额外注册本项目的 `LICENSE`、`NOTICE.md` 与
-> `THIRD-PARTY-NOTICES.md`（见 `app/lib/core/licenses.dart`），桌面端与
-> Android 端都有同一个入口。
+> 放进桌面端 bundle（Android 端在 `flutter_assets` 内），因此这些声明**仍随
+> 二进制分发**。Flutter 工具链会自动把这份聚合许可注册进 `LicenseRegistry`，
+> 这一步不受本项目控制，也无需本项目维护。
+>
+> 本项目自身**不再**注册额外条目，也**不再**提供应用内的许可浏览界面：那套界面
+> 会把 `LICENSE` / `NOTICE.md` / `THIRD-PARTY-NOTICES.md` 一起打进包供其读取
+> （合计约 430 KB，其中绝大多数是没人会在手机上逐条读的聚合许可）。设置页
+> 「开源许可」现在跳到项目主页的许可章节（`app/lib/core/links.dart` 的
+> `kLicenseUrl`），全文随仓库与各平台发布包分发。
 
 ## 四、字体与图标
 
@@ -247,6 +274,7 @@ BSD-3-Clause。
 > **本项目自身的分发物已做到第 1、2 条**：`.github/workflows/release.yml` 与
 > `scripts/build-release.ps1` 会把 `LICENSE`、`NOTICE.md` 与
 > `THIRD-PARTY-NOTICES.md` 放进 Windows / Linux 压缩包的**根目录**；Android APK
-> 内为 `assets/licenses/` 下的同名文件。应用内「开源许可」界面同样能读到这三份
-> 文本。附件命名契约（`XVPN-<ver>-*.zip` / `.apk` / `SHA256SUMS.txt`）不变。
+> 内为 `assets/licenses/` 下的同名文件。这三份文本**不再**作为 Flutter asset
+> 打进应用，应用内也没有许可浏览界面（设置页「开源许可」只把用户送到项目主页的
+> 许可章节）。附件命名契约（`XVPN-<ver>-*.zip` / `.apk` / `SHA256SUMS.txt`）不变。
 > Release 说明也会给出对应 tag 的源码地址。

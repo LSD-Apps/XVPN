@@ -1578,9 +1578,9 @@ void main() {
       expect(
         defaultUpdateStagingDir(
           TargetPlatform.android,
-          tempPath: '/data/user/0/net.lusida.xvpn/cache',
+          tempPath: '/data/user/0/net.lusida.xvpnclient/cache',
         ).path,
-        '/data/user/0/net.lusida.xvpn/cache/updates',
+        '/data/user/0/net.lusida.xvpnclient/cache/updates',
       );
     });
 

@@ -3,7 +3,8 @@
 //   dart run tool/check_conf.dart <配置文件>
 //
 // 协议由 VpnProtocolFactory 按内容自动识别，因此 WireGuard 的 .conf、
-// OpenVPN 的 .ovpn、以及 Hysteria2 的分享链接 / YAML / JSON 都能直接丢进来。
+// OpenVPN 的 .ovpn、Hysteria2 的分享链接 / YAML / JSON、以及 Shadowsocks 的
+// ss:// / JSON 都能直接丢进来。
 //
 // 只输出非敏感字段：私钥、预共享密钥、内联证书一律不打印内容，
 // 仅报告是否存在。用于在用户反馈「导入失败」时快速定位问题。

@@ -2,11 +2,12 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../app_state.dart';
+import '../core/links.dart';
 import '../theme.dart';
 import '../theme_controller.dart';
 import '../widgets/common.dart';
 import '../widgets/update_card.dart';
-import 'licenses_dialog.dart';
+import 'legal_notice_dialog.dart';
 import 'profiles_screen.dart';
 
 /// 设置页。每一项都有合理默认值，不改也能正常用。
@@ -17,6 +18,7 @@ class SettingsScreen extends StatelessWidget {
     required this.state,
     required this.compact,
     required this.theme,
+    this.openExternalUrl = launchInBrowser,
   });
 
   final AppState state;
@@ -24,6 +26,12 @@ class SettingsScreen extends StatelessWidget {
 
   /// 主题控制器。桌面端标题栏右侧也有一个切换按钮，两处共用同一份状态。
   final ThemeController theme;
+
+  /// 打开外部链接的实现。默认交给系统浏览器；测试注入记录器断言点了哪个地址。
+  ///
+  /// 与标题栏 GitHub 按钮（`_GitHubButton`）同一处理由：测试环境里没有浏览器，
+  /// 真实的 `url_launcher` 必然失败，无法据此断言「许可入口把人送到了哪里」。
+  final ExternalUrlLauncher openExternalUrl;
 
   static const _themeLabels = <String>['跟随系统', '亮色', '深色'];
 
@@ -250,16 +258,19 @@ class SettingsScreen extends StatelessWidget {
     );
   }
 
-  /// 关于：应用内读到许可全文的唯一入口。
+  /// 关于：许可与法律两条边界的入口。
   ///
-  /// 此前分发物里一直带着 LICENSE / NOTICE.md，但应用内没有任何入口，用户
-  /// 实际上读不到——「随包分发」不等于「可见」。
+  /// 两者刻意用不同的方式呈现，因为它们承担的责任不同：
   ///
-  /// 这里打开的是本项目的自绘许可视图（`licenses_dialog.dart`），不是 Material
-  /// 的 `showLicensePage`：后者自带 AppBar 与 Material 配色，而本应用是无 AppBar
-  /// 的自绘标题栏界面，放进来像另一个程序。条目来源仍是 `LicenseRegistry`，即
-  /// Flutter 自动聚合的依赖许可，加上 `registerBundledLicenses()` 注册的本项目
-  /// 许可、第三方声明与内核静态依赖——仍然是**一份动态清单**，没有任何硬编码。
+  ///   * 「法律与使用声明」在应用内读全文（`legal_notice_dialog.dart`）。它说明
+  ///     的是**本软件的边界**——它是客户端而不是 VPN 服务，不提供节点或订阅。
+  ///     这条边界必须在离线时也读得到，否则等于一个假入口。
+  ///   * 「开源许可」跳到项目主页的许可章节（`links.dart` 的 [kLicenseUrl]）。
+  ///     许可证与第三方声明的正文随仓库与各平台发布包分发，这里只是把人送过去。
+  ///     此前应用内自绘了一个完整的许可浏览界面，并把 `LICENSE` / `NOTICE.md` /
+  ///     `THIRD-PARTY-NOTICES.md` 一起打进安装包——那 400 KB 里绝大多数是 Flutter
+  ///     与内核依赖的聚合许可（111 个模块、1683 段），没有人会在手机上逐条读，
+  ///     却要所有人一起付出包体。许可**必须可获取**，但不必长在应用里。
   Widget _buildAboutCard(BuildContext context, {required bool compact}) {
     return XvCard(
       color: compact ? XV.panel2 : XV.panel,
@@ -272,12 +283,34 @@ class SettingsScreen extends StatelessWidget {
         children: <Widget>[
           const XvCardTitle('关于'),
           SettingRow(
+            title: '法律与使用声明',
+            description: '本软件是自备配置的客户端，不是 VPN 服务；不提供节点或订阅',
+            control: XvButton(
+              label: '阅读',
+              onPressed: () => showLegalNoticeDialog(context),
+            ),
+          ),
+          SettingRow(
             title: '开源许可',
-            description: '查看本项目（GPL-3.0-or-later）与第三方组件的许可证全文',
-            isLast: true,
+            description: '本项目为 GPL-3.0-or-later；许可证与第三方组件声明全文在项目主页',
             control: XvButton(
               label: '查看',
               onPressed: () => _openLicenses(context),
+            ),
+          ),
+          SettingRow(
+            // 作者与官网合成一项：它们回答的是同一个问题——「这是谁做的东西，
+            // 出了事该去哪里看」。拆成两行只会让「关于」这张卡变成一张名片。
+            title: '作者与官网',
+            description: 'LUSIDA · www.lusida.net',
+            isLast: true,
+            control: XvButton(
+              label: '访问',
+              onPressed: () => _openExternal(
+                context,
+                kWebsiteUrl,
+                label: '官方网站',
+              ),
             ),
           ),
         ],
@@ -285,8 +318,47 @@ class SettingsScreen extends StatelessWidget {
     );
   }
 
-  void _openLicenses(BuildContext context) {
-    showLicensesDialog(context);
+  /// 在浏览器里打开项目主页的许可章节。
+  Future<void> _openLicenses(BuildContext context) =>
+      _openExternal(context, kLicenseUrl, label: '许可页面');
+
+  /// 用系统默认浏览器打开一个外部地址。
+  ///
+  /// 失败不能静默：没有默认浏览器、平台通道缺失都会走到这里，而用户点了按钮
+  /// 却什么都没发生，比给一条「请手动访问 …」的提示更糟。与标题栏 GitHub 按钮
+  /// 同一套容错。
+  ///
+  /// [label] 只影响失败提示的措辞；地址本身原样给出，用户可以自己抄走。
+  Future<void> _openExternal(
+    BuildContext context,
+    String url, {
+    required String label,
+  }) async {
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    bool opened;
+    try {
+      opened = await openExternalUrl(Uri.parse(url));
+    } on Object catch (error) {
+      debugPrint('打开$label失败：$error');
+      opened = false;
+    }
+    if (opened) return;
+    messenger?.showSnackBar(
+      SnackBar(
+        content: Text(
+          '无法打开浏览器，请手动访问 $url',
+          style: TextStyle(fontSize: 12.5, color: XV.text),
+        ),
+        backgroundColor: XV.panel3,
+        behavior: SnackBarBehavior.floating,
+        margin: const EdgeInsets.all(16),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(XV.rCtl),
+          side: BorderSide(color: XV.red.withValues(alpha: 0.35)),
+        ),
+        duration: const Duration(seconds: 4),
+      ),
+    );
   }
 
   // ---------------------------------------------------------------- 移动端
@@ -314,7 +386,7 @@ class SettingsScreen extends StatelessWidget {
                       const XvCardTitle('启动'),
                       SettingRow(
                         title: '导入后自动连接',
-                        description: '导入 .conf / .ovpn / Hysteria2 的 .yaml / .yml 后直接建立隧道',
+                        description: '导入配置文件或 ss:// 分享链接后直接建立隧道',
                         isLast: true,
                         control: XvSwitch(
                           value: state.settings.autoConnectOnImport,

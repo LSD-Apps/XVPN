@@ -538,7 +538,7 @@ void main() {
       ..checkResult = UpdateAvailable(_info())
       ..onDownload = ((_) => UpdateDownloaded(File('xvpn.apk'), 'a' * 64))
       ..installResult = const UpdateInstallPermissionRequired(
-        '需要先允许 XVPN 安装未知应用。已为你打开系统设置，授权后请返回重试。',
+        '需要先允许幽门安装未知应用。已为你打开系统设置，授权后请返回重试。',
       );
     final exits = <int>[];
     await _pumpCard(tester, updater, exits: exits);
@@ -585,5 +585,60 @@ void main() {
     // 新卡片不能把已有的「关于」卡片挤掉。
     expect(find.text('关于'), findsOneWidget);
     expect(find.text('开源许可'), findsOneWidget);
+  });
+
+  testWidgets('版本更新是「说明在左、按钮在右」的一行，左边缘与相邻设置项对齐', (
+    WidgetTester tester,
+  ) async {
+    // 此前这张卡片是**竖排**：说明占一行，按钮另起一行。同一个设置页里于是有了
+    // 两套版式——行距和控件右边缘都与上下相邻的卡片对不齐。
+    //
+    // 这里钉的不是「看起来差不多」而是结构本身：版本更新必须和「外观」「启动」
+    // 「关于」用同一种行（[SettingRow]），左边缘落在同一条线上。
+    tester.view.physicalSize = const Size(1400, 1600);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    final state = AppState();
+    addTearDown(state.dispose);
+    final theme = ThemeController();
+    addTearDown(theme.dispose);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildXvTheme(XvPalette.dark),
+        home: Scaffold(
+          body: SettingsScreen(state: state, compact: false, theme: theme),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final versionTitle = find.text('当前版本 v$appVersion');
+    expect(versionTitle, findsOneWidget);
+    expect(
+      find.ancestor(of: versionTitle, matching: find.byType(SettingRow)),
+      findsOneWidget,
+      reason: '每一阶段都该是设置页通用的行结构，而不是卡片自己搭一套',
+    );
+
+    final button = tester.getRect(find.widgetWithText(XvButton, '检查更新'));
+    final description = tester.getRect(find.text('检查是否有新版本可用。'));
+    expect(
+      button.left,
+      greaterThan(description.right),
+      reason: '按钮要在说明右侧，不能另起一行',
+    );
+    expect(
+      button.top < description.bottom && description.top < button.bottom,
+      isTrue,
+      reason: '两者纵向有重叠，才说明是同一行内的左右分布；按钮另起一行时会完全错开',
+    );
+
+    expect(
+      tester.getRect(versionTitle).left,
+      tester.getRect(find.text('开源许可')).left,
+      reason: '左边缘要与相邻卡片的设置项落在同一条线上，否则整页又是两套版式',
+    );
   });
 }

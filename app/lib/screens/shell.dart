@@ -102,6 +102,16 @@ class _XvShellState extends State<XvShell> {
     final error = widget.state.lastError;
     if (error == null || error == _shownError) return;
     _shownError = error;
+    // 连接失败不再用 SnackBar 说第二遍。
+    //
+    // 圆环已经红着、旁边那一行也已经说明白了，而这里弹出来的恰好是**同一件事**
+    // 的原始报错（`parse rule-set: open /data/user/0/…: no such file or
+    // directory`）——用户既看不懂，它也撑不过四秒。那段原文改由失败行的「详情」
+    // 承载，不在这里抢一次注意力。
+    //
+    // 其余错误（导入失败、规则库更新失败、隧道健康告警）照旧走 SnackBar：
+    // 它们没有别的落点，不弹就等于什么都没说。
+    if (error == widget.state.connectFailureDetail) return;
     final messenger = ScaffoldMessenger.maybeOf(context);
     if (messenger == null) return;
     messenger.showSnackBar(

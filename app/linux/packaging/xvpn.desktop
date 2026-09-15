@@ -1,7 +1,9 @@
 [Desktop Entry]
 Type=Application
-Name=XVPN
+Name=幽门
+Name[en]=XVPN
 GenericName=VPN Client
+GenericName[zh_CN]=VPN 客户端
 Comment=零配置智能分流 VPN 客户端
 Comment[en]=Zero-config split-tunnel VPN client
 Exec=xvpn %U

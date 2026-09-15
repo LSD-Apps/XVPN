@@ -124,30 +124,33 @@ function Copy-LegalFiles {
     }
 }
 
-# 把仓库根的许可文件同步进 Flutter assets 目录（app/assets/legal/）。
+# 把 docs/LEGAL.md 同步进 Flutter assets 目录（app/assets/legal/LEGAL.md）。
 #
-# 为什么需要：Flutter 的 asset 只能声明在包目录内，应用内「开源许可」界面读到
-# 的就是这份副本。副本随代码提交，并由 test/legal_assets_test.dart 逐字节断言
-# 与根文件一致；打包前再同步一次，保证即使有人改了根文件却忘了更新副本，发布
-# 的 bundle 里也一定是最新文本。同步会改写工作区文件，内容确有变化时给出警告。
-function Sync-LegalAssets {
+# 为什么需要：Flutter 的 asset 只能声明在包目录内，应用内「法律与使用声明」读到的
+# 就是这份副本。副本随代码提交，并由 test/legal_assets_test.dart 逐字节断言与源
+# 文件一致；打包前再同步一次，保证即使有人改了 docs/LEGAL.md 却忘了更新副本，
+# 发布的 bundle 里也一定是最新文本。同步会改写工作区文件，内容确有变化时给出警告。
+#
+# 许可与第三方声明（LICENSE / NOTICE.md / THIRD-PARTY-NOTICES.md）**不**在这里同步：
+# 它们不再作为 Flutter asset 随应用分发，应用内也没有界面读它们（设置页「开源
+# 许可」只跳转到项目主页），只在打包时放进压缩包根与 APK 的 assets/licenses/
+# ——那是 [Copy-LegalFiles] 的职责。
+function Sync-LegalNotice {
     param([Parameter(Mandatory = $true)][string]$DestDir)
+    $src = Join-Path $RepoRoot 'docs\LEGAL.md'
+    if (-not (Test-Path -LiteralPath $src)) {
+        throw '缺少 docs/LEGAL.md，拒绝构建：应用内法律声明必须能读到它'
+    }
     New-Item -ItemType Directory -Force -Path $DestDir | Out-Null
-    foreach ($legal in $legalFiles) {
-        $src = Join-Path $RepoRoot $legal
-        if (-not (Test-Path -LiteralPath $src)) {
-            throw "缺少 $legal，拒绝构建：应用内许可界面必须能读到它"
-        }
-        $dst = Join-Path $DestDir $legal
-        $changed = $true
-        if (Test-Path -LiteralPath $dst) {
-            $changed = (Get-FileHash -LiteralPath $src -Algorithm SHA256).Hash -ne
-                (Get-FileHash -LiteralPath $dst -Algorithm SHA256).Hash
-        }
-        Copy-Item -LiteralPath $src -Destination $dst -Force
-        if ($changed) {
-            Write-Warning "app/assets/legal/$legal 与仓库根不一致，已重新同步；请提交更新后的副本（test/legal_assets_test.dart 会断言一致）。"
-        }
+    $dst = Join-Path $DestDir 'LEGAL.md'
+    $changed = $true
+    if (Test-Path -LiteralPath $dst) {
+        $changed = (Get-FileHash -LiteralPath $src -Algorithm SHA256).Hash -ne
+            (Get-FileHash -LiteralPath $dst -Algorithm SHA256).Hash
+    }
+    Copy-Item -LiteralPath $src -Destination $dst -Force
+    if ($changed) {
+        Write-Warning "app/assets/legal/LEGAL.md 与 docs/LEGAL.md 不一致，已重新同步；请提交更新后的副本（test/legal_assets_test.dart 会断言一致）。"
     }
 }
 
@@ -174,9 +177,9 @@ try {
     flutter pub get
     if ($LASTEXITCODE -ne 0) { throw 'flutter pub get 失败' }
 
-    # 应用内「开源许可」读的是 Flutter assets（app/assets/legal/），打包前从
-    # 仓库根同步一次，保证副本不过期。
-    Sync-LegalAssets -DestDir (Join-Path $appDir 'assets/legal')
+    # 应用内「法律与使用声明」读的是 Flutter assets（app/assets/legal/LEGAL.md），
+    # 打包前从 docs/ 同步一次，保证副本不过期。
+    Sync-LegalNotice -DestDir (Join-Path $appDir 'assets/legal')
 
     # ------------------------------------------------------------ Windows
     Write-Host '=== 构建 Windows Release ===' -ForegroundColor Cyan

@@ -103,10 +103,10 @@ hysteria2://pw@a.example.net:443
       // 但约定的扩展名只有 YAML：文件选择器的过滤按这套命名。
       expect(VpnProtocolFactory.looksSupported('config.yaml'), isTrue);
       expect(VpnProtocolFactory.looksSupported('config.yml'), isTrue);
-      expect(VpnProtocolFactory.looksSupported('node.txt'), isFalse);
-      // 未实现的协议仍然不给入口
+      // .txt 现在是 Shadowsocks 分享链接的约定扩展名，选择器会列出它；
+      // Hysteria2 分享链接存成 .txt 仍然按内容识别（见下面这条）。
+      expect(VpnProtocolFactory.looksSupported('node.txt'), isTrue);
       expect(VpnProtocol.hysteria2.isImportable, isTrue);
-      expect(VpnProtocol.shadowsocks.isImportable, isFalse);
     });
   });
 

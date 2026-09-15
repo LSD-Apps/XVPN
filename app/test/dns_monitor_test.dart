@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -77,6 +78,27 @@ CnIpIndex _cnIndex() {
   const int base = (192 << 24) | (0 << 16) | (2 << 8); // 192.0.2.0
   put(0, base, 25);
   put(1, base | 128, 25);
+  return CnIpIndex.parse(bytes)!;
+}
+
+/// CIP2：同样的 IPv4 文档保留段，加上 `2001:db8::/32`。
+CnIpIndex _cnIndexV2() {
+  final v6Net = CnIpIndex.parseIpv6('2001:db8::')!;
+  final bytes = Uint8List(8 + 2 * 8 + 4 + 20);
+  final view = ByteData.view(bytes.buffer);
+  bytes[0] = 0x43;
+  bytes[1] = 0x49;
+  bytes[2] = 0x50;
+  bytes[3] = 0x32;
+  view.setUint32(4, 2, Endian.little);
+  const int base = (192 << 24) | (0 << 16) | (2 << 8);
+  view.setUint32(8, base, Endian.little);
+  bytes[12] = 25;
+  view.setUint32(16, base | 128, Endian.little);
+  bytes[20] = 25;
+  view.setUint32(24, 1, Endian.little);
+  bytes.setRange(28, 44, v6Net);
+  bytes[44] = 32;
   return CnIpIndex.parse(bytes)!;
 }
 
@@ -231,6 +253,11 @@ void main() {
       expect(index.contains('1.2.3'), isFalse);
       expect(index.contains('1.2.3.400'), isFalse);
       expect(index.contains('2001:db8::1'), isFalse);
+      expect(
+        classifyRegion(index, <String>['2001:db8::1']),
+        AddressRegion.unknown,
+        reason: 'CIP1 没有 IPv6 表时，纯 IPv6 答案必须保持无法判断，不能当成境外',
+      );
     });
 
     test('空索引不做任何判定，而不是把一切判成索引之外', () {
@@ -255,6 +282,35 @@ void main() {
       expect(classifyRegion(index, const <String>[]), AddressRegion.unknown);
     });
 
+    test('CIP2 能判定 IPv6，文档保留段按掩码命中', () {
+      final index = _cnIndexV2();
+      expect(index.hasIpv6, isTrue);
+      expect(index.contains('192.0.2.1'), isTrue);
+      expect(index.contains('2001:db8::1'), isTrue);
+      expect(index.contains('2001:db8:ffff::1'), isTrue);
+      expect(index.contains('2001:db9::1'), isFalse);
+      expect(
+        classifyRegion(index, <String>['2001:db8::1']),
+        AddressRegion.domestic,
+      );
+      expect(
+        classifyRegion(index, <String>['2001:db9::1']),
+        AddressRegion.overseas,
+      );
+    });
+
+    test('parseIpv6 认识压缩、映射与带括号的写法', () {
+      expect(CnIpIndex.parseIpv6('::1'), isNotNull);
+      expect(CnIpIndex.parseIpv6('[2001:db8::1]'), isNotNull);
+      expect(CnIpIndex.parseIpv6('2001:db8::1%eth0'), isNotNull);
+      final mapped = CnIpIndex.parseIpv6('::ffff:192.0.2.1');
+      expect(mapped, isNotNull);
+      expect(mapped![12], 192);
+      expect(mapped[15], 1);
+      expect(CnIpIndex.parseIpv6(':::'), isNull);
+      expect(CnIpIndex.parseIpv6('2001:db8::1::2'), isNull);
+    });
+
     test('格式损坏的索引返回 null，不静默变成空表', () {
       expect(CnIpIndex.parse(Uint8List(8)), isNull);
       final wrongMagic = Uint8List(16);
@@ -265,15 +321,26 @@ void main() {
       // 这份索引由 tool/build_cn_ip_index.dart 从 geoip-cn.srs 生成，
       // 随包分发。如果它没被构建进来，这个测试会失败——
       // 那样 DNS 交叉校验会退化成「无法判断」，属于静默失效。
-      final index = await CnIpIndex.load();
+      final fromAssets = File('assets/rulesets/cn-ip.bin');
+      var index = await CnIpIndex.load();
+      if (index.isEmpty && fromAssets.existsSync()) {
+        index = CnIpIndex.parse(fromAssets.readAsBytesSync()) ?? CnIpIndex.empty;
+      }
       if (index.isEmpty) {
         markTestSkipped('当前环境没有出厂索引（纯 dart test 运行时常见）');
         return;
       }
       expect(index.length, greaterThan(1000));
+      expect(index.hasIpv6, isTrue, reason: 'CIP2 必须带上 geoip-cn.srs 里的 IPv6');
+      expect(index.ipv6Length, greaterThan(100));
       expect(index.contains('114.114.114.114'), isTrue, reason: '114 DNS 命中索引');
       expect(index.contains('223.5.5.5'), isTrue, reason: '阿里 DNS 命中索引');
       expect(index.contains('8.8.8.8'), isFalse, reason: 'Google DNS 不命中索引');
+      expect(
+        index.contains('2001:db8::1'),
+        isFalse,
+        reason: '文档保留段不应被当成国内',
+      );
     });
   });
 

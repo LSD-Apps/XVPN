@@ -51,7 +51,7 @@ val hasReleaseSigning: Boolean =
         !releaseKeyPassword.isNullOrBlank()
 
 android {
-    namespace = "net.lusida.xvpn"
+    namespace = "net.lusida.xvpnclient"
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
 
@@ -61,9 +61,13 @@ android {
     }
 
     defaultConfig {
-        // 公开身份（包名）：net.lusida.xvpn。debug 构建追加 .dev 后缀，
+        // 公开身份（包名）：net.lusida.xvpnclient。debug 构建追加 .dev 后缀，
         // 使开发版与正式版**并存**（见下方 debug 块的说明）。
-        applicationId = "net.lusida.xvpn"
+        //
+        // 包名一旦在应用商店上架就不可更改（Play Console 接受首个安装包后锁死），
+        // 因此它与 namespace 必须一致地改，避免出现「代码在一个包、对外是另一个包」
+        // 的长期错位。
+        applicationId = "net.lusida.xvpnclient"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = flutter.minSdkVersion

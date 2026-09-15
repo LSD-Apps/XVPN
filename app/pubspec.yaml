@@ -42,8 +42,17 @@ dependencies:
   ffi: ^2.2.0
   url_launcher: ^6.3.2
 
-  # 应用内「开源许可」把 NOTICE.md / THIRD-PARTY-NOTICES.md 按 Markdown 渲染
-  # （标题、GFM 表格、代码块、链接）。刻意选 flutter_markdown_plus 而不是
+  # 安卓上账号密码的加解密（AES-256-GCM）。AndroidKeyStore 里的密钥不可导出、
+  # 只能经 Java 侧异步调用，而 Dart 侧加解密账号密码必须是**同步**的（账号密码在
+  # AppState 的构造里就要恢复出来），所以 Keystore 只用异步往返包一把数据密钥，
+  # 数据本身由这里同步加密。见 core/secret_protector.dart。
+  #
+  # 它是纯 Dart、同步 API：不要换成 `cryptography` 那类异步接口的实现，也不要在
+  # 这里手写异或/固定密钥的「加密」——那只会制造「已加密」的错觉。
+  pointycastle: ^4.0.0
+
+  # 应用内「法律与使用声明」把 LEGAL.md 按 Markdown 渲染（标题、GFM 表格、
+  # 代码块、链接）。刻意选 flutter_markdown_plus 而不是
   # flutter_markdown：后者在 pub.dev 上已标注 **discontinued**（README 原文
   # 「This project has been discontinued, and will not receive further
   # updates」，最后一次发布距今 16 个月）；flutter_markdown_plus 是它的维护
@@ -80,17 +89,21 @@ flutter:
   assets:
     # 品牌标识：界面里只出现在桌面端标题栏
     - assets/vpn.png
-    # 许可与第三方声明：随包分发，供应用内「开源许可」界面读取。
-    # 这里的三个文件是仓库根 LICENSE / NOTICE.md / THIRD-PARTY-NOTICES.md 的
-    # 副本——Flutter 无法声明包目录之外的 asset，因此必须复制进来。为防止副本
-    # 静默过期，test/legal_assets_test.dart 会断言它们与根文件逐字节相等；
-    # CI 的 prepare 任务也会重新复制并断言 git 无差异。
+    # 法律与使用声明：随包分发，供应用内「法律与使用声明」读取。LEGAL.md 是
+    # docs/LEGAL.md 的副本；Flutter 无法声明包目录之外的 asset。
+    # test/legal_assets_test.dart 会断言副本与源文件逐字节相等。
+    #
+    # 这里**只有** LEGAL.md。许可与第三方声明的正文（LICENSE / NOTICE.md /
+    # THIRD-PARTY-NOTICES.md，合计约 430 KB）不再打进应用：它们是 111 个模块的
+    # 聚合许可，没有人会在手机上逐条读，却要所有人一起付出包体。设置页「开源许可」
+    # 改为跳到项目主页的许可章节（core/links.dart 的 kLicenseUrl），正文随仓库与
+    # 各平台发布包分发。不要因为「合规」把这三份再塞回 assets——合规要的是**可
+    # 获取**，不是「长在安装包里」。
     - assets/legal/
     # 分流规则集：随包分发，用户无需任何配置。
-    # 目录里除 .srs 之外还有 cn-ip.bin：geoip-cn 前缀索引，
-    # 供 DNS 交叉校验判断「解析出的地址是否属于该规则集」，由
-    # tool/build_cn_ip_index.dart 从 geoip-cn.srs 生成（Dart 标准库没有
-    # zlib，无法在运行时解压 .srs，因此在构建期摊平）。
+    # 目录里除 .srs 之外还有 cn-ip.bin 与 cn-ip.origin.json：
+    # 前缀索引供 DNS 交叉校验判断「解析出的地址是否属于该规则集」；
+    # origin 记录生成时的 .srs 指纹，更新规则集后若没重算索引就能被发现。
     - assets/rulesets/
 
   # To add assets to your application, add an assets section, like this:

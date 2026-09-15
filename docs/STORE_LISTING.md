@@ -12,14 +12,15 @@
 
 | 项 | 值 |
 | --- | --- |
-| 开发者 / 发行者名称 | `LUSIDA（Start）` |
-| 包名（applicationId，正式版） | `net.lusida.xvpn` |
-| 包名（debug 开发版） | `net.lusida.xvpn.dev`（仅本机调试，不上架） |
+| 开发者 / 发行者名称 | `LUSIDA` |
+| 包名（applicationId，正式版） | `net.lusida.xvpnclient` |
+| 包名（debug 开发版） | `net.lusida.xvpnclient.dev`（仅本机调试，不上架） |
 | 官方网站域名 | `www.lusida.net` |
-| 应用名称 | `XVPN` |
+| 应用名称（中文） | `幽门` |
 
-> 上架时以 `net.lusida.xvpn` 为准。Play Console 接受首个安装包后包名不可更改，
-> 提交前务必核对。
+> 上架时以 `net.lusida.xvpnclient` 为准。Play Console 接受首个安装包后包名不可
+> 更改，提交前务必核对。此前用的 `net.lusida.xvpn` 已作废——若曾用它提过包，
+> 那是**另一个应用**，无法覆盖升级。
 
 ---
 
@@ -28,22 +29,24 @@
 **应用名称（30 字符以内）**
 
 ```
-XVPN · 分流隧道客户端
+幽门 · 分流隧道客户端
 ```
 
 **简短说明（80 字符以内）**
 
 ```
-导入你自己的 WireGuard / OpenVPN / Hysteria2 配置即可使用，自动分流、无需填规则。
+导入你自己的隧道配置即可使用，自动分流、无需填规则。
 ```
 
 **完整说明**
 
 ```
-XVPN 是一个配置客户端：把你自己的 WireGuard（.conf）、OpenVPN（.ovpn）或
-Hysteria2（.yaml / .yml）配置导入进来，剩下的交给它。
+幽门是一个配置客户端：把你自己的 WireGuard（.conf）、OpenVPN（.ovpn）、
+Hysteria2（.yaml / .yml）、Shadowsocks（ss://）或 VMess / VLESS / Trojan
+分享链接导入进来，剩下的交给它。
 
-它不提供节点、不提供订阅、不需要注册账号。你需要自备配置。
+它不提供节点、不内置订阅地址、不需要注册账号。你需要自备配置；若你自己有
+一条订阅 URL 或多节点清单，可以粘贴进来由你点击刷新。
 
 ■ 它替你做了什么
 
@@ -51,14 +54,18 @@ Hysteria2（.yaml / .yml）配置导入进来，剩下的交给它。
   域名与 IP 双重判定，不需要你写任何规则。
 · 自动 DNS：生成两套解析——规则集命中的域名用直连解析器，其余走隧道内解析，
   并交叉校验两组答案是否一致。
-· 自动翻译配置：WireGuard / OpenVPN / Hysteria2 的字段全部自动映射到内核配置，
+· 自动翻译配置：WireGuard / OpenVPN / Hysteria2 / Shadowsocks / VMess / VLESS / Trojan 的字段全部自动映射到内核配置，
   非法或过时的参数会被纠正成内核认可的写法，不需要你查文档。
 · 记住多份配置：切换即重连，不用每次重新导入。
+· 多节点导入：粘贴你自己的订阅 URL，或导入分享链接列表 / Clash `proxies:` /
+  sing-box `outbounds[]`。识别不出的节点会明确列出跳过原因，而不是整份失败。
+  同一个节点出现在两份来源里仍只保留一条。软件不内置任何订阅地址，也不会
+  在你不点击时去拉取。
 
 ■ 它会告诉你「为什么打不开」
 
 「连上了但某个网站打不开」通常有三种完全不同的原因，处置方式相反，
-但现象一模一样。XVPN 会区分它们：
+但现象一模一样。幽门会区分它们：
 
 · 判为直连却失败 → 规则可能没覆盖，程序会自己学会并改为走隧道
 · 走了隧道却失败 → 问题在节点或服务器，改规则没有用
@@ -110,7 +117,7 @@ Play Console 在检测到 `BIND_VPN_SERVICE` 后会要求填写声明。以下�
 **Q：你的应用为何使用 VpnService？请说明核心功能。**
 
 ```
-XVPN 的核心功能就是在设备上建立一条用户自定义的加密 VPN 隧道。
+幽门的核心功能就是在设备上建立一条用户自定义的加密 VPN 隧道。
 
 用户导入一份 WireGuard（.conf）、OpenVPN（.ovpn）或 Hysteria2（.yaml / .yml）
 配置，应用把它翻译成内核（sing-box）配置，通过 VpnService 建立
@@ -132,6 +139,9 @@ VpnService 是本应用存在的唯一理由——没有它，应用没有任何
 
 数据处理：
 · 配置文件（含密钥与凭据）保存在应用私有目录，仅本机可读，不上传。
+  OpenVPN 的 `auth-user-pass` 账号密码另由系统凭据库保护后再落盘：Windows 用
+  DPAPI，Linux 用系统钥匙串，安卓用系统 Keystore。这些密文都绑定当前设备，
+  换机或从备份恢复后需要重新填写，而不会以明文形式被带走。
 · 应用的诊断功能会读取内核在本机提供的连接列表（仅回环地址 127.0.0.1），
   用于显示分流记录与实时速率；这些数据不上传。
 · 应用不收集、不存储、不传输任何用户流量内容。
@@ -171,11 +181,11 @@ ChaCha20-Poly1305；Hysteria2 走 QUIC / TLS 1.3，加密套件由 TLS 协商
 
 | 权限 | 声明理由（Play Console 需要逐项说明） |
 | --- | --- |
-| `INTERNET` | 建立 VPN 隧道并与用户配置中声明的服务器通信；另在你点击「检查更新」时下载规则库 |
+| `INTERNET` | 建立 VPN 隧道并与用户配置中声明的服务器通信；另在你点击「检查更新」时下载规则库，以及在你导入/刷新自备订阅时访问你填写的地址 |
 | `ACCESS_NETWORK_STATE` | 判断网络是否可用，以便在网络恢复后重连 |
 | `FOREGROUND_SERVICE` | VPN 隧道必须在后台持续运行，否则系统会终止连接 |
 | `FOREGROUND_SERVICE_SPECIAL_USE` | Android 14+ 要求前台服务声明类型；本应用为 VPN 隧道（`vpn_tunnel`） |
-| `POST_NOTIFICATIONS` | 前台服务必须有通知；用于显示「XVPN 运行中」并让用户可随时断开 |
+| `POST_NOTIFICATIONS` | 前台服务必须有通知；用于显示「幽门运行中」并让用户可随时断开 |
 
 `BIND_VPN_SERVICE` 是声明在 `<service>` 上的**系统级权限**，应用不申请它——
 只有系统能绑定该服务，应用自身无法启动它。
@@ -202,7 +212,7 @@ Play Console 的表单逐项答案。**必须与 `PRIVACY.md` 及实际实现一
 
 | 问题 | 答案 |
 | --- | --- |
-| 传输中的数据是否加密？ | **是**（隧道内由 WireGuard / OpenVPN / Hysteria2 加密） |
+| 传输中的数据是否加密？ | **是**（隧道内由 WireGuard / OpenVPN / Hysteria2 / Shadowsocks / VMess / VLESS / Trojan 加密） |
 | 用户是否可以请求删除数据？ | **是**，见下 |
 
 **数据删除**
@@ -245,17 +255,18 @@ Play Console 的表单逐项答案。**必须与 `PRIVACY.md` 及实际实现一
 - [x] **隐私政策已发布到公开 URL**：
       <https://lsd-apps.github.io/XVPN/privacy.html>（HTTP 200，中文无乱码）
       —— 直接填入 Play Console 即可
-- [ ] **完整说明里保留了「VpnService 用途声明」一节**（硬性要求，文案见第一节）
+- [x] **完整说明里保留了「VpnService 用途声明」一节**（硬性要求，文案见第一节）
 - [ ] VpnService 声明表单已填写（本文第二节）
 - [ ] 权限声明已逐项填写（本文第三节）
 - [ ] Data safety 表单已填（本文第四节）
 - [ ] 内容分级问卷已完成（本文第五节）
 - [ ] 截图与图标已准备（应与应用内实际界面一致）
-- [ ] 商店列表中的开发者名称（`LUSIDA（Start）`）与联系方式为真实可用的信息
+- [ ] 商店列表中的开发者名称（`LUSIDA`）与联系方式（`www.lusida.net`）为真实可用的信息
 - [ ] 已在真机上验证：首次连接会弹出系统 VPN 授权对话框
 - [x] 已确认应用内**没有**暗示与 sing-box 官方有关联（见 `NOTICE.md`）
-- [ ] 完整说明里列出的协议与 [`README.md`](../README.md)「支持的协议」一致
-      （新增协议后要同时复核本文件，否则文案会落后于实现）
+- [x] 完整说明里列出的协议与 [`README.md`](../README.md)「支持的协议」一致
+      （逐项核对：WireGuard / OpenVPN / Hysteria2 / Shadowsocks / VMess /
+      VLESS / Trojan，共 7 项，两份文档与 `pubspec`/README 门户一致）
 
 ---
 

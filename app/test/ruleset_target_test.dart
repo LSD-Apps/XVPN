@@ -137,6 +137,25 @@ void main() {
         reason: '更新过的规则被出厂副本盖了回去：用户点了更新，内核却回到旧规则',
       );
     });
+
+    test('cn-ip.bin 每次解包都跟随时 APK，不被旧索引粘住', () async {
+      final core = newCore(RecordingListener());
+      addTearDown(core.dispose);
+      final dir = (await core.ruleSetUpdateDir())!.path;
+      final index = File('$dir${Platform.pathSeparator}cn-ip.bin');
+      expect(index.existsSync(), isTrue);
+      final stale = Uint8List.fromList(
+        List<int>.generate(200, (i) => (i + 9) & 0xff),
+      );
+      index.writeAsBytesSync(stale);
+      await core.ruleSetUpdateDir();
+      expect(
+        index.readAsBytesSync(),
+        isNot(stale),
+        reason: '升级后若仍跳过已存在的 cn-ip.bin，安卓会一直用旧 CIP1，IPv6 判定失效',
+      );
+      expect(index.lengthSync(), 128, reason: '本用例的出厂副本是 128 字节的假资源');
+    });
   });
 
   group('桌面内核：更新目录 == 内核读取目录', () {

@@ -1,6 +1,8 @@
 import 'hysteria2_adapter.dart';
 import 'openvpn_adapter.dart';
 import 'parsed_profile.dart';
+import 'shadowsocks_adapter.dart';
+import 'v2ray_adapter.dart';
 import 'vpn_protocol.dart';
 import 'wireguard_adapter.dart';
 
@@ -90,10 +92,14 @@ class VpnProtocolFactory {
   ///
   /// 顺序即识别优先级：[detect] 按内容逐个询问，先命中的胜出。
   /// Hysteria2 排最后，因为它的识别条件最宽（一份 YAML 里出现 `server:`
-  /// 就算数），而 WireGuard / OpenVPN 的指令特征要具体得多。
+  /// 就算数），而其余协议的指令 / 分享链接前缀要具体得多。
   static final List<VpnProtocolAdapter> adapters = <VpnProtocolAdapter>[
     WireGuardAdapter(),
     OpenVpnAdapter(),
+    ShadowsocksAdapter(),
+    VmessAdapter(),
+    VlessAdapter(),
+    TrojanAdapter(),
     Hysteria2Adapter(),
   ];
 

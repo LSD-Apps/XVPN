@@ -1,8 +1,13 @@
+import 'dart:convert';
+
+import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../app_state.dart';
 import '../core/auto_route.dart';
 import '../models.dart';
+import '../protocols/parsed_profile.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
 
@@ -169,6 +174,17 @@ class _AutoRouteCardState extends State<AutoRouteCard> {
             for (final entry in user) _buildEntry(entry),
           const SizedBox(height: 10),
           _buildManualInput(),
+          Padding(
+            padding: const EdgeInsets.only(top: 12),
+            child: Wrap(
+              spacing: 14,
+              runSpacing: 8,
+              children: <Widget>[
+                TapAction(label: '导出规则包', onTap: _exportPack),
+                TapAction(label: '导入规则包', onTap: _importPack),
+              ],
+            ),
+          ),
           if (_inputError != null)
             Padding(
               padding: const EdgeInsets.only(top: 8),
@@ -491,6 +507,61 @@ class _AutoRouteCardState extends State<AutoRouteCard> {
     );
     if (!confirmed || !mounted) return;
     state.clearAutoRouteRule(entry.domain);
+  }
+
+  Future<void> _exportPack() async {
+    final text = state.exportRoutePackText();
+    if (text.isEmpty) {
+      _packSnack('当前内核不支持导出域名分流规则');
+      return;
+    }
+    try {
+      final location = await getSaveLocation(
+        suggestedName: 'xvpn-route-pack.json',
+        acceptedTypeGroups: const <XTypeGroup>[
+          XTypeGroup(label: 'JSON', extensions: <String>['json']),
+        ],
+      );
+      if (location != null) {
+        await XFile.fromData(
+          Uint8List.fromList(utf8.encode(text)),
+          mimeType: 'application/json',
+          name: 'xvpn-route-pack.json',
+        ).saveTo(location.path);
+        _packSnack('已写出规则包');
+        return;
+      }
+    } on Object {
+      // 没有保存对话框时退到剪贴板，仍然能完成「共享」这件事。
+    }
+    await Clipboard.setData(ClipboardData(text: text));
+    _packSnack('已复制规则包到剪贴板');
+  }
+
+  Future<void> _importPack() async {
+    try {
+      final file = await openFile(
+        acceptedTypeGroups: const <XTypeGroup>[
+          XTypeGroup(label: '规则包', extensions: <String>['json', 'txt']),
+        ],
+      );
+      if (file == null) return;
+      final added = state.importRoutePackText(await file.readAsString());
+      _packSnack(added == 0 ? '没有新增规则（可能都已存在）' : '已导入 $added 条手工规则');
+    } on FormatException catch (e) {
+      state.reportError('规则包无法解析：${e.message}');
+    } on VpnConfigException catch (e) {
+      state.reportError(e.message);
+    } on Object catch (e) {
+      state.reportError('导入规则包失败：$e');
+    }
+  }
+
+  void _packSnack(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+      SnackBar(content: Text(message), behavior: SnackBarBehavior.floating),
+    );
   }
 
   Future<void> _confirmClearAll() async {

@@ -6,7 +6,10 @@ import '../app_state.dart';
 import '../models.dart';
 import '../protocols/parsed_profile.dart';
 import '../protocols/protocol_adapter.dart';
+import '../protocols/subscription.dart';
 import '../protocols/vpn_protocol.dart';
+import '../theme.dart';
+import '../widgets/common.dart';
 import 'config_form.dart';
 import 'credential_dialog.dart';
 
@@ -33,6 +36,23 @@ Future<bool> reviewAndImportConf(
   required String text,
   required String fileName,
 }) async {
+  if (looksLikeSubscriptionUrl(text)) {
+    return importSubscriptionUrl(context, state, url: text.trim());
+  }
+  final bundle = parseSubscriptionBody(text, fallbackName: _stem(fileName));
+  if (bundle != null && bundle.nodes.length > 1) {
+    try {
+      final result = state.importSubscription(
+        document: bundle,
+        name: _stem(fileName),
+      );
+      if (context.mounted) await _showImportSummary(context, result);
+      return true;
+    } on VpnConfigException catch (e) {
+      state.reportError(e.message);
+      return false;
+    }
+  }
   final ParsedProfile parsed;
   try {
     parsed = VpnProtocolFactory.parse(text, fileName);
@@ -217,5 +237,192 @@ Future<void> importConfFromPath(
     state.reportError(e.message);
   } on Object catch (e) {
     state.reportError('读取文件失败：$e');
+  }
+}
+
+String _stem(String fileName) {
+  final slash = fileName.replaceAll('\\', '/').split('/').last;
+  final dot = slash.lastIndexOf('.');
+  if (dot <= 0) return slash;
+  return slash.substring(0, dot);
+}
+
+/// 第三入口：粘贴用户自己的订阅 URL，或一整段多节点正文。
+Future<bool> startSubscriptionImport(BuildContext context, AppState state) async {
+  final raw = await showDialog<String>(
+    context: context,
+    barrierColor: Colors.black.withValues(alpha: 0.6),
+    builder: (BuildContext dialogContext) => const _SubscriptionDialog(),
+  );
+  if (raw == null || raw.trim().isEmpty || !context.mounted) return false;
+  final text = raw.trim();
+  if (looksLikeSubscriptionUrl(text)) {
+    return importSubscriptionUrl(context, state, url: text);
+  }
+  return reviewAndImportConf(
+    context,
+    state,
+    text: text,
+    fileName: 'subscription.txt',
+  );
+}
+
+Future<bool> importSubscriptionUrl(
+  BuildContext context,
+  AppState state, {
+  required String url,
+}) async {
+  try {
+    final result = await state.importSubscriptionFromUrl(url);
+    if (context.mounted) await _showImportSummary(context, result);
+    return true;
+  } on VpnConfigException catch (e) {
+    state.reportError(e.message);
+    return false;
+  } on Object catch (e) {
+    state.reportError('导入订阅失败：$e');
+    return false;
+  }
+}
+
+Future<void> _showImportSummary(
+  BuildContext context,
+  SubscriptionImportResult result,
+) async {
+  final skipped = result.skipped;
+  await showDialog<void>(
+    context: context,
+    barrierColor: Colors.black.withValues(alpha: 0.6),
+    builder: (BuildContext dialogContext) => Dialog(
+      backgroundColor: XV.panel,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(XV.rCard),
+        side: BorderSide(color: XV.line),
+      ),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 420),
+        child: Padding(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: <Widget>[
+              Text(
+                '已导入 ${result.imported} 个节点',
+                style: TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w700,
+                  color: XV.text,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                skipped.isEmpty
+                    ? '本软件不提供节点。这些条目来自你粘贴的地址或文件。'
+                    : '跳过 ${skipped.length} 个无法识别的条目：\n${skipped.take(8).join('\n')}'
+                        '${skipped.length > 8 ? '\n…' : ''}',
+                style: XvText.caption,
+              ),
+              const SizedBox(height: 18),
+              Align(
+                alignment: Alignment.centerRight,
+                child: XvButton(
+                  label: '好',
+                  kind: XvButtonKind.primary,
+                  onPressed: () => Navigator.of(dialogContext).pop(),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    ),
+  );
+}
+
+class _SubscriptionDialog extends StatefulWidget {
+  const _SubscriptionDialog();
+
+  @override
+  State<_SubscriptionDialog> createState() => _SubscriptionDialogState();
+}
+
+class _SubscriptionDialogState extends State<_SubscriptionDialog> {
+  final TextEditingController _controller = TextEditingController();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      backgroundColor: XV.panel,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(XV.rCard),
+        side: BorderSide(color: XV.line),
+      ),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 460),
+        child: Padding(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: <Widget>[
+              Text(
+                '导入自备订阅',
+                style: TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w700,
+                  color: XV.text,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                '只拉取你填写的 http(s) 地址，或解析你粘贴的分享链接列表 / '
+                'Clash proxies / sing-box JSON。软件不提供任何订阅。',
+                style: XvText.caption,
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: _controller,
+                maxLines: 6,
+                style: XvText.body,
+                decoration: InputDecoration(
+                  hintText: 'https://…  或一次粘贴多条 ss:// / vless://',
+                  hintStyle: XvText.caption,
+                  filled: true,
+                  fillColor: XV.panel2,
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(8),
+                    borderSide: BorderSide(color: XV.line),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 18),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: <Widget>[
+                  XvButton(
+                    label: '取消',
+                    onPressed: () => Navigator.of(context).pop(),
+                  ),
+                  const SizedBox(width: 10),
+                  XvButton(
+                    label: '导入',
+                    kind: XvButtonKind.primary,
+                    onPressed: () =>
+                        Navigator.of(context).pop(_controller.text),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 }

@@ -1,4 +1,4 @@
-# XVPN
+# XVPN (幽门)
 
 [![Tests](https://github.com/LSD-Apps/XVPN/actions/workflows/test.yml/badge.svg?branch=main)](https://github.com/LSD-Apps/XVPN/actions/workflows/test.yml)
 [![Release](https://img.shields.io/github/v/release/LSD-Apps/XVPN)](https://github.com/LSD-Apps/XVPN/releases/latest)
@@ -6,9 +6,9 @@
 
 **A split-tunnel VPN client that just takes your `.conf`.**
 
-Import your own WireGuard / OpenVPN / Hysteria2 profile. Traffic matched by the
+Import your own WireGuard / OpenVPN / Hysteria2 / Shadowsocks / VMess / VLESS / Trojan profile. Traffic matched by the
 bundled rule sets goes **direct**; everything else uses **your** tunnel. No nodes,
-subscriptions, or accounts.
+no bundled subscription addresses, no accounts.
 
 | | |
 | --- | --- |
@@ -20,13 +20,18 @@ subscriptions, or accounts.
 
 <sub>English · [简体中文](README.zh-CN.md) · [User guide](docs/USER_GUIDE.md) · [Privacy](privacy.html) · [Legal](docs/LEGAL.md) · [Docs index](docs/README.md) · [Authors](AUTHORS) · [Contributing](CONTRIBUTING.md) · [License](LICENSE)</sub>
 
+> Once installed, the launcher, taskbar and Android VPN notification show the name
+> **幽门**; the repository, the executable and the release assets keep the name
+> `XVPN`. Same software — assets are not renamed so that already-installed builds
+> can still find their upgrade package. Author: LUSIDA (<https://www.lusida.net>).
+
 ## What this is — and is not
 
 **Is:** a config client. You supply a lawful profile; the app translates it for the
 core, splits traffic, and attributes failures (local vs server vs rule).
 
-**Is not:** a VPN service. It ships **no** servers, nodes, subscriptions, or
-accounts, and does **not** implement cryptography (that is sing-box).
+**Is not:** a VPN service. It ships **no** servers, nodes, or subscription
+addresses, and no accounts. It does **not** implement cryptography (that is sing-box).
 
 → Full walkthrough: [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md)  
 → Legal boundary: [`docs/LEGAL.md`](docs/LEGAL.md)
@@ -34,7 +39,7 @@ accounts, and does **not** implement cryptography (that is sing-box).
 ## Get started
 
 1. Prepare a lawful endpoint (your server, or an org-issued client profile).
-2. Export a client config (`.conf` / `.ovpn` / Hysteria2 YAML or share link).
+2. Export a client config (`.conf` / `.ovpn` / YAML or a share link such as `ss://` / `vless://`).
 3. Install from [Releases](https://github.com/LSD-Apps/XVPN/releases/latest) —
    unzip into a per-user directory (`%LOCALAPPDATA%\Programs\XVPN`,
    `~/.local/opt/xvpn`) so in-app updates need no admin rights.
@@ -46,8 +51,19 @@ dependencies: [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md) (Day-to-day / Linux).
 Auto-update details and the UAC prompt when it is installed in a protected
 directory: [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md) (Install).
 
-**Protocols** (detected by content): WireGuard, OpenVPN, Hysteria2 — details in
+**Protocols** (detected by content): WireGuard, OpenVPN, Shadowsocks, VMess, VLESS, Trojan, Hysteria2 — details in
 [`docs/PROTOCOLS.md`](docs/PROTOCOLS.md).
+
+**Multi-node, bring your own**: paste your own subscription URL, or a list of share
+links / Clash `proxies:` / sing-box `outbounds[]`. Same node appearing in two sources
+stays one entry. Node region is judged from `cn-ip.bin` when the server is an IP.
+
+## Disclaimer
+
+This is a **client**. You bring a lawful profile and server. The project does not
+provide network access and does not warrant legality in your jurisdiction.
+Intended uses, what this repository will not accept, and GitHub alignment:
+[`docs/LEGAL.en.md`](docs/LEGAL.en.md) · [中文](docs/LEGAL.md).
 
 ## Where to read next
 
@@ -57,6 +73,7 @@ directory: [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md) (Install).
 | Rules / DNS / learning | [`docs/RULES.md`](docs/RULES.md) |
 | Self-heal & probes | [`docs/RESILIENCE.md`](docs/RESILIENCE.md) |
 | Privacy / security | [`PRIVACY.md`](PRIVACY.md) · [`SECURITY.md`](SECURITY.md) |
+| Legal notice | [`docs/LEGAL.en.md`](docs/LEGAL.en.md) · [中文](docs/LEGAL.md) |
 | Release & Play listing | [`docs/RELEASE.md`](docs/RELEASE.md) · [`docs/STORE_LISTING.md`](docs/STORE_LISTING.md) |
 | Full map | [`docs/README.md`](docs/README.md) |
 
@@ -92,5 +109,6 @@ process. Keep `LICENSE`, [`NOTICE.md`](NOTICE.md), and
 [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md) when redistributing; do not use
 the sing-box name or imply affiliation.
 
-Copyright **LUSIDA（Start）** · maintainer [LSD2024](https://github.com/LSD2024) /
-[LSD-Apps](https://github.com/LSD-Apps) — [`AUTHORS`](AUTHORS).
+Copyright **LUSIDA** · [www.lusida.net](https://www.lusida.net) · maintainer
+[LSD2024](https://github.com/LSD2024) / [LSD-Apps](https://github.com/LSD-Apps)
+— [`AUTHORS`](AUTHORS).

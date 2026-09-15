@@ -78,7 +78,7 @@ try {
     Write-Host "生成前缀索引：$output"
     Push-Location $appDir
     try {
-        & dart run tool/build_cn_ip_index.dart @jsonInputs $output
+        & dart run tool/build_cn_ip_index.dart @jsonInputs $output --srs @sources
         if ($LASTEXITCODE -ne 0) {
             throw "build_cn_ip_index 失败（退出码 $LASTEXITCODE）"
         }
@@ -91,8 +91,12 @@ try {
     # 只比对条目数是不够的——条目数对但内容错（例如漏掉 MergeCidr）也会通过。
     Write-Host '校验索引内容…'
     $bytes = [System.IO.File]::ReadAllBytes($output)
+    $magic = [System.Text.Encoding]::ASCII.GetString($bytes, 0, 4)
+    if ($magic -ne 'CIP2') {
+        throw "索引 magic 是 $magic，期望 CIP2（含 IPv6）"
+    }
     $count = [BitConverter]::ToUInt32($bytes, 4)
-    Write-Host ("  索引条目数：{0}" -f $count)
+    Write-Host ("  IPv4 条目数：{0}" -f $count)
     # 8.129.0.0/16：只可能来自补充源（主源 8.x 前缀为 0 条）。
     $needle = [uint32](8 -shl 24 -bor 129 -shl 16)
     $found = $false
@@ -107,6 +111,13 @@ try {
         throw '索引里没有 8.129.0.0/16 —— 补充源没有合并进来，请检查 build_cn_ip_index.dart 的入参'
     }
     Write-Host '  已确认包含 8.129.0.0/16（来自补充源）'
+
+    $v6Header = 8 + $count * 8
+    $v6Count = [BitConverter]::ToUInt32($bytes, $v6Header)
+    if ($v6Count -lt 100) {
+        throw "IPv6 条目过少（$v6Count）—— 主源 geoip-cn.srs 的 IPv6 没有进索引"
+    }
+    Write-Host ("  IPv6 条目数：{0}" -f $v6Count)
 }
 finally {
     if (Test-Path -LiteralPath $tempDir) {
@@ -117,4 +128,4 @@ finally {
 $size = (Get-Item -LiteralPath $output).Length
 Write-Host ''
 Write-Host "完成：$output（$size 字节）"
-Write-Host '提醒：与 geoip-cn.srs、geoip-cn-extra.srs 一起提交，三者必须同源刷新。'
+Write-Host '提醒：与 geoip-cn.srs、geoip-cn-extra.srs、cn-ip.origin.json 一起提交。'

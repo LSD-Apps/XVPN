@@ -7,6 +7,8 @@ import 'package:xvpn/protocols/hysteria2_conf.dart';
 import 'package:xvpn/protocols/openvpn_conf.dart';
 import 'package:xvpn/protocols/parsed_profile.dart';
 import 'package:xvpn/protocols/protocol_adapter.dart';
+import 'package:xvpn/protocols/shadowsocks_conf.dart';
+import 'package:xvpn/protocols/v2ray_conf.dart';
 import 'package:xvpn/protocols/vpn_protocol.dart';
 import 'package:xvpn/protocols/wireguard_conf.dart';
 import 'package:xvpn/screens/config_form.dart';
@@ -205,6 +207,44 @@ MIIBCA
       final model = ConfigFormModel.fromParsed(profile, name: 'bare.txt');
       expect(model.notices, profile.notices);
     });
+
+    test('Shadowsocks：分享链接的方法、密码、插件都保留', () {
+      const link =
+          'ss://aes-256-gcm:p%40ss@ss.example.net:8388/?plugin=obfs-local%3Bobfs%3Dhttp#home';
+      final first = VpnProtocolFactory.parse(link, 'node.txt');
+      final model = ConfigFormModel.fromParsed(first, name: 'node.txt');
+      expect(model.protocol, VpnProtocol.shadowsocks);
+      final second =
+          VpnProtocolFactory.parse(model.toConfText(), model.name)
+              as ShadowsocksProfile;
+      final a = (first as ShadowsocksProfile).conf;
+      expect(second.conf.server, a.server);
+      expect(second.conf.port, a.port);
+      expect(second.conf.method, a.method);
+      expect(second.conf.password, a.password);
+      expect(second.conf.plugin, a.plugin);
+      expect(second.conf.pluginOpts, a.pluginOpts);
+    });
+
+    test('VLESS：分享链接的 UUID、传输与 TLS 都保留', () {
+      const link =
+          'vless://aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee@vless.example.net:443'
+          '?type=ws&security=tls&sni=vless.example.net&path=%2Fpath'
+          '&host=vless.example.net#home';
+      final first = VpnProtocolFactory.parse(link, 'node.txt');
+      final model = ConfigFormModel.fromParsed(first, name: 'node.txt');
+      expect(model.protocol, VpnProtocol.vless);
+      final second =
+          VpnProtocolFactory.parse(model.toConfText(), model.name)
+              as V2RayProfile;
+      final a = (first as V2RayProfile).conf;
+      expect(second.conf.server, a.server);
+      expect(second.conf.port, a.port);
+      expect(second.conf.secret, a.secret);
+      expect(second.conf.transport.kind, a.transport.kind);
+      expect(second.conf.transport.path, a.transport.path);
+      expect(second.conf.tls?.security, a.tls?.security);
+    });
   });
 
   group('配置表单模型：手填生成', () {
@@ -253,6 +293,54 @@ MIIBCA
       expect(parsed.conf.auth, 'user:pass');
       expect(parsed.conf.obfsPassword, 'obfs');
     });
+
+    test('Shadowsocks：生成的是可解析的 ss:// 链接', () {
+      final model = ConfigFormModel.empty(VpnProtocol.shadowsocks)
+        ..name = '手填 ss'
+        ..server = 'ss.example.net'
+        ..ssMethod = 'aes-256-gcm'
+        ..ssPassword = 'secret'
+        ..ssPlugin = 'obfs-local'
+        ..ssPluginOpts = 'obfs=http';
+      final text = model.toConfText();
+      expect(text, startsWith('ss://'));
+      final parsed = VpnProtocolFactory.parse(text, model.name)
+          as ShadowsocksProfile;
+      expect(parsed.conf.server, 'ss.example.net');
+      expect(parsed.conf.port, 8388);
+      expect(parsed.conf.method, 'aes-256-gcm');
+      expect(parsed.conf.password, 'secret');
+      expect(parsed.conf.plugin, 'obfs-local');
+      expect(parsed.conf.pluginOpts, 'obfs=http');
+    });
+
+    test('Trojan：生成的是可解析的 trojan:// 链接', () {
+      final model = ConfigFormModel.empty(VpnProtocol.trojan)
+        ..name = '手填 trojan'
+        ..server = 'trojan.example.net'
+        ..v2Secret = 'p@ss/word'
+        ..v2Tls = true
+        ..sni = 'trojan.example.net';
+      final text = model.toConfText();
+      expect(text, startsWith('trojan://'));
+      final parsed = VpnProtocolFactory.parse(text, model.name) as V2RayProfile;
+      expect(parsed.conf.server, 'trojan.example.net');
+      expect(parsed.conf.port, 443);
+      expect(parsed.conf.secret, 'p@ss/word');
+      expect(parsed.conf.tls?.security, V2RaySecurity.tls);
+    });
+
+    test('VLESS：IPv6 主机可往返', () {
+      final model = ConfigFormModel.empty(VpnProtocol.vless)
+        ..name = '手填 v6'
+        ..server = '2001:db8::1'
+        ..v2Secret = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee'
+        ..v2Tls = true;
+      final parsed =
+          VpnProtocolFactory.parse(model.toConfText(), model.name)
+              as V2RayProfile;
+      expect(parsed.conf.server, '2001:db8::1');
+    });
   });
 
   group('配置表单模型：校验错误', () {
@@ -277,6 +365,21 @@ MIIBCA
       expect(
         () => model.toConfText(),
         throwsA(isA<VpnConfigException>()),
+      );
+    });
+
+    test('空 VMess 表单生成时给出可读中文错误', () {
+      final model = ConfigFormModel.empty(VpnProtocol.vmess)
+        ..server = 'vmess.example.net';
+      expect(
+        () => model.toConfText(),
+        throwsA(
+          isA<VpnConfigException>().having(
+            (e) => e.message,
+            'message',
+            contains('UUID'),
+          ),
+        ),
       );
     });
 

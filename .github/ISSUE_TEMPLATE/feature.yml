@@ -1,0 +1,32 @@
+name: 功能建议 / Feature
+description: 改进客户端本身。提供节点或订阅的建议会被关闭。
+title: "[建议] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        本项目保持「配置客户端」定位。下列建议**不会**被接受：
+        内置节点、订阅市场、一键获取线路、把本软件变成代运营的接入服务。
+        见 [`docs/LEGAL.md`](https://github.com/LSD-Apps/XVPN/blob/main/docs/LEGAL.md) 与 [`docs/PROTOCOLS.md`](https://github.com/LSD-Apps/XVPN/blob/main/docs/PROTOCOLS.md)。
+  - type: checkboxes
+    id: boundaries
+    attributes:
+      label: 提交前
+      options:
+        - label: 这不是在要求本项目提供或推荐节点 / 订阅 / 账号。
+          required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: 要解决的问题
+      description: 哪个真实使用场景现在做不到或做得很别扭。
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 建议的改动
+      description: 客户端侧可以怎么改。服务端怎么搭请指向各协议官方文档，不要写进本仓库。
+    validations:
+      required: true

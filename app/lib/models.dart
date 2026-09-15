@@ -66,6 +66,7 @@ class VpnProfile {
     required this.id,
     required this.name,
     required this.parsed,
+    this.subscriptionIds = const <String>{},
   });
 
   final String id;
@@ -77,6 +78,14 @@ class VpnProfile {
   /// 因此新增协议时二者都不需要改动。
   final ParsedProfile parsed;
 
+  /// 这份配置来自哪些用户自备订阅（[ProfileSubscription.id]）。
+  ///
+  /// 是**集合**而不是单个归属：同一个节点完全可能同时出现在两份来源里——用户
+  /// 先导出了文件、后来又贴上订阅 URL，或者两份订阅来自同一个服务端。配置按
+  /// 「协议 + 正文」去重后只剩一条，但它确实属于两边；记成单一归属会让另一份
+  /// 来源的刷新与删除算错（刷新时把归属抢走，删掉 A 的节点时看不见 B 还在用）。
+  final Set<String> subscriptionIds;
+
   /// 协议类型，用于界面标注与工厂分发。
   VpnProtocol get protocolType => parsed.protocol;
 
@@ -86,6 +95,36 @@ class VpnProfile {
 
   /// 配置里声明的 DNS。UI 仅作展示，真正的解析策略由内置规则决定。
   String get dnsDisplay => parsed.dnsDisplay;
+}
+
+/// 用户自备的一份订阅来源。
+///
+/// 软件不提供任何默认 URL。刷新只重复拉取用户当初填写的那个地址。
+class ProfileSubscription {
+  const ProfileSubscription({
+    required this.id,
+    required this.name,
+    this.url = '',
+    this.fetchedAt,
+    this.userinfo,
+  });
+
+  final String id;
+  final String name;
+  final String url;
+  final DateTime? fetchedAt;
+  final String? userinfo;
+}
+
+/// 一次订阅 / 多节点导入的结果。
+class SubscriptionImportResult {
+  const SubscriptionImportResult({
+    required this.imported,
+    this.skipped = const <String>[],
+  });
+
+  final int imported;
+  final List<String> skipped;
 }
 
 /// 分流记录：只记录域名与判定结果，不记录请求内容。

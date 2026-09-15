@@ -1,11 +1,16 @@
-# XVPN
+# XVPN (幽门)
 
 > A split-tunnel VPN client that takes a user-supplied WireGuard (`.conf`),
-> OpenVPN (`.ovpn`) or Hysteria2 (`.yaml` / `.yml`) profile and
-> applies automatic traffic splitting. Windows, Linux and Android. Flutter UI,
-> sing-box core. GPL-3.0-or-later.
+> OpenVPN (`.ovpn`), Hysteria2 (`.yaml` / `.yml`), Shadowsocks (`ss://`),
+> VMess, VLESS or Trojan profile and applies automatic traffic splitting.
+> Windows, Linux and Android. Flutter UI, sing-box core. GPL-3.0-or-later.
+
+Product name: 幽门 (the name shown on the launcher, window title, tray and the
+Android VPN notification). `XVPN` remains the repository / executable / release
+asset name. Author: LUSIDA — <https://www.lusida.net>.
 
 Canonical repository: https://github.com/LSD-Apps/XVPN
+Android applicationId: `net.lusida.xvpnclient` (debug builds add a `.dev` suffix)
 Mirror: https://gitcode.com/start-ai/XVPN
 
 ## What it is
@@ -35,12 +40,18 @@ The user supplies their own WireGuard or OpenVPN configuration; the app:
    repeatedly is switched to the tunnel at highest priority (injected before the
    rule sets), with counter-evidence handling — a single successful direct
    connection resets the failure streak, and two successes revoke a learned rule.
+8. Imports multi-node sources you supply: a subscription URL, a list of share
+   links (optionally base64-wrapped), Clash `proxies:`, or sing-box `outbounds[]`.
+   No `yaml` dependency; unrecognised nodes are reported as skipped. The same node
+   in two sources stays one entry. Learned routing rules can be exported/imported
+   as a `xvpn-route-pack` JSON file — there is no central server.
 
 ## What it is not
 
-XVPN ships **no** nodes, servers, subscriptions, or accounts, and it does **not**
-implement cryptography (that comes from sing-box). It is a client tool; the user
-brings their own configuration. It also collects no personal data — there is no
+XVPN ships **no** nodes, servers, or subscription addresses, and no accounts. Any
+subscription URL is one **you** paste in yourself; the app fetches it only when you
+ask, and never bundles or recommends one. It does **not** implement cryptography
+(that comes from sing-box). It also collects no personal data — there is no
 analytics, advertising, tracking, or crash reporting, and no backend.
 
 ## Keywords
@@ -61,6 +72,7 @@ diagnostics, Flutter desktop app, Flutter Android app, GPL-3.0-or-later.
 - [docs/README.md](docs/README.md) — documentation index (user / advanced / maintainer)
 - [AUTHORS](AUTHORS) — copyright holder and maintainer identity
 - [docs/LEGAL.md](docs/LEGAL.md) — legal / usage notice (Chinese)
+- [docs/LEGAL.en.md](docs/LEGAL.en.md) — legal / usage notice (English)
 - [PRIVACY.md](PRIVACY.md) / [privacy.html](privacy.html) — privacy policy; the
   app collects nothing, and every outbound network connection is enumerated
 - [CONTRIBUTING.md](CONTRIBUTING.md) — development conventions, adding a protocol
@@ -84,8 +96,11 @@ diagnostics, Flutter desktop app, Flutter Android app, GPL-3.0-or-later.
 - Linux traffic takeover: system proxy (no root; GNOME-family gsettings / KDE)
 - Android traffic takeover: VpnService TUN (the only option there)
 - Protocols: WireGuard `.conf`, OpenVPN `.ovpn`, Hysteria2 `.yaml`/`.yml`
-  (a share link or sing-box outbound JSON also parses) — all detected by content,
-  not extension; a differently-named file still imports
+  (a share link or sing-box outbound JSON also parses), Shadowsocks `ss://`
+  (SIP002 / JSON) — all detected by content, not extension; a differently-named
+  file still imports
+- Multi-node: user-supplied subscription URL, share-link list, Clash `proxies:`
+  or sing-box `outbounds[]`; no bundled address, no background refresh
 - Observation: sing-box Clash API on `127.0.0.1:2081`
 - Tests: `flutter analyze` clean, `flutter test` all passing; protocol assertions
   correspond to real `sing-box check` results

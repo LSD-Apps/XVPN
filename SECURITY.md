@@ -1,9 +1,9 @@
 # 安全政策 · Security Policy
 
-XVPN 是一个处理用户**连接凭据**（WireGuard 私钥、OpenVPN 证书与私钥、Hysteria2
-密码等）并决定**全部流量走向**的 VPN 客户端。因此安全报告被认真对待。
+XVPN 是一个处理用户**连接凭据**（WireGuard 私钥、OpenVPN 证书与私钥、Hysteria2 /
+Shadowsocks 密码等）并决定**全部流量走向**的 VPN 客户端。因此安全报告被认真对待。
 
-维护者：见 [`AUTHORS`](AUTHORS)（版权 LUSIDA（Start），账号 LSD2024 / 组织 LSD-Apps）。
+维护者：见 [`AUTHORS`](AUTHORS)（版权 LUSIDA，官网 <https://www.lusida.net>，账号 LSD2024 / 组织 LSD-Apps）。
 法律与使用声明：[`docs/LEGAL.md`](docs/LEGAL.md)。
 
 ## 一、如何报告漏洞

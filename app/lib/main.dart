@@ -7,8 +7,8 @@ import 'package:flutter/services.dart';
 
 import 'app_state.dart';
 import 'core/android_vpn_core.dart';
-import 'core/licenses.dart';
 import 'core/screen_navigation.dart';
+import 'core/secret_protector.dart';
 import 'core/singbox_runner.dart';
 import 'core/store.dart';
 import 'core/system_proxy.dart';
@@ -17,6 +17,7 @@ import 'core/vpn_core.dart';
 import 'core/window_controls.dart';
 import 'protocols/vpn_protocol.dart';
 import 'screens/import_conf.dart';
+import 'screens/legal_notice_dialog.dart';
 import 'screens/shell.dart';
 import 'theme.dart';
 import 'theme_controller.dart';
@@ -28,15 +29,21 @@ import 'theme_controller.dart';
 /// 而配置必须在第一帧之前恢复好，否则界面会先闪一下空状态。
 Future<void> main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
-  // 把 LICENSE / NOTICE.md / THIRD-PARTY-NOTICES.md 注册进 LicenseRegistry，
-  // 设置页的「开源许可」界面才能读到它们。注册是惰性的，真正读文件发生在
-  // 用户打开该页面时。
-  registerBundledLicenses();
   // 接住原生推来的窗口最大化状态：标题栏的「最大化 / 还原」图标据此切换，
   // 而双击标题栏、Win+↑、贴边这些由系统直接处理的最大化，Dart 侧只有靠它才知道。
   await WindowControls.listen();
   final store = await _resolveStore();
-  runApp(XvpnApp(launchConfPath: _confPathFromArgs(args), store: store));
+  // 账号密码的落盘保护必须在构造 AppState **之前**定下来：安卓要用 Keystore
+  // 解开数据密钥，而那是异步的，而 AppState 是在构造里同步恢复凭据的。放在这里
+  // 也是唯一能放的地方——晚于第一帧就等于让界面先显示一份「没有密码的配置」。
+  final protector = await SecretProtector.resolve(directory: store?.directory);
+  runApp(
+    XvpnApp(
+      launchConfPath: _confPathFromArgs(args),
+      store: store,
+      protector: protector,
+    ),
+  );
 
   // 启动后的静默更新检查。放在第一帧之后：它绝不能拖慢首帧；失败也绝不能
   // 打扰用户——checkOnStartup 在内部把失败处理成与「没有更新」完全一致，
@@ -88,13 +95,25 @@ String _basename(String path) => path.split(RegExp(r'[\\/]')).last;
 
 /// 应用入口。全局状态与主题控制器在这里创建，向下传给外壳与各页面。
 class XvpnApp extends StatefulWidget {
-  const XvpnApp({super.key, this.launchConfPath, this.store});
+  const XvpnApp({
+    super.key,
+    this.launchConfPath,
+    this.store,
+    this.protector,
+  });
 
   /// 启动时自动导入的配置文件路径（可选）。
   final String? launchConfPath;
 
   /// 本地持久化。为 null 时本次运行不落盘。
   final AppStore? store;
+
+  /// 账号密码的落盘保护（可选）。
+  ///
+  /// 由 [main] 在构造本 Widget 之前解析好：安卓上要解一次 Keystore，那一步是
+  /// 异步的，没法留到 [AppState] 的构造里。为 null 时交给
+  /// [SecretProtector.forPlatform] 决定，也就是测试与桌面端的默认行为。
+  final SecretProtector? protector;
 
   @override
   State<XvpnApp> createState() => _XvpnAppState();
@@ -128,16 +147,45 @@ class _XvpnAppState extends State<XvpnApp> {
   late final AppState _state = AppState(
     coreFactory: _coreFactory,
     store: widget.store,
+    protector: widget.protector,
   );
 
   final ThemeController _theme = ThemeController();
 
+  /// MaterialApp 之内那层 Navigator 的 Key。
+  ///
+  /// 导入确认表单必须从**这个** context 弹出，而不是 [State.context]：后者在
+  /// `MaterialApp` **之上**，`showDialog` 从那里找不到 Navigator，表单永远弹不
+  /// 出来——启动参数与安卓分享进来的配置就这样被静默丢掉（用户双击配置文件，
+  /// 应用起来了，配置却没进去）。这类「什么都没发生」正是本项目最不能接受的
+  /// 失败形态，因此这里用一个明确的 Key 把对话框的落点钉在 Navigator 上。
+  final GlobalKey<NavigatorState> _navigatorKey = GlobalKey<NavigatorState>();
+
+  /// 能承载对话框的 context；Widget 已卸载或 Navigator 尚未挂载时为 null。
+  BuildContext? get _dialogContext {
+    if (!mounted) return null;
+    return _navigatorKey.currentContext;
+  }
+
+  /// 取一个能弹出对话框的 context；Navigator 还没挂载时等一帧再试。
+  ///
+  /// 为什么值得等：安卓的分享配置会在 `initState` 阶段就推过来，那时第一帧还没
+  /// 建、Navigator 自然不存在。此时直接退化成「静默导入」会跳过确认表单，而
+  /// 「先让用户看清楚要导入什么」正是这条路径存在的全部意义——那是替用户做决定。
+  /// 等一帧的代价是一个帧间隔，远小于这个代价。
+  ///
+  /// 仍然返回 null 只可能是 Widget 已经卸载（用户在这之前关掉了界面），那时才
+  /// 退化为直接导入：配置宁可不经确认，也不能丢。
+  Future<BuildContext?> _awaitDialogContext() async {
+    final ready = _dialogContext;
+    if (ready != null) return ready;
+    await WidgetsBinding.instance.endOfFrame;
+    return _dialogContext;
+  }
+
   @override
   void initState() {
     super.initState();
-    // 幂等：main() 已调用过一次；这里再兜一次，保证以 XvpnApp 为入口的
-    // 测试/嵌入场景也能在许可页看到本项目许可，而不依赖具体启动路径。
-    registerBundledLicenses();
     // 上次若被强杀，系统代理可能还指着已经退出的内核，先恢复回去。
     // Linux 侧严格只在**存在备份文件**时才动作（recoverIfNeeded 里判断），
     // 因此没有备份的机器上不会去碰 gsettings。
@@ -197,16 +245,32 @@ class _XvpnAppState extends State<XvpnApp> {
       final name = shared['name'] as String? ?? 'shared.conf';
       final text = shared['text'] as String?;
       if (text == null || text.isEmpty) return;
-      if (!mounted) {
-        // 没有可用页面时退化为直接导入：至少配置不会因为弹不出表单而丢掉。
-        importConfDirect(_state, text: text, fileName: name);
-        return;
-      }
-      // 与界面导入一致：先弹出确认表单，不静默导入。
-      await reviewAndImportConf(context, _state, text: text, fileName: name);
+      await _confirmAndImport(text, name);
     } on Object catch (e) {
       _state.reportError('导入分享的配置失败：$e');
     }
+  }
+
+  /// 先弹出确认表单、用户点了「添加」才写进存档；界面已经卸载时直接导入。
+  ///
+  /// 抽出来是因为启动参数与安卓分享两条入口的差别只有文件名：它们都必须走同一
+  /// 条「先确认再落盘」的路。原生侧的两条入口若各写一遍，迟早会有一条被改得
+  /// 不一样——而这两条路里被静默跳过确认的那条，正是用户最没有机会察觉的。
+  Future<void> _confirmAndImport(String text, String fileName) async {
+    final dialogContext = await _awaitDialogContext();
+    if (dialogContext == null) {
+      // 界面已经卸载（用户在这之前关掉了界面）：退化为直接导入。
+      // 配置宁可不经确认，也不能丢。
+      importConfDirect(_state, text: text, fileName: fileName);
+      return;
+    }
+    // 与界面导入一致：先弹出确认表单，不静默导入。
+    //
+    // 这个 context 是**等完之后**才从 [_navigatorKey] 现取的，不是跨 gap 的旧
+    // context（[_awaitDialogContext] 内部已判过 mounted）；分析器看不穿这一层，
+    // 而补一句 `if (!mounted) return;` 只是把同一个判断写两遍。
+    // ignore: use_build_context_synchronously
+    await reviewAndImportConf(dialogContext, _state, text: text, fileName: fileName);
   }
 
   /// 导入启动参数指定的配置文件。
@@ -221,18 +285,7 @@ class _XvpnAppState extends State<XvpnApp> {
       _state.reportError('无法读取 $path：$e');
       return;
     }
-    if (!mounted) {
-      // 启动瞬间还没有 Navigator：退化为直接导入，配置不会丢。
-      importConfDirect(_state, text: text, fileName: _basename(path));
-      return;
-    }
-    // 与界面导入一致：先弹出确认表单，不静默导入。
-    await reviewAndImportConf(
-      context,
-      _state,
-      text: text,
-      fileName: _basename(path),
-    );
+    await _confirmAndImport(text, _basename(path));
   }
 
   @override
@@ -258,8 +311,11 @@ class _XvpnAppState extends State<XvpnApp> {
       valueListenable: _theme,
       builder: (BuildContext context, ThemeMode mode, _) {
         return MaterialApp(
-          title: 'XVPN',
+          // 任务切换器里显示的名字。用产品中文名，与窗口标题、托盘一致。
+          title: '幽门',
           debugShowCheckedModeBanner: false,
+          // 导入确认表单要从 [_navigatorKey] 那层 context 弹出（见 [_dialogContext]）。
+          navigatorKey: _navigatorKey,
           // 两套主题分别对应两套调色板，themeMode 决定用哪一套（system 交给 Flutter 判定）。
           theme: buildXvTheme(XvPalette.light),
           darkTheme: buildXvTheme(XvPalette.dark),
@@ -272,11 +328,31 @@ class _XvpnAppState extends State<XvpnApp> {
           ),
           builder: (BuildContext context, Widget? child) {
             // 只锁定文字缩放，保证两端排版与设计稿一致；亮度交由主题系统决定。
-            return MediaQuery(
+            final Widget scaled = MediaQuery(
               data: MediaQuery.of(
                 context,
               ).copyWith(textScaler: TextScaler.noScaling),
               child: child ?? const SizedBox.shrink(),
+            );
+            // 确认层必须包在 Navigator 外面：导入对话框走 Navigator overlay，
+            // 若确认层只盖在 home 上，用户可以不确认就导入配置。
+            return ListenableBuilder(
+              listenable: _state,
+              builder: (BuildContext context, _) {
+                if (_state.legalNoticeAcknowledged) return scaled;
+                return PopScope(
+                  canPop: false,
+                  child: Stack(
+                    fit: StackFit.expand,
+                    children: <Widget>[
+                      scaled,
+                      LegalAcceptanceGate(
+                        onAcknowledge: _state.acknowledgeLegalNotice,
+                      ),
+                    ],
+                  ),
+                );
+              },
             );
           },
         );

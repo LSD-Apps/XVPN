@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 法律与使用声明 / Legal notice
+    url: https://github.com/LSD-Apps/XVPN/blob/main/docs/LEGAL.md
+    about: 本项目不提供节点、订阅或账号。请先阅读使用边界。This project ships no nodes or subscriptions.
+  - name: 使用指南 / User guide
+    url: https://github.com/LSD-Apps/XVPN/blob/main/docs/USER_GUIDE.zh-CN.md
+    about: 自备服务端 → 导入 → 连接 → 看懂分流。Bring your own server, then import.
+  - name: 安全漏洞（私密） / Private security report
+    url: https://github.com/LSD-Apps/XVPN/security/advisories/new
+    about: 不要在公开 issue 里贴凭据或漏洞细节。Do not disclose credentials or exploit details in public issues.

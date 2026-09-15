@@ -1,9 +1,15 @@
 import 'dart:convert';
 import 'dart:ffi';
 import 'dart:io';
+import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:ffi/ffi.dart';
+import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
+import 'package:pointycastle/api.dart';
+import 'package:pointycastle/block/aes.dart';
+import 'package:pointycastle/block/modes/gcm.dart';
 
 /// 账号密码的落盘保护。
 ///
@@ -12,17 +18,19 @@ import 'package:ffi/ffi.dart';
 /// 读得到这个文件的人（同机的其它账户、备份、云同步、误发的日志）都拿得到
 /// 明文密码。
 ///
-/// 两个实现：
+/// 三个实现：
 ///   * [DpapiSecretProtector]：Windows 上用系统 DPAPI，密钥由当前 Windows
 ///     账户派生。换个账户或换台机器都解不开——这是它的**特性**而不是缺陷。
 ///   * [LinuxSecretProtector]：Linux 上用 Secret Service（libsecret 管理的
 ///     系统钥匙串）。落盘的是一个不透明的 key，密码本身存在钥匙串里。
+///   * [AndroidKeystoreSecretProtector]：安卓上用系统 Keystore 包一把数据密钥，
+///     落在应用私有目录里的是「被包起来的密钥 + 密文」。见那个类的注释。
 ///   * [PlainSecretProtector]：没有系统凭据库可用的平台上的兜底。它不加密，
 ///     并且 [isSecure] 会如实返回 false，界面据此提示用户，而不是假装已经
 ///     保护好了。
 ///
-/// 落盘时会把 [scheme] 一起写下来，因此将来接入更好的方案（例如安卓
-/// Keystore）时，旧数据仍然读得出来：按记录里的 scheme 选择还原方式。
+/// 落盘时会把 [scheme] 一起写下来，因此接入更好的方案时，旧数据仍然读得出来：
+/// 按记录里的 scheme 选择还原方式。
 abstract class SecretProtector {
   const SecretProtector();
 
@@ -47,6 +55,9 @@ abstract class SecretProtector {
   ///
   /// [isWindows] / [isLinux] / [secretService] 仅供测试注入：Linux 分支在
   /// Windows 开发机上跑不到，而「选了哪个方案、失败时降级成什么」必须可断言。
+  ///
+  /// 安卓**不在这里**，因为解包 Keystore 里的密钥是一次异步的原生往返，而这个
+  /// 方法是同步的（[AppState] 在构造里就要用它）。安卓那条路走 [resolve]。
   static SecretProtector forPlatform({
     bool? isWindows,
     bool? isLinux,
@@ -94,6 +105,34 @@ abstract class SecretProtector {
       );
     }
     return const PlainSecretProtector();
+  }
+
+  /// 平台方案，**安卓需要一次原生往返**（解开 Keystore 里的数据密钥），因此是
+  /// 异步的。启动流程在构造 [AppState] 之前 await 它一次。
+  ///
+  /// [directory] 是应用的可写目录（安卓上是原生侧的 `filesDir`）：密钥要落在那
+  /// 儿，拿不到就宁可退回不加密——写不下去的密钥意味着下次启动解不开今天写下的
+  /// 密文，那种「宣称加密了、实则读不回」比明文更坏。
+  ///
+  /// [keystore] / [isAndroid] 仅供测试注入，理由同 [forPlatform]。
+  static Future<SecretProtector> resolve({
+    Directory? directory,
+    KeystoreBackend keystore = const MethodChannelKeystoreBackend(),
+    bool? isAndroid,
+  }) async {
+    final bool android =
+        isAndroid ?? (defaultTargetPlatform == TargetPlatform.android);
+    if (!android) return forPlatform();
+    final created = await AndroidKeystoreSecretProtector.create(
+      directory: directory,
+      backend: keystore,
+    );
+    if (created != null) return created;
+    // 降级必须如实。安卓上走到这里只有两种可能：没有可写目录，或者 Keystore
+    // 这条链路眼下不可用（少见：极少数被裁剪过的系统）。
+    return const PlainSecretProtector(
+      note: '未加密（系统 Keystore 不可用；密码将以明文保存）',
+    );
   }
 }
 
@@ -376,7 +415,7 @@ class SecretToolBackend implements SecretServiceBackend {
           'sh',
           '-c',
           'printf %s "\$XVPN_SECRET" | secret-tool store '
-              '--label "XVPN 凭据" service $_service account "\$1"',
+              '--label "幽门凭据" service $_service account "\$1"',
           'sh',
           account,
         ],
@@ -495,12 +534,316 @@ class LinuxSecretProtector implements SecretProtector {
   }
 }
 
+// ---------------------------------------------------------------- 安卓 Keystore
+
+/// Keystore 的往返调用。
+///
+/// 抽出来是为了让「首次生成 / 解包失败 / 通道不可用」这几条分支**能被测到**——
+/// 与 [SecretServiceBackend] 同一个理由：开发机与 CI 上跑不到真的 AndroidKeyStore，
+/// 而这几条分支恰好决定了凭据是加密落盘还是明文落盘，不能只靠真机肉眼确认。
+abstract class KeystoreBackend {
+  const KeystoreBackend();
+
+  /// 生成一把新的数据密钥，并返回「被 Keystore 包装后的密文」与「明文密钥」。
+  ///
+  /// 失败返回 null（Keystore 不可用、通道没接上），调用方据此退回不加密。
+  Future<({String wrapped, String key})?> generate();
+
+  /// 用 Keystore 里的包装密钥解开数据密钥。解不开返回 null。
+  Future<String?> unwrap(String wrapped);
+}
+
+/// 真实实现：走 `com.xvpn.xvpn/vpn` 通道找 `MainActivity`。
+///
+/// 通道名与 [MethodChannelAndroidVpnCore] / 更新安装用的是同一条，见
+/// `updater.dart` 里为什么它一直保持 `com.xvpn.xvpn/vpn` 这个名字。
+class MethodChannelKeystoreBackend implements KeystoreBackend {
+  const MethodChannelKeystoreBackend();
+
+  static const MethodChannel _channel = MethodChannel('com.xvpn.xvpn/vpn');
+
+  @override
+  Future<({String wrapped, String key})?> generate() async {
+    final Map<Object?, Object?>? result;
+    try {
+      result = await _channel.invokeMethod<Map<Object?, Object?>>(
+        'generateCredentialKey',
+      );
+    } on PlatformException catch (e) {
+      // 原生侧报错（Keystore 坏了、方法没接上）在这里收住：调用方要的是「能不能
+      // 加密」这一个答案，而不是一次异常。真实原因留在日志里。
+      debugPrint('生成凭据密钥失败：$e');
+      return null;
+    } on MissingPluginException catch (e) {
+      debugPrint('原生侧没有接上凭据密钥通道：$e');
+      return null;
+    }
+    final wrapped = result?['wrapped'];
+    final key = result?['key'];
+    if (wrapped is! String || key is! String) return null;
+    if (wrapped.isEmpty || key.isEmpty) return null;
+    return (wrapped: wrapped, key: key);
+  }
+
+  @override
+  Future<String?> unwrap(String wrapped) async {
+    final String? key;
+    try {
+      key = await _channel.invokeMethod<String>(
+        'unwrapCredentialKey',
+        <String, Object?>{'wrapped': wrapped},
+      );
+    } on PlatformException catch (e) {
+      debugPrint('解开凭据密钥失败：$e');
+      return null;
+    } on MissingPluginException catch (e) {
+      debugPrint('原生侧没有接上凭据密钥通道：$e');
+      return null;
+    }
+    return (key == null || key.isEmpty) ? null : key;
+  }
+}
+
+/// 安卓上基于系统 Keystore 的保护。
+///
+/// 与另外两个实现的差别在**密钥从哪来**：DPAPI 的密钥由当前 Windows 账户派生，
+/// Linux 的密码本体存在钥匙串里，而 `AndroidKeyStore` 里的密钥**不可导出**，
+/// 也就不能直接拿它加密任意长度的数据——Keystore 只肯做「一次加解密」，而且
+/// 只能经 Java 侧调用，必然是异步的。
+///
+/// 而 [protect] / [unprotect] 必须是同步的：账号密码在 `AppState` 的**构造**里
+/// 就要恢复出来（见那里的注释）。把它们改成异步，等于让界面先显示一份「没有
+/// 密码的配置」——最坏情况下会带着空凭据去建隧道。
+///
+/// 所以这里用的是官方 `EncryptedSharedPreferences` 同一套结构：Keystore 里放一把
+/// AES-256 的**包装密钥**（不可导出），启动时（[create]）用它解开一把随机的数据
+/// 密钥（DEK），之后真正加密账号密码的是那把 DEK。落盘的是「被 Keystore 包起来
+/// 的 DEK」（[wrappedKeyFileName]）和「DEK 加密后的密文」，而解开 DEK 的唯一手段
+/// 在那台设备的 Keystore 里——**换台设备、或从云备份恢复出来的这两份文件都解不
+/// 开**。这与 DPAPI 换个 Windows 账户解不开是同一类特性，不是缺陷；界面会按
+/// 「请重新填一次」处理（见 `AppState._readCredentials`）。
+class AndroidKeystoreSecretProtector implements SecretProtector {
+  AndroidKeystoreSecretProtector._(this._key) : _random = Random.secure();
+
+  /// 数据密钥。只活在进程内存里。
+  final Uint8List _key;
+
+  final Random _random;
+
+  /// 存放「被 Keystore 包起来的 DEK」的文件名。
+  ///
+  /// 与 `config.json` **分开放**：密钥文件坏掉只该丢掉账号密码，不该让整份配置
+  /// 都读不出来——`AppStore.load` 遇到坏 JSON 会返回空表，那是全丢。
+  static const String wrappedKeyFileName = 'credentials.key';
+
+  /// GCM 的 nonce 长度。96 位是 GCM 的标准长度，也是唯一不需要再做 GHASH 派生
+  /// 的长度。
+  static const int _nonceLength = 12;
+
+  /// GCM 认证标签长度（位）。
+  static const int _tagBits = 128;
+
+  /// 数据密钥长度（字节）。原生侧生成的就是 32 字节；这里再卡一次，见 [_verified]。
+  static const int _dekLength = 32;
+
+  @override
+  String get scheme => 'android-keystore';
+
+  /// 创建时做过一次真实往返（见 [_verified]），所以这里可以如实为 true。
+  @override
+  bool get isSecure => true;
+
+  @override
+  String get description => '已用系统 Keystore 加密（Android Keystore）';
+
+  /// 启动时调用一次：取回（或首次生成）数据密钥。
+  ///
+  /// 返回 null 表示**没法提供加密**，调用方应退回 [PlainSecretProtector] 并如实
+  /// 告诉用户。三种情况：
+  ///   * [directory] 为 null——没有可写目录，密钥存不住，下次启动就解不开今天写
+  ///     下的密文。写不进去却宣称「已加密」，比不加密更坏。
+  ///   * Keystore 或通道不可用（`generate` 返回 null）。
+  ///   * 自检往返失败（[_verified]），说明这条链路眼下是坏的。
+  static Future<AndroidKeystoreSecretProtector?> create({
+    Directory? directory,
+    KeystoreBackend backend = const MethodChannelKeystoreBackend(),
+  }) async {
+    if (directory == null) return null;
+    final file = File(
+      '${directory.path}${Platform.pathSeparator}$wrappedKeyFileName',
+    );
+
+    final existing = _readWrapped(file);
+    if (existing != null) {
+      final unwrapped = await _unwrapped(existing, backend);
+      if (unwrapped != null) return _verified(unwrapped);
+      // 解不开：多半是从云备份或另一台设备恢复过来的这两份文件，而 Keystore 里
+      // 的包装密钥不随备份走。旧密文至此**已经不可能还原**——留着那个文件只会
+      // 让人以为还有救，所以下面直接换成新密钥并覆盖它。用户侧看到的不是「静默
+      // 丢密码」：凭据解不出来时 `AppState` 会把这份配置还原成「待补填账号密码」，
+      // 配置页有入口，连接前也会明确提示。
+      debugPrint('凭据密钥解不开（可能来自另一台设备），改用新密钥：${file.path}');
+    }
+
+    final generated = await _generate(backend);
+    if (generated == null) return null;
+    try {
+      file.parent.createSync(recursive: true);
+      file.writeAsStringSync(generated.wrapped, flush: true);
+    } on Object catch (e) {
+      debugPrint('凭据密钥写入失败：$e');
+      return null;
+    }
+    return _verified(base64Decode(generated.key));
+  }
+
+  /// 读那个文件。读不出来（不存在、权限、内容被截断）一律当作「没有」。
+  static String? _readWrapped(File file) {
+    try {
+      if (!file.existsSync()) return null;
+      final text = file.readAsStringSync().trim();
+      return text.isEmpty ? null : text;
+    } on Object catch (e) {
+      debugPrint('凭据密钥读取失败：$e');
+      return null;
+    }
+  }
+
+  /// 问 Keystore 要一把新的数据密钥；任何异常都退化成 null。
+  static Future<({String wrapped, String key})?> _generate(
+    KeystoreBackend backend,
+  ) async {
+    try {
+      return await backend.generate();
+    } on Object catch (e) {
+      debugPrint('生成凭据密钥失败：$e');
+      return null;
+    }
+  }
+
+  /// 解包并校验密钥长度。GCM 只认 128 / 192 / 256 位，长度不对宁可当没拿到。
+  static Future<Uint8List?> _unwrapped(
+    String wrapped,
+    KeystoreBackend backend,
+  ) async {
+    final String? key;
+    try {
+      key = await backend.unwrap(wrapped);
+    } on Object catch (e) {
+      debugPrint('解开凭据密钥失败：$e');
+      return null;
+    }
+    if (key == null) return null;
+    try {
+      return base64Decode(key);
+    } on FormatException {
+      return null;
+    }
+  }
+
+  /// 用一次真实往返确认这把密钥**眼下**确实能用，长度也得对。
+  ///
+  /// 与 [LinuxSecretProtector.tryCreate] 同一个理由：不能假设「拿到了密钥」就等于
+  /// 「加密可用」。`isSecure` 只在这条往返真的走通时才为 true。长度在这里卡住而
+  /// 不是各写一遍：**两条来源**（首次生成 / 解包文件）都必须过这一关，任何一条
+  /// 绕过去都会让「同一份密文换个来源就解不开」变成可能。
+  static AndroidKeystoreSecretProtector? _verified(Uint8List key) {
+    if (key.length != _dekLength) {
+      debugPrint('凭据密钥长度不对（${key.length} 字节），当作没拿到');
+      return null;
+    }
+    try {
+      final protector = AndroidKeystoreSecretProtector._(key);
+      final probe = 'xvpn-selftest-${DateTime.now().microsecondsSinceEpoch}';
+      if (protector.unprotect(protector.protect(probe)) != probe) return null;
+      return protector;
+    } on Object catch (e) {
+      debugPrint('凭据加密自检失败：$e');
+      return null;
+    }
+  }
+
+  @override
+  String protect(String plaintext) {
+    final nonce = _nonce();
+    final sealed = _gcm(
+      encrypt: true,
+      nonce: nonce,
+      input: Uint8List.fromList(utf8.encode(plaintext)),
+    );
+    final out = BytesBuilder(copy: false)
+      ..add(nonce)
+      ..add(sealed);
+    return base64Encode(out.takeBytes());
+  }
+
+  /// 每次加密一把新的随机 nonce。
+  ///
+  /// GCM 下 nonce **绝不能在同一把密钥下重复**，重复会直接泄漏两次明文的异或，
+  /// 并让认证失去意义。逐字节取 [_random]（`Random.secure()`，安卓上落到
+  /// `/dev/urandom`）：96 位随机 nonce 在同一个密钥下重复的概率可以忽略，而
+  /// 这里每次加密最多两三条凭据，量级上远够。
+  Uint8List _nonce() {
+    final nonce = Uint8List(_nonceLength);
+    for (var i = 0; i < _nonceLength; i++) {
+      nonce[i] = _random.nextInt(256);
+    }
+    return nonce;
+  }
+
+  @override
+  String? unprotect(String payload) {
+    final Uint8List bytes;
+    try {
+      bytes = base64Decode(payload);
+    } on FormatException {
+      return null;
+    }
+    // 短于 nonce + 标签的密文不可能出自 [protect]。
+    if (bytes.length < _nonceLength + _tagBits ~/ 8) return null;
+    final nonce = bytes.sublist(0, _nonceLength);
+    try {
+      final clear = _gcm(
+        encrypt: false,
+        nonce: nonce,
+        input: Uint8List.sublistView(bytes, _nonceLength),
+      );
+      return utf8.decode(clear);
+    } on InvalidCipherTextException {
+      // 认证失败：密文被改过，或者这不是这把密钥加密的。与 DPAPI 解不开一样，
+      // 交给调用方按「请重新填一次」处理。
+      return null;
+    } on FormatException {
+      // 解出来不是合法 UTF-8：同上。
+      return null;
+    }
+  }
+
+  /// AES-256-GCM。
+  ///
+  /// 走纯 Dart 而不是把每次加解密都甩给原生：只有「解开 DEK」那一次必须问
+  /// Keystore，之后的每一次都要是同步的（理由见类注释）。GCM 自带认证，因此
+  /// 不需要再单独做一个 MAC。
+  Uint8List _gcm({
+    required bool encrypt,
+    required Uint8List nonce,
+    required Uint8List input,
+  }) {
+    final cipher = GCMBlockCipher(AESEngine())
+      ..init(
+        encrypt,
+        AEADParameters(KeyParameter(_key), _tagBits, nonce, Uint8List(0)),
+      );
+    return cipher.process(input);
+  }
+}
+
 // ---------------------------------------------------------------- 兜底方案
 
 /// 不加密的兜底方案。
 ///
-/// 它存在的意义是**保持行为诚实**：在没有可用系统凭据库的平台上（安卓的
-/// Keystore 尚未接入；Linux 上钥匙串不可用时），密码只能原样落盘。与其写一个
+/// 它存在的意义是**保持行为诚实**：在没有可用系统凭据库的地方（Linux 上钥匙串
+/// 不可用、安卓上 Keystore 或可写目录拿不到时），密码只能原样落盘。与其写一个
 /// 自制的异或/固定密钥混淆来制造「已加密」的错觉，不如明确地不加密，并让界面
 /// 把这件事告诉用户。
 class PlainSecretProtector implements SecretProtector {

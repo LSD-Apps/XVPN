@@ -282,7 +282,7 @@ String failureReport(List<ConnectionFailure> failures, {DateTime? now}) {
   if (failures.isEmpty) return '暂无失败记录。';
   final digest = digestFailures(failures);
   final buffer = StringBuffer()
-    ..writeln('XVPN 连接失败记录')
+    ..writeln('幽门连接失败记录')
     ..writeln(
       '共计 ${digest.total} 条：直连 ${digest.directFailures} / 隧道 ${digest.proxiedFailures}',
     );

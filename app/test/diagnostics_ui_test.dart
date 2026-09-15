@@ -671,6 +671,7 @@ void main() {
 
       expect(find.text(fileTitle), findsOneWidget);
       expect(find.text(manualTitle), findsOneWidget);
+      expect(find.text('自备订阅'), findsOneWidget);
       // 并排：两者的垂直中心基本一致。
       final fileY = tester.getCenter(find.text(fileTitle)).dy;
       final manualY = tester.getCenter(find.text(manualTitle)).dy;
@@ -700,7 +701,8 @@ void main() {
 
       expect(find.text(fileTitle), findsOneWidget);
       expect(find.text(manualTitle), findsOneWidget);
-      expect(find.byType(ImportActionTile), findsNWidgets(2));
+      expect(find.text('自备订阅'), findsOneWidget);
+      expect(find.byType(ImportActionTile), findsNWidgets(3));
 
       await _stop(tester, state);
     });
@@ -723,6 +725,7 @@ void main() {
 
       expect(find.text(fileTitle), findsOneWidget);
       expect(find.text(manualTitle), findsOneWidget);
+      expect(find.text('自备订阅'), findsOneWidget);
       // 窄屏竖排：手填入口在选文件入口下方。
       expect(
         tester.getTopLeft(find.text(manualTitle)).dy,

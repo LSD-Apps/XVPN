@@ -1132,8 +1132,8 @@ class DesktopUpdateInstaller implements UpdateInstaller {
     // 提权那次要在文案里说清楚「授权才会动手」：脚本确实已经跑起来了，但真正
     // 的复制要等用户在 UAC 上点「是」——否则用户会以为更新已经在进行。
     final String message = copyScript == null
-        ? '更新程序已启动。请退出 XVPN，它会在应用退出后自动替换文件并重新启动。'
-        : '更新程序已启动。请退出 XVPN；它会在应用退出后弹出一次管理员授权，'
+        ? '更新程序已启动。请退出幽门，它会在应用退出后自动替换文件并重新启动。'
+        : '更新程序已启动。请退出幽门；它会在应用退出后弹出一次管理员授权，'
               '获得授权才会替换文件（取消则不做任何改动），随后自动重新启动。';
     return UpdateInstallStarted(
       message,
@@ -1181,7 +1181,7 @@ class DesktopUpdateInstaller implements UpdateInstaller {
     return (
       blocked: UpdateInstallFailure(
         '当前安装在只读位置（${installDir.path}），自动更新需要写权限。'
-        '请用系统包管理器更新；或把 XVPN 解压到用户目录'
+        '请用系统包管理器更新；或把幽门解压到用户目录'
         '（${suggestedUserInstallDir(platform)}）后即可自动更新。',
       ),
       elevate: false,
@@ -1202,7 +1202,7 @@ abstract class ApkInstallChannel {
 
 /// 复用既有的平台通道。
 ///
-/// 通道名刻意保持 `com.xvpn.xvpn/vpn`（虽然包名已改成 `net.lusida.xvpn`）：
+/// 通道名刻意保持 `com.xvpn.xvpn/vpn`（虽然包名已改成 `net.lusida.xvpnclient`）：
 /// 它是 Dart 与 `MainActivity.kt` 之间的存量契约，改名要两端同时动，收益为零。
 class MethodChannelApkInstallChannel implements ApkInstallChannel {
   const MethodChannelApkInstallChannel();
@@ -1253,7 +1253,7 @@ class AndroidUpdateInstaller implements UpdateInstaller {
         return const UpdateInstallStarted('已交给系统安装器，请在弹出的界面里确认安装。');
       case 'permission_required':
         return const UpdateInstallPermissionRequired(
-          '需要先允许 XVPN 安装未知应用。已为你打开系统设置，授权后请返回重试。',
+          '需要先允许幽门安装未知应用。已为你打开系统设置，授权后请返回重试。',
         );
       default:
         return const UpdateInstallFailure('系统安装器没有返回有效结果，请到发布页手动下载安装。');

@@ -658,7 +658,7 @@ void main() {
       await _pumpShell(tester, state);
 
       // 品牌只出现一次（标题栏里），侧栏不再重复
-      expect(find.text('XVPN'), findsOneWidget);
+      expect(find.text('幽门'), findsOneWidget);
       expect(find.byType(XvTitleBar), findsOneWidget);
       // 标题栏右侧是主题切换与三个窗口按钮（按提示文案定位，不绑定具体图标实现）
       expect(find.text('跟随系统'), findsOneWidget);
@@ -677,8 +677,8 @@ void main() {
 
     expect(find.byType(XvTitleBar), findsNothing);
     // 移动端没有标题栏，品牌靠页头左侧的图标露出；
-    // 这里不能再有 'XVPN' 文字，否则会和页面标题一起出现两个品牌。
-    expect(find.text('XVPN'), findsNothing);
+    // 这里不能再有 '幽门' 文字，否则会和页面标题一起出现两个品牌。
+    expect(find.text('幽门'), findsNothing);
     expect(find.byType(XvBrandMark), findsOneWidget);
     expect(_brandImageAsset(), findsOneWidget);
   });

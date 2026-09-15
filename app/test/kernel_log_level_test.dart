@@ -38,6 +38,8 @@ MIIB
 const _hysteria2 =
     'hysteria2://testpassword@hy2.example.net:443/?sni=hy2.example.net';
 
+const _shadowsocks = 'ss://aes-256-gcm:testpassword@ss.example.net:8388';
+
 Map<String, Object?> _logOf(String text, String fileName) {
   final profile = VpnProtocolFactory.parse(text, fileName);
   final config = SingBoxConfigBuilder.build(
@@ -72,6 +74,22 @@ void main() {
         VpnProtocolFactory.parse(_hysteria2, 'node.txt').wantsDebugLogs,
         isFalse,
       );
+    });
+
+    test('Shadowsocks 保持 warn：流式代理没有握手里程碑', () {
+      expect(_logOf(_shadowsocks, 'ss.txt')['level'], 'warn');
+      expect(
+        VpnProtocolFactory.parse(_shadowsocks, 'ss.txt').wantsDebugLogs,
+        isFalse,
+      );
+    });
+
+    test('VLESS 保持 warn：流式代理没有握手里程碑', () {
+      const link =
+          'vless://aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee@vless.example.net:443'
+          '?type=tcp&security=tls&sni=vless.example.net';
+      expect(_logOf(link, 'node.txt')['level'], 'warn');
+      expect(VpnProtocolFactory.parse(link, 'node.txt').wantsDebugLogs, isFalse);
     });
   });
 }

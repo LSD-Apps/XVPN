@@ -12,7 +12,7 @@ import '../theme.dart';
 class XvBrandMark extends StatelessWidget {
   const XvBrandMark({
     super.key,
-    this.label = 'XVPN',
+    this.label = '幽门',
     this.size = 24,
     this.fontSize = 14,
   });
@@ -1622,6 +1622,7 @@ class SettingRow extends StatelessWidget {
     required this.control,
     this.isLast = false,
     this.controlWidth,
+    this.badge,
   });
 
   final String title;
@@ -1631,6 +1632,13 @@ class SettingRow extends StatelessWidget {
 
   /// 控制区固定宽度，用于让多行的分段控件左边缘对齐。
   final double? controlWidth;
+
+  /// 标题上方的标记（如「有新版本」「下载失败」）。为 null 时不占位。
+  ///
+  /// 存在的理由：有些设置项的**状态**比标题更重要，而把它写进 [title] 会让标题
+  /// 随状态变化（今天是「当前版本」，明天是「下载失败」），一列设置项读起来就
+  /// 不再是同一件事。标记单独一行，标题保持稳定。
+  final Widget? badge;
 
   @override
   Widget build(BuildContext context) {
@@ -1643,6 +1651,10 @@ class SettingRow extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: <Widget>[
+                if (badge != null) ...<Widget>[
+                  badge!,
+                  const SizedBox(height: 7),
+                ],
                 Text(title, style: XvText.rowTitle),
                 const SizedBox(height: 4),
                 Text(description, style: XvText.rowDesc),

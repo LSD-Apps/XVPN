@@ -1,0 +1,4 @@
+# 自备 VMess 服务端导出的分享链接示意（RFC 2606 保留域名，不可连通）。
+# 真实 UUID 与地址必须换成你自己的。本仓库不提供节点。
+
+vmess://eyJ2IjoiMiIsInBzIjoiZXhhbXBsZSIsImFkZCI6InZtZXNzLmV4YW1wbGUubmV0IiwicG9ydCI6IjQ0MyIsImlkIjoiYWFhYWFhYWEtYmJiYi00Y2NjLThkZGQtZWVlZWVlZWVlZWVlIiwiYWlkIjoiMCIsInNjeSI6ImF1dG8iLCJuZXQiOiJ0Y3AiLCJ0eXBlIjoibm9uZSIsImhvc3QiOiIiLCJwYXRoIjoiIiwidGxzIjoidGxzIiwic25pIjoidm1lc3MuZXhhbXBsZS5uZXQifQ==

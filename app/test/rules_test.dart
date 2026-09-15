@@ -162,6 +162,15 @@ void main() {
       }
     });
 
+    test('派生索引不进可写规则库清单，避免 origin.json 升级后粘住', () {
+      expect(RuleSetStore.builtinFileNames, isNot(contains('cn-ip.bin')));
+      expect(
+        RuleSetStore.builtinFileNames,
+        isNot(contains('cn-ip.origin.json')),
+        reason: 'ensure 若把 origin.json 拷进可写目录，升级后旧指纹会盖住包内新指纹',
+      );
+    });
+
     test('停用标记跨重启保留', () {
       final first = newState();
       expect(first.setRuleSetEnabled('geosite-cn', false), isTrue);

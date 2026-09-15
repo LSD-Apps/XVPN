@@ -75,19 +75,27 @@ class AndroidVpnCore extends VpnCore {
   /// 与 MainActivity / XvpnVpnService 约定的通道名。
   static const MethodChannel _channel = MethodChannel('com.xvpn.xvpn/vpn');
 
-  /// 规则集在 APK 资源里的位置。
-  static const List<String> _ruleSetAssets = <String>[
-    'assets/rulesets/geosite-cn.srs',
-    'assets/rulesets/geoip-cn.srs',
+  /// 内置规则集在 APK 资源里的位置。
+  ///
+  /// 从 [RuleSetStore.builtins] **派生**，不另抄一份文件名清单。抄一份的下场
+  /// 已经实测过一次：`geosite-cn-extra` / `geoip-cn-extra` 加入内置并默认启用后，
+  /// 这里仍只列着 `geosite-cn` / `geoip-cn`，于是内核启动的第一件事就是
+  /// `parse rule-set: open .../rulesets/geosite-cn-extra.srs: no such file or
+  /// directory`——界面表现为「连不上」，而原因与用户的网络、配置毫无关系。
+  /// 单源之后，新增内置规则集只要加进 [RuleSetStore.builtins] 就会自动随包解出。
+  static final List<String> _ruleSetAssets = <String>[
+    for (final BuiltinRuleSet ruleSet in RuleSetStore.builtins)
+      'assets/rulesets/${ruleSet.fileName}',
   ];
 
   /// 所有需要在连接前落到磁盘上的资源。
   ///
   /// 中国 IP 索引走同一条路径：内核不需要它，但 DNS 交叉校验需要，
   /// 而它同样只在 APK 资源里。
-  static const List<String> _stagedAssets = <String>[
+  static final List<String> _stagedAssets = <String>[
     ..._ruleSetAssets,
     CnIpIndex.assetPath,
+    CnIpIndex.originAssetPath,
   ];
 
   @override
@@ -473,12 +481,10 @@ class AndroidVpnCore extends VpnCore {
 
   /// 把随包分发的资源写到应用私有目录，返回该目录路径。
   ///
-  /// 只在文件缺失或内容不对时重写：解包不到 100 KB 不贵，但没必要每次连接都做。
-  ///
-  /// 「已存在且大于 64 字节就跳过」这一条是有意保留的：现在「检查更新」直接写
-  /// 进这个目录（见 [ruleSetUpdateDir]），因此被跳过的是**用户刚更新过的文件**，
-  /// 这正是它不该被出厂副本盖回去的理由。更新后无需任何失效处理——下一次连接
-  /// 拿到的就是同一目录里的新内容，内核立刻用上。
+  /// `.srs` 已存在且大于 64 字节就跳过：现在「检查更新」直接写进这个目录
+  /// （见 [ruleSetUpdateDir]），被跳过的是**用户刚更新过的文件**，不该被出厂
+  /// 副本盖回去。`cn-ip.bin` / `origin.json` 每次都从 APK 覆盖——它们不会被
+  /// 那条路径更新，必须跟随时应用包，否则升级后会一直拿着旧 CIP1。
   Future<String> _stageAssets() async {
     final base = await _channel.invokeMethod<String>('filesDir');
     if (base == null || base.isEmpty) {
@@ -490,7 +496,13 @@ class AndroidVpnCore extends VpnCore {
     for (final asset in _stagedAssets) {
       final name = asset.split('/').last;
       final target = File('${dir.path}${Platform.pathSeparator}$name');
-      if (target.existsSync() && target.lengthSync() > 64) continue;
+      // .srs 可能已被「检查更新」换成更新的上游副本，不能用出厂文件盖回去。
+      // cn-ip.bin / origin.json 不会被那条路径更新，必须跟随时 APK，
+      // 否则升级后安卓会一直拿着旧 CIP1，IPv6 判定静默失效。
+      final derivedIndex = name == 'cn-ip.bin' || name == 'cn-ip.origin.json';
+      if (!derivedIndex && target.existsSync() && target.lengthSync() > 64) {
+        continue;
+      }
       final ByteData data;
       try {
         data = await (assetLoader?.call(asset) ?? rootBundle.load(asset));

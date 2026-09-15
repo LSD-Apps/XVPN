@@ -11,8 +11,7 @@ enum VpnProtocol {
   wireGuard,
   openVpn,
 
-  // 以下为规划中的协议。sing-box 原生支持它们，接入成本主要在于
-  // 「把各家客户端导出的配置解析成统一字段」这一步。
+  // 流式代理：片段进 outbounds。识别靠分享链接前缀 / JSON type，不靠扩展名。
   shadowsocks,
   vmess,
   vless,
@@ -45,9 +44,11 @@ extension VpnProtocolInfo on VpnProtocol {
     VpnProtocol.wireGuard => <String>['conf'],
     VpnProtocol.openVpn => <String>['ovpn'],
     VpnProtocol.shadowsocks => <String>['json', 'txt'],
-    VpnProtocol.vmess => <String>['json'],
-    VpnProtocol.vless => <String>['json'],
-    VpnProtocol.trojan => <String>['json', 'yaml', 'yml'],
+    // 分享链接按内容识别，不独占扩展名：`.json` 已归 Shadowsocks 的约定，
+    // `.yaml` 已归 Hysteria2。双击打开仍走内容判定。
+    VpnProtocol.vmess => const <String>[],
+    VpnProtocol.vless => const <String>[],
+    VpnProtocol.trojan => const <String>[],
     // Hysteria2 约定用官方客户端配置的文件名（config.yaml）。分享链接与
     // sing-box JSON 出站解析器仍然接受（见 hysteria2_conf.dart），它们只是
     // 不作为**约定的文件名**对外宣传。
@@ -55,12 +56,7 @@ extension VpnProtocolInfo on VpnProtocol {
   };
 
   /// 是否已实现导入。未实现的协议在界面上不提供入口，避免给出无法兑现的承诺。
-  bool get isImportable => switch (this) {
-    VpnProtocol.wireGuard ||
-    VpnProtocol.openVpn ||
-    VpnProtocol.hysteria2 => true,
-    _ => false,
-  };
+  bool get isImportable => true;
 }
 
 /// 已实现导入的协议。

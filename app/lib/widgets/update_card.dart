@@ -314,14 +314,6 @@ class _UpdateCardState extends State<UpdateCard> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: <Widget>[
               const XvCardTitle('版本更新'),
-              Row(
-                children: <Widget>[
-                  Text('当前版本', style: XvText.rowDesc),
-                  const SizedBox(width: 8),
-                  Text('v$appVersion', style: XvText.rowTitle),
-                ],
-              ),
-              const SizedBox(height: 10),
               ..._buildBody(notice),
             ],
           );
@@ -329,6 +321,75 @@ class _UpdateCardState extends State<UpdateCard> {
       ),
     );
   }
+
+  /// 左栏标题：本机当前是哪个版本。
+  ///
+  /// 每个阶段都用它当标题——在检查、在下载、还是失败了，这一行说的都是同一件
+  /// 事，阶段状态走 [SettingRow.badge] 或 [SettingRow.description]。版本号只在
+  /// **这一处**出现：测试断言 `find.textContaining(appVersion)` 只有一条，多写
+  /// 一处会让「哪个才是当前版本」变得含糊。
+  String get _versionTitle => '当前版本 v$appVersion';
+
+  /// 一条「左边状态、右边动作」的设置行。
+  ///
+  /// 版本更新的每个阶段都是设置页里的一条设置项：左边是当前状态，右边是这一步
+  /// 能做的动作，用的正是「外观」「启动」「关于」几张卡片用的 [SettingRow]。
+  /// 此前这里是竖排——说明占一行、按钮另起一行——行距与控件的右边缘都和相邻
+  /// 卡片对不齐，同一页里出现两套版式。
+  ///
+  /// 动作不止一个时在右侧**纵向**排开：横着放会先把左边的说明文字挤掉，窄屏上
+  /// 随后溢出。
+  Widget _row({
+    Widget? badge,
+    String? title,
+    required String description,
+    List<Widget> actions = const <Widget>[],
+  }) {
+    return SettingRow(
+      badge: badge,
+      title: title ?? _versionTitle,
+      description: description,
+      isLast: true,
+      control: actions.isEmpty
+          ? const SizedBox.shrink()
+          : Column(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: <Widget>[
+                for (int i = 0; i < actions.length; i++) ...<Widget>[
+                  if (i > 0) const SizedBox(height: 6),
+                  actions[i],
+                ],
+              ],
+            ),
+    );
+  }
+
+  /// 带图标的一行状态标记，用作 [SettingRow.badge]。
+  ///
+  /// 不直接用 [RouteTag] 是因为错误态需要一个图标：颜色之外还有形状，
+  /// 色觉障碍的用户同样分得出「出错了」和「有更新」。
+  static Widget _badge(IconData icon, String text, Color color) => Row(
+    mainAxisSize: MainAxisSize.min,
+    children: <Widget>[
+      Icon(icon, size: 14, color: color),
+      const SizedBox(width: 6),
+      Text(
+        text,
+        style: TextStyle(
+          fontSize: 11.5,
+          fontWeight: FontWeight.w600,
+          color: color,
+        ),
+      ),
+    ],
+  );
+
+  /// 等待期的转圈指示。与按钮同高，单放也能明确表达「在做事」。
+  static const Widget _spinner = SizedBox(
+    width: 14,
+    height: 14,
+    child: CircularProgressIndicator(strokeWidth: 2),
+  );
 
   List<Widget> _buildBody(UpdateNotice? notice) {
     if (_checking) return _buildChecking();
@@ -359,58 +420,38 @@ class _UpdateCardState extends State<UpdateCard> {
   }
 
   List<Widget> _buildIdle() => <Widget>[
-    Text('检查是否有新版本可用。', style: XvText.rowDesc),
-    const SizedBox(height: 10),
-    Wrap(
-      spacing: 8,
-      runSpacing: 8,
-      children: <Widget>[
-        XvButton(label: '检查更新', onPressed: _check),
-      ],
+    _row(
+      description: '检查是否有新版本可用。',
+      actions: <Widget>[XvButton(label: '检查更新', onPressed: _check)],
     ),
   ];
 
   List<Widget> _buildChecking() => <Widget>[
-    Row(
-      children: <Widget>[
-        const SizedBox(
-          width: 14,
-          height: 14,
-          child: CircularProgressIndicator(strokeWidth: 2),
+    _row(
+      description: '正在检查更新…',
+      actions: <Widget>[
+        // 禁用而不是隐藏：按钮始终在位，重复点击不会再触发一次。
+        // 转圈放在它旁边，等待中的动作与它的入口在同一处。
+        Row(
+          mainAxisSize: MainAxisSize.min,
+          children: const <Widget>[
+            _spinner,
+            SizedBox(width: 10),
+            XvButton(label: '检查更新', onPressed: null),
+          ],
         ),
-        const SizedBox(width: 10),
-        Expanded(child: Text('正在检查更新…', style: XvText.rowDesc)),
-      ],
-    ),
-    const SizedBox(height: 10),
-    Wrap(
-      spacing: 8,
-      runSpacing: 8,
-      children: <Widget>[
-        // 禁用而不是隐藏：进度条旁边始终有一个明确的入口，重复点击也不会再触发。
-        XvButton(label: '检查更新', onPressed: null),
       ],
     ),
   ];
 
   /// 已是最新版本。这是最常见的结果，用绿色陈述句而不是告警样式。
+  ///
+  /// 刻意**不**加标记：这里没有需要用户做的事，多一个绿色标签只会让最常见的结果
+  /// 看起来像一条通知。
   List<Widget> _buildUpToDate(String latestVersion) => <Widget>[
-    Row(
-      children: <Widget>[
-        Icon(Icons.check_circle_outline, size: 15, color: XV.green),
-        const SizedBox(width: 8),
-        Expanded(
-          child: Text('已是最新版本（v$latestVersion）。', style: XvText.rowDesc),
-        ),
-      ],
-    ),
-    const SizedBox(height: 10),
-    Wrap(
-      spacing: 8,
-      runSpacing: 8,
-      children: <Widget>[
-        XvButton(label: '检查更新', onPressed: _check),
-      ],
+    _row(
+      description: '已是最新版本（v$latestVersion）。',
+      actions: <Widget>[XvButton(label: '检查更新', onPressed: _check)],
     ),
   ];
 
@@ -420,30 +461,15 @@ class _UpdateCardState extends State<UpdateCard> {
   List<Widget> _buildAvailable(UpdateInfo info, {bool fromStartup = false}) {
     final size = info.assetSize;
     return <Widget>[
-      Row(
-        children: <Widget>[
-          RouteTag.green('有新版本'),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(
-              'v${info.version}',
-              style: XvText.rowTitle,
-              overflow: TextOverflow.ellipsis,
-            ),
-          ),
-        ],
-      ),
-      const SizedBox(height: 6),
-      Text(_noteFor(info), style: XvText.caption),
-      if (size != null) ...<Widget>[
-        const SizedBox(height: 4),
-        Text('安装包大小：${_formatSize(size)}', style: XvText.caption),
-      ],
-      const SizedBox(height: 10),
-      Wrap(
-        spacing: 8,
-        runSpacing: 8,
-        children: <Widget>[
+      _row(
+        badge: RouteTag.green('有新版本'),
+        // 标题换成新版本号：这一行要回答的是「要不要升到哪个版本」，而当前版本
+        // 在初始态与其它阶段都已经写过。
+        title: 'v${info.version}',
+        description: size == null
+            ? _noteFor(info)
+            : '${_noteFor(info)}（安装包 ${_formatSize(size)}）',
+        actions: <Widget>[
           XvButton(
             label: '下载更新',
             kind: XvButtonKind.primary,
@@ -465,27 +491,27 @@ class _UpdateCardState extends State<UpdateCard> {
         ? '${_formatSize(_received)} / ${_formatSize(total)}'
         : '已下载 ${_formatSize(_received)}';
     return <Widget>[
-      Row(
-        children: <Widget>[
-          Expanded(child: Text('正在下载更新包…', style: XvText.rowDesc)),
-          Text(progressText, style: XvText.caption),
-        ],
-      ),
-      const SizedBox(height: 8),
-      ClipRRect(
-        borderRadius: BorderRadius.circular(3),
-        child: LinearProgressIndicator(
-          value: fraction,
-          minHeight: 6,
-          backgroundColor: XV.line2,
-        ),
+      _row(
+        description: '正在下载更新包…',
+        actions: <Widget>[XvButton(label: '取消', onPressed: _cancelDownload)],
       ),
       const SizedBox(height: 10),
-      Wrap(
-        spacing: 8,
-        runSpacing: 8,
+      // 进度条是**整行**的：它表达的是整件事的进度，压在右栏里会和按钮抢宽度，
+      // 也会让百分比数字频繁换行。已完成量与总量写在它右侧，与进度条同一行读。
+      Row(
         children: <Widget>[
-          XvButton(label: '取消', onPressed: _cancelDownload),
+          Expanded(
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(3),
+              child: LinearProgressIndicator(
+                value: fraction,
+                minHeight: 6,
+                backgroundColor: XV.line2,
+              ),
+            ),
+          ),
+          const SizedBox(width: 10),
+          Text(progressText, style: XvText.caption),
         ],
       ),
     ];
@@ -496,33 +522,21 @@ class _UpdateCardState extends State<UpdateCard> {
       case UpdateDownloaded():
         return _buildConfirmInstall();
       case UpdateDownloadFailure(:final message):
+        // 失败原因写进说明，而不是自成一行的告警块：它和「当前版本」是同一条
+        // 设置项的两种状态，拆成两块之后左边一列就不再对齐了。
         return <Widget>[
-          _errorRow(message),
-          const SizedBox(height: 10),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: <Widget>[
-              XvButton(label: '重试下载', onPressed: _download),
-            ],
+          _row(
+            badge: _badge(Icons.error_outline, '下载失败', XV.redSoft),
+            description: message,
+            actions: <Widget>[XvButton(label: '重试下载', onPressed: _download)],
           ),
         ];
       case UpdateDownloadCancelled():
         return <Widget>[
-          Row(
-            children: <Widget>[
-              Icon(Icons.info_outline, size: 15, color: XV.muted2),
-              const SizedBox(width: 8),
-              Expanded(child: Text('已取消下载。', style: XvText.rowDesc)),
-            ],
-          ),
-          const SizedBox(height: 10),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: <Widget>[
-              XvButton(label: '重新下载', onPressed: _download),
-            ],
+          _row(
+            badge: _badge(Icons.info_outline, '已取消下载', XV.muted2),
+            description: '更新包没有装上，随时可以重来。',
+            actions: <Widget>[XvButton(label: '重新下载', onPressed: _download)],
           ),
         ];
     }
@@ -530,23 +544,10 @@ class _UpdateCardState extends State<UpdateCard> {
 
   /// 下载完成后的**确认步骤**。替换安装前必须由用户再点一次「安装更新」。
   List<Widget> _buildConfirmInstall() => <Widget>[
-    Row(
-      children: <Widget>[
-        Icon(Icons.download_done, size: 15, color: XV.green),
-        const SizedBox(width: 8),
-        Expanded(child: Text('更新包已下载并通过校验。', style: XvText.rowDesc)),
-      ],
-    ),
-    const SizedBox(height: 6),
-    Text(
-      '安装会替换当前版本，完成后应用会自动重启。是否继续？',
-      style: XvText.caption,
-    ),
-    const SizedBox(height: 10),
-    Wrap(
-      spacing: 8,
-      runSpacing: 8,
-      children: <Widget>[
+    _row(
+      badge: RouteTag.green('已下载'),
+      description: '更新包已下载并通过校验。安装会替换当前版本，完成后应用会自动重启。是否继续？',
+      actions: <Widget>[
         XvButton(
           label: '安装更新',
           kind: XvButtonKind.primary,
@@ -639,16 +640,9 @@ class _UpdateCardState extends State<UpdateCard> {
   }
 
   List<Widget> _buildInstalling() => <Widget>[
-    Row(
-      children: <Widget>[
-        const SizedBox(
-          width: 14,
-          height: 14,
-          child: CircularProgressIndicator(strokeWidth: 2),
-        ),
-        const SizedBox(width: 10),
-        Expanded(child: Text('正在启动安装…', style: XvText.rowDesc)),
-      ],
+    _row(
+      description: '正在启动安装…',
+      actions: const <Widget>[_spinner],
     ),
   ];
 
@@ -656,19 +650,12 @@ class _UpdateCardState extends State<UpdateCard> {
     switch (result) {
       case UpdateInstallStarted(:final message, :final logPath):
         return <Widget>[
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: <Widget>[
-              Icon(Icons.check_circle_outline, size: 15, color: XV.green),
-              const SizedBox(width: 8),
-              Expanded(child: Text(message, style: XvText.rowDesc)),
-            ],
+          _row(
+            badge: _badge(Icons.check_circle_outline, '已开始安装', XV.greenSoft),
+            description: _isDesktop
+                ? '$message 应用即将自动退出并重新启动。'
+                : message,
           ),
-          if (_isDesktop)
-            Padding(
-              padding: const EdgeInsets.only(top: 6),
-              child: Text('应用即将自动退出并重新启动。', style: XvText.caption),
-            ),
           if (logPath != null)
             Padding(
               padding: const EdgeInsets.only(top: 6),
@@ -679,26 +666,10 @@ class _UpdateCardState extends State<UpdateCard> {
         // Windows：安装目录受保护。下一步会弹 UAC。这里可以把「取消不会损坏
         // 任何东西」说死——助手在拿到授权之前一条文件都还没复制。
         return <Widget>[
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: <Widget>[
-              RouteTag.warn('需要管理员授权'),
-              const SizedBox(width: 8),
-              Expanded(child: Text(message, style: XvText.rowDesc)),
-            ],
-          ),
-          const SizedBox(height: 6),
-          Text(
-            '点「以管理员身份更新」后会弹出系统授权窗口；'
-            '取消则不会改动任何文件。'
-            '${suggestedDir == null ? '' : '若想以后不再需要授权，可把 XVPN 解压到 $suggestedDir。'}',
-            style: XvText.caption,
-          ),
-          const SizedBox(height: 10),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: <Widget>[
+          _row(
+            badge: RouteTag.warn('需要管理员授权'),
+            description: message,
+            actions: <Widget>[
               XvButton(
                 label: '以管理员身份更新',
                 kind: XvButtonKind.primary,
@@ -706,73 +677,46 @@ class _UpdateCardState extends State<UpdateCard> {
               ),
             ],
           ),
+          Padding(
+            padding: const EdgeInsets.only(top: 8),
+            child: Text(
+              '点「以管理员身份更新」后会弹出系统授权窗口；'
+              '取消则不会改动任何文件。'
+              '${suggestedDir == null ? '' : '若想以后不再需要授权，可把幽门解压到 $suggestedDir。'}',
+              style: XvText.caption,
+            ),
+          ),
         ];
       case UpdateInstallPermissionRequired(:final message):
         // 安卓：原生已经把人送去「安装未知应用」设置页。允许在这里重试安装。
         return <Widget>[
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: <Widget>[
-              RouteTag.warn('需要授权'),
-              const SizedBox(width: 8),
-              Expanded(child: Text(message, style: XvText.rowDesc)),
-            ],
-          ),
-          const SizedBox(height: 10),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: <Widget>[
-              XvButton(label: '重试安装', onPressed: _install),
-            ],
+          _row(
+            badge: RouteTag.warn('需要授权'),
+            description: message,
+            actions: <Widget>[XvButton(label: '重试安装', onPressed: _install)],
           ),
         ];
       case UpdateInstallFailure(:final message):
         return <Widget>[
-          _errorRow(message),
-          if (_downloadedFile != null) ...<Widget>[
-            const SizedBox(height: 10),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: <Widget>[
-                XvButton(label: '重试安装', onPressed: _install),
-              ],
-            ),
-            // 自动安装失败正是最需要这条退路的时候：安装包已经下载并校验过、就
-            // 在磁盘上，把位置与两个动作直接摆在这里，用户不必再去别处翻。
-            ..._manualInstallSection(),
-          ],
+          _row(
+            badge: _badge(Icons.error_outline, '安装失败', XV.redSoft),
+            description: message,
+            actions: <Widget>[XvButton(label: '重试安装', onPressed: _install)],
+          ),
+          // 自动安装失败正是最需要这条退路的时候：安装包已经下载并校验过、就
+          // 在磁盘上，把位置与两个动作直接摆在这里，用户不必再去别处翻。
+          ..._manualInstallSection(),
         ];
     }
   }
 
   List<Widget> _buildFailure(String message) => <Widget>[
-    _errorRow(message),
-    const SizedBox(height: 10),
-    Wrap(
-      spacing: 8,
-      runSpacing: 8,
-      children: <Widget>[
-        XvButton(label: '重试', onPressed: _check),
-      ],
+    _row(
+      badge: _badge(Icons.error_outline, '检查失败', XV.redSoft),
+      description: message,
+      actions: <Widget>[XvButton(label: '重试', onPressed: _check)],
     ),
   ];
-
-  /// 与 `config_form.dart` 的错误块同一种观感：图标 + 可直接展示的中文消息。
-  Widget _errorRow(String message) => Row(
-    crossAxisAlignment: CrossAxisAlignment.start,
-    children: <Widget>[
-      Icon(Icons.error_outline, size: 14, color: XV.redSoft),
-      const SizedBox(width: 8),
-      Expanded(
-        child: Text(
-          message,
-          style: TextStyle(fontSize: 11.5, color: XV.redSoft, height: 1.5),
-        ),
-      ),
-    ],
-  );
 
   /// 发布说明可能很长且带换行。折叠成一行并截断，完整内容让用户去发布页看。
   static String _noteFor(UpdateInfo info) {

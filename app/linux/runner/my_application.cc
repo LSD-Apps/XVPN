@@ -468,7 +468,7 @@ static void notify_running_in_background(MyApplication* self) {
                             "点击托盘图标可打开，右键可退出。"
                           : "已收至系统托盘，程序仍在后台运行。"
                             "点击托盘图标可打开，右键可退出。";
-  g_autoptr(GNotification) notification = g_notification_new("XVPN");
+  g_autoptr(GNotification) notification = g_notification_new("幽门");
   g_notification_set_body(notification, body);
   // 固定 id：同一次会话里反复关窗只刷新同一条，不堆通知。
   g_application_send_notification(G_APPLICATION(self), "xvpn-background",
@@ -512,7 +512,7 @@ static void apply_tray_state(MyApplication* self, FlValue* state) {
   }
 
   // 标题（多数宿主拿它当悬停提示）：与 Windows 端 UpdateTrayIcon 逐字一致。
-  GString* title = g_string_new("XVPN");
+  GString* title = g_string_new("幽门");
   if (version != nullptr && *version != '\0') {
     g_string_append_printf(title, " %s", version);
   }
@@ -543,7 +543,7 @@ static void apply_tray_state(MyApplication* self, FlValue* state) {
     gtk_widget_set_visible(self->tray_status_item, FALSE);
   }
   if (version != nullptr && *version != '\0') {
-    g_autofree gchar* label = g_strdup_printf("XVPN %s", version);
+    g_autofree gchar* label = g_strdup_printf("幽门 %s", version);
     gtk_menu_item_set_label(GTK_MENU_ITEM(self->tray_version_item), label);
     gtk_widget_set_visible(self->tray_version_item, TRUE);
   } else {
@@ -566,7 +566,7 @@ static void apply_tray_state(MyApplication* self, FlValue* state) {
     desired = self->tray_icon_normal;
   }
   if (desired != nullptr) {
-    self->tray_api.set_icon_full(self->tray_indicator, desired, "XVPN");
+    self->tray_api.set_icon_full(self->tray_indicator, desired, "幽门");
   }
 }
 
@@ -595,7 +595,7 @@ static gboolean setup_tray(MyApplication* self) {
   self->tray_status_item = gtk_menu_item_new_with_label("");
   gtk_widget_set_sensitive(self->tray_status_item, FALSE);
   gtk_menu_shell_append(GTK_MENU_SHELL(menu), self->tray_status_item);
-  self->tray_version_item = gtk_menu_item_new_with_label("XVPN");
+  self->tray_version_item = gtk_menu_item_new_with_label("幽门");
   gtk_widget_set_sensitive(self->tray_version_item, FALSE);
   gtk_menu_shell_append(GTK_MENU_SHELL(menu), self->tray_version_item);
   // 更新项**保持可点**：它承载的是可操作的信息（应用里有下载与安装入口），
@@ -606,7 +606,7 @@ static gboolean setup_tray(MyApplication* self) {
                    G_CALLBACK(tray_update_cb), self);
   gtk_menu_shell_append(GTK_MENU_SHELL(menu), self->tray_update_item);
   gtk_menu_shell_append(GTK_MENU_SHELL(menu), gtk_separator_menu_item_new());
-  GtkWidget* quit_item = gtk_menu_item_new_with_label("退出 XVPN");
+  GtkWidget* quit_item = gtk_menu_item_new_with_label("退出幽门");
   g_signal_connect(quit_item, "activate", G_CALLBACK(tray_quit_cb), self);
   gtk_menu_shell_append(GTK_MENU_SHELL(menu), quit_item);
 
@@ -620,10 +620,10 @@ static gboolean setup_tray(MyApplication* self) {
   self->tray_api.set_menu(self->tray_indicator, self->tray_menu);
   if (self->tray_icon_normal != nullptr) {
     self->tray_api.set_icon_full(self->tray_indicator, self->tray_icon_normal,
-                                 "XVPN");
+                                 "幽门");
   }
   if (self->tray_api.set_title != nullptr) {
-    self->tray_api.set_title(self->tray_indicator, "XVPN");
+    self->tray_api.set_title(self->tray_indicator, "幽门");
   }
   self->tray_api.set_status(self->tray_indicator, kTrayStatusActive);
   return TRUE;
@@ -643,7 +643,7 @@ static gboolean window_delete_event_cb(GtkWidget* widget, GdkEvent* event,
   gtk_widget_hide(widget);
   if (tray_is_usable(self)) {
     // 与 Windows 端 WM_CLOSE → SW_HIDE 一致：关闭 = 收进托盘，只有托盘里的
-    // 「退出 XVPN」才真正结束进程。首次收进时发通知，避免重复关窗刷屏。
+    // 「退出幽门」才真正结束进程。首次收进时发通知，避免重复关窗刷屏。
     if (was_visible) {
       notify_running_in_background(self);
     }
@@ -862,7 +862,8 @@ static void my_application_activate(GApplication* application) {
   }
 #endif
 
-  gtk_window_set_title(window, "XVPN");
+  // 窗口标题。与 Windows runner 用同一个产品名，两端的任务栏/窗口列表才一致。
+  gtk_window_set_title(window, "幽门");
   // 与 Windows runner 一致：1180×742 画布 + 46 高的自绘标题栏。
   // Wayland 下没有自绘标题栏，同一数值会多出一条装饰的高度；窗口本就可
   // 调整大小，不值得为两种会话各写一组常量。

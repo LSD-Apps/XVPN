@@ -7,7 +7,7 @@
 | 顺序 | 文档 | 内容 |
 | --- | --- | --- |
 | 1 | [`USER_GUIDE.zh-CN.md`](USER_GUIDE.zh-CN.md) · [`USER_GUIDE.md`](USER_GUIDE.md) | **主教程** |
-| 2 | [`LEGAL.md`](LEGAL.md) | 法律与使用声明 |
+| 2 | [`LEGAL.md`](LEGAL.md) · [`LEGAL.en.md`](LEGAL.en.md) | 法律与使用声明 |
 | 3 | [`../PRIVACY.md`](../PRIVACY.md) | 隐私 |
 | 4 | [`../SECURITY.md`](../SECURITY.md) | 安全报告 |
 

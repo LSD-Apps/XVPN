@@ -254,6 +254,7 @@ MIIB
         await openAndReveal(tester, '配置文件', fileTitle);
         expect(find.text(fileTitle), findsOneWidget);
         expect(find.text(manualTitle), findsOneWidget);
+        expect(find.text('自备订阅'), findsOneWidget);
         await stop(tester, desktop);
       }
 
@@ -267,6 +268,7 @@ MIIB
       await openAndReveal(tester, '设置', fileTitle);
       expect(find.text(fileTitle), findsOneWidget, reason: '移动端也要能选文件导入');
       expect(find.text(manualTitle), findsOneWidget, reason: '移动端也要能手填导入');
+      expect(find.text('自备订阅'), findsOneWidget, reason: '移动端也要能导入自备订阅');
       await stop(tester, mobile);
       resetPlatform();
     });
@@ -336,6 +338,37 @@ MIIB
           find.widgetWithText(XvButton, '查看'),
           findsOneWidget,
           reason: '$platform 应能从这里打开许可页',
+        );
+        await stop(tester, state);
+        resetPlatform();
+      }
+    });
+
+    testWidgets('两端设置页都有「法律与使用声明」入口', (WidgetTester tester) async {
+      for (final platform in <TargetPlatform>[
+        TargetPlatform.windows,
+        TargetPlatform.linux,
+        TargetPlatform.android,
+      ]) {
+        final state = stateWithRealCore();
+        await pumpOn(
+          tester,
+          state,
+          platform,
+          size: isDesktopPlatform(platform)
+              ? const Size(1400, 1400)
+              : const Size(390, 900),
+        );
+        await openAndReveal(tester, '设置', '法律与使用声明');
+        expect(
+          find.text('法律与使用声明'),
+          findsOneWidget,
+          reason: '$platform 设置页应有「法律与使用声明」入口',
+        );
+        expect(
+          find.widgetWithText(XvButton, '阅读'),
+          findsOneWidget,
+          reason: '$platform 应能从这里打开使用声明',
         );
         await stop(tester, state);
         resetPlatform();

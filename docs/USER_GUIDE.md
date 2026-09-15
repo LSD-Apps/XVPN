@@ -1,8 +1,13 @@
-# XVPN User Guide
+# XVPN (幽门) User Guide
 
 For first-time users: from “I have my own server” to “connected in the client, and I understand split tunnelling.”
 
 When you finish, you should be able to: **prepare a config → import → connect → confirm routing → classify failures**.
+
+> **Name**: once installed, the launcher, taskbar, tray and Android VPN notification
+> show **幽门**. The repository, the executable and the release assets keep the name
+> `XVPN`. Both refer to the same software — but when matching against your screen,
+> look for **幽门**.
 
 | Section | You get |
 | --- | --- |
@@ -51,6 +56,8 @@ Full notice: [`LEGAL.md`](LEGAL.md). Everything below assumes a lawful config an
    - [WireGuard](https://www.wireguard.com/quickstart/)
    - [OpenVPN](https://openvpn.net/community-resources/)
    - [Hysteria2](https://v2.hysteria.network/)
+   - [Shadowsocks](https://shadowsocks.org/)
+   - [VMess / VLESS](https://github.com/XTLS/Xray-core) 或 [Trojan](https://github.com/trojan-gfw/trojan)
 3. The matching **client config** (next section).
 4. Windows, Linux, or Android.
 5. A build from [Releases](https://github.com/LSD-Apps/XVPN/releases) (or build from source).
@@ -95,6 +102,24 @@ tls:
 
 Share links and sing-box outbound JSON are also accepted when that is what your server export gives you.
 
+### Shadowsocks (typically an `ss://` share link)
+
+```
+ss://aes-256-gcm:<password>@vpn.example.com:8388
+```
+
+SIP002 base64 userinfo and sing-box outbound JSON are also accepted. Multi-node Clash `proxies:` goes through the bring-your-own subscription entry.
+
+### VMess / VLESS / Trojan (typically a share link)
+
+```
+vmess://<base64 JSON>
+vless://<uuid>@vpn.example.com:443?type=tcp&security=tls&sni=vpn.example.com
+trojan://<password>@vpn.example.com:443?security=tls&sni=vpn.example.com
+```
+
+sing-box outbound JSON is also accepted. Multi-node Clash `proxies:` goes through the bring-your-own subscription entry. Transports the core knows: tcp / ws / grpc / http / httpupgrade / quic. Reality requires a public key (`pbk`).
+
 **Security:** redact secrets before asking for help in public issues.
 
 ---
@@ -103,7 +128,7 @@ Share links and sing-box outbound JSON are also accepted when that is what your 
 
 ### Step 1 — Prepare the tunnel service on the server
 
-Run a WireGuard, OpenVPN, or Hysteria2 **server** (one is enough).
+Run a WireGuard, OpenVPN, Hysteria2, Shadowsocks, VMess, VLESS, or Trojan **server** (one is enough).
 
 **Done when:** another machine already connects with that protocol’s official client or CLI.  
 If the server fails, XVPN will not fix it.
@@ -115,12 +140,16 @@ If the server fails, XVPN will not fix it.
 | WireGuard | `wg-quick`-style `.conf` | Content-detected; prefer `.conf` |
 | OpenVPN | Client `.ovpn` | Content-detected; prefer `.ovpn` |
 | Hysteria2 | YAML; or share link / JSON | Content-detected |
+| Shadowsocks | `ss://` share link; or JSON | Content-detected; `.txt` is fine |
+| VMess / VLESS / Trojan | Share link; or JSON | Content-detected; `.txt` is fine |
 
 Org-issued files: skip server install; go to Step 3.
 
 ### Step 3 — Install XVPN
 
 Download from [Releases](https://github.com/LSD-Apps/XVPN/releases/latest), install, launch. No account.
+The first launch asks you to acknowledge that this is a client (no nodes) and
+that lawful use is your responsibility; Settings can reopen the full notice.
 
 **Unzip it into a per-user directory** — for example
 `%LOCALAPPDATA%\Programs\XVPN` on Windows, `~/.local/opt/xvpn` on Linux.
@@ -136,9 +165,9 @@ auto-updated — in that case update through the package manager.
 | --- | --- |
 | Windows | Drag / pick file / paste |
 | Linux | Pick file / paste |
-| Android | “Open with” XVPN, or pick / paste in-app |
+| Android | “Open with” 幽门, or pick / paste in-app |
 
-**If import fails:** the file may be a subscription URL, zip, or README instead of a single client profile; OpenVPN may lack cert blocks; WireGuard may lack `PrivateKey` / `Peer`; chat apps may have mangled newlines.
+**If import fails:** the file may be a zip or README instead of a client profile or your own subscription URL / share-link list; OpenVPN may lack cert blocks; WireGuard may lack `PrivateKey` / `Peer`; chat apps may have mangled newlines.
 
 ### Step 5 — Connect
 
@@ -147,7 +176,7 @@ auto-updated — in that case update through the package manager.
 | Windows / Linux | System proxy (no admin) | Apps that honour the proxy |
 | Android | VPN permission | `VpnService` (TUN) |
 
-**Clean quit:** tray → **Quit XVPN** restores the proxy and stops the core. Closing the window usually trays without disconnecting.
+**Clean quit:** tray → **幽门 → Quit** restores the proxy and stops the core. Closing the window usually trays without disconnecting.
 
 ### Step 6 — What split tunnelling means here
 
@@ -222,7 +251,7 @@ When filing an issue: symptoms, status-card conclusions, **redacted** config, OS
 ## FAQ
 
 **Q: No server, only a third-party subscription URL?**  
-A: This project does not operate subscription marketplaces. A lawful **single** WG / OpenVPN / Hysteria2 client profile can be imported. A bare subscription URL is outside the current design.
+A: This project does not sell or host nodes. If you **lawfully hold** your own subscription URL or a list of share links, use Bring-your-own subscription; the app only fetches the address you paste. It will not help you obtain a service.
 
 **Q: Must the server run all three protocols?**  
 A: No.
@@ -234,7 +263,7 @@ A: No. See [`PRIVACY.md`](../PRIVACY.md).
 A: Split rules → all via tunnel (reconnect if the UI says so).
 
 **Q: Where are server install commands?**  
-A: Official WireGuard / OpenVPN / Hysteria2 docs, not this repo.
+A: Official WireGuard / OpenVPN / Hysteria2 / Shadowsocks / VMess / VLESS / Trojan docs, not this repo.
 
 **Q: I changed a rule but behaviour is unchanged?**  
 A: Many domain pins hot-reload within ~10s while connected; **mode** changes often need a reconnect. Check Split records for the rule that actually matched.

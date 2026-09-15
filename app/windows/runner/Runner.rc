@@ -14,10 +14,15 @@
 #undef APSTUDIO_READONLY_SYMBOLS
 
 /////////////////////////////////////////////////////////////////////////////
-// English (United States) resources
+// Chinese (Simplified) resources
+//
+// 资源语言跟着产品走：源文件里仅有图标与版本信息两项，而版本信息的字符串
+// 明确标了 zh-CN（见下方 StringFileInfo 的块名），此处保持一致。
+// 外层守卫仍按 Flutter 模板的 AFX_TARG_ENU 保留：它只在以 AFX_RESOURCE_DLL
+// 方式构建资源 DLL 时才起作用，本项目不走那条路。
 
 #if !defined(AFX_RESOURCE_DLL) || defined(AFX_TARG_ENU)
-LANGUAGE LANG_ENGLISH, SUBLANG_ENGLISH_US
+LANGUAGE LANG_CHINESE, SUBLANG_CHINESE_SIMPLIFIED
 
 #ifdef APSTUDIO_INVOKED
 /////////////////////////////////////////////////////////////////////////////
@@ -87,25 +92,38 @@ VS_VERSION_INFO VERSIONINFO
 BEGIN
     BLOCK "StringFileInfo"
     BEGIN
-        BLOCK "040904e4"
+        // 键名 <语言><代码页>：zh-CN（0x0804）+ Unicode（1200 = 0x04B0）。
+        //
+        // **代码页不能写 1252**：那套 8 位块塞不下「幽门」，rc.exe 会把它降级成
+        // 问号，于是 exe 属性里显示的是「??」。写 1200 让 rc 按 UTF-16 存，
+        // 中英文都原样保留。文件头已有 `#pragma code_page(65001)`，
+        // 源码本身按 UTF-8 读，两者配合才不会出现乱码。
+        BLOCK "080404b0"
         BEGIN
-            VALUE "CompanyName", "com.xvpn" "\0"
-            VALUE "FileDescription", "xvpn" "\0"
+            // 作者（发行者）。用户可见的「谁做的」以这里为准。
+            VALUE "CompanyName", "LUSIDA" "\0"
+            // 任务管理器「描述」列显示它，所以是产品名而不是文件名。
+            VALUE "FileDescription", "幽门" "\0"
             VALUE "FileVersion", VERSION_AS_STRING "\0"
+            // InternalName / OriginalFilename 刻意保持 ASCII 的 "xvpn"：
+            // 它们是**可执行文件名**，跟着 windows/CMakeLists.txt 的
+            // BINARY_NAME 走，与显示名无关。改这里不会改文件名，只会让
+            // 排查崩溃转储的人对不上号。
             VALUE "InternalName", "xvpn" "\0"
-            VALUE "LegalCopyright", "Copyright (C) 2026 com.xvpn. All rights reserved." "\0"
+            VALUE "LegalCopyright", "Copyright (C) 2026 LUSIDA. All rights reserved." "\0"
             VALUE "OriginalFilename", "xvpn.exe" "\0"
-            VALUE "ProductName", "xvpn" "\0"
+            VALUE "ProductName", "幽门" "\0"
             VALUE "ProductVersion", VERSION_AS_STRING "\0"
+            VALUE "Comments", "https://www.lusida.net" "\0"
         END
     END
     BLOCK "VarFileInfo"
     BEGIN
-        VALUE "Translation", 0x409, 1252
+        VALUE "Translation", 0x804, 1200
     END
 END
 
-#endif    // English (United States) resources
+#endif    // Chinese (Simplified) resources
 /////////////////////////////////////////////////////////////////////////////
 
 
