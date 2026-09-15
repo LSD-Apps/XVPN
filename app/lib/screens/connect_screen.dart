@@ -505,6 +505,17 @@ class ConnectScreen extends StatelessWidget {
     final profile = state.activeProfile!;
     final connected = state.isConnected;
     final digest = state.failureDigest;
+    // 规则库项数取**实际启用**的那些，不写死。
+    //
+    // 这里曾经是「（规则库 2 项）」一个常量，而它写下的那年默认启用的内置规则集
+    // 确实只有两份（geosite-cn / geoip-cn）。后来 geosite-cn-extra 与
+    // geoip-cn-extra 加了进来并同样默认启用，这句文案没跟着改——于是真机上
+    // 用户看到的是「规则库 2 项」，而内核实际吃进去的是四份。更糟的是它**永远是
+    // 2**：用户在「分流规则」页停用或新增规则集时，这个数字一动不动。
+    //
+    // 与下面 `takeOverEndpoint` 是同一条理由：界面上给出的数字必须是程序此刻
+    // 真正在用的那个，否则它比不显示更糟。
+    final enabledRuleSets = state.ruleSets.where((e) => e.enabled).length;
 
     return <Widget>[
       const XvCardTitle('连接状态'),
@@ -516,7 +527,7 @@ class ConnectScreen extends StatelessWidget {
       const SizedBox(height: 11),
       CheckRow(
         title: connected ? '智能分流已生效' : '智能分流已就绪',
-        detail: '命中规则集的流量直连，其余走隧道（规则库 2 项）',
+        detail: '命中规则集的流量直连，其余走隧道（规则库 $enabledRuleSets 项）',
       ),
       const SizedBox(height: 11),
       // 两端各只有一条接管路径，因此这里直接按平台写明，不再跟随设置项——
@@ -1761,8 +1772,7 @@ class _EmptyStateState extends State<_EmptyState> {
                         ),
                         const SizedBox(height: 10),
                         Text(
-                          '支持 WireGuard、OpenVPN、Shadowsocks、\n'
-                          'VMess / VLESS / Trojan 与 Hysteria2。\n'
+                          '支持 $supportedProtocolsText。\n'
                           '格式按内容自动识别，其余设置已经内置好了',
                           textAlign: TextAlign.center,
                           style: TextStyle(
@@ -1958,7 +1968,7 @@ class _EmptyStateState extends State<_EmptyState> {
                   ),
                   const SizedBox(height: 22),
                   Text(
-                    '支持 WireGuard、OpenVPN、Shadowsocks、VMess / VLESS / Trojan 与 Hysteria2。\n'
+                    '支持 $supportedProtocolsText。\n'
                     '协议按内容自动识别，改名也能导入。配置只保存在本机，不会上传。',
                     textAlign: TextAlign.center,
                     style: TextStyle(

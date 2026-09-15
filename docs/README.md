@@ -29,7 +29,7 @@
 | --- | --- |
 | [`../CONTRIBUTING.md`](../CONTRIBUTING.md) | 开发约定、署名 |
 | [`../AUTHORS`](../AUTHORS) | 版权与维护者 |
-| [`ANDROID.md`](ANDROID.md) | VpnService + libbox |
+| [`ANDROID.md`](ANDROID.md) | VpnService + libbox；真机部署与协议验证矩阵（配套 [`../scripts/deploy-android.ps1`](../scripts/deploy-android.ps1)） |
 | [`RELEASE.md`](RELEASE.md) | 发布工程与合规清单 |
 | [`STORE_LISTING.md`](STORE_LISTING.md) | Google Play 材料 |
 | [`../NOTICE.md`](../NOTICE.md) | 第三方许可 |

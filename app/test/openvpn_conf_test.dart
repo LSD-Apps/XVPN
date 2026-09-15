@@ -73,15 +73,109 @@ remote vpn.example.net 443
       expect(OpenVpnConf.parse(withProto('tcp-client')).network, 'tcp');
     });
 
-    test('端口可写在 remote 行，也可省略（按协议取默认值）', () {
-      final noPort = OpenVpnConf.parse(
-        'client\nproto udp\nremote vpn.example.net\n',
+    test('remote 行省略端口时用 1194，与协议无关', () {
+      // 依据：OpenVPN 手册里 `--port` 是「TCP/UDP port number for both local and
+      // remote」，并明写「The current default of 1194 represents the official
+      // IANA port number assignment for OpenVPN」；`--remote host [port]` 省略
+      // 端口时用的就是它。
+      //
+      // 此前 TCP 取 443——那是把「TCP 部署常选 443」当成默认值，规范里没有。
+      // 代价是静默连错端口，而配置作者省略端口恰恰是因为服务端就在默认端口上。
+      for (final proto in <String>['udp', 'udp6', 'tcp', 'tcp-client']) {
+        final conf = OpenVpnConf.parse(
+          'client\nproto $proto\nremote vpn.example.net\n',
+        );
+        expect(
+          conf.remotePort,
+          OpenVpnConf.defaultRemotePort,
+          reason: 'proto $proto 省略端口时应回落到 1194',
+        );
+      }
+      // 显式写了端口就照写：443 是用户写的，不是我们猜的。
+      final explicit = OpenVpnConf.parse(
+        'client\nproto tcp\nremote vpn.example.net 443\n',
       );
-      expect(noPort.remotePort, 1194);
-      final tcpNoPort = OpenVpnConf.parse(
-        'client\nproto tcp\nremote vpn.example.net\n',
+      expect(explicit.remotePort, 443);
+    });
+
+    test('remote 行自带的 proto 优先于全局 proto，且与行序无关', () {
+      // 手册对 `--remote host [port] [proto]` 的措辞是「proto indicates the
+      // protocol to use when connecting **with the remote**」——它属于那一条
+      // remote；`--proto p` 只是「The default protocol is udp when --proto is
+      // not specified」。更具体的赢，且不该取决于两行谁先出现。
+      const remoteFirst =
+          'client\nremote vpn.example.net 1194 udp\nproto tcp\n';
+      const protoFirst =
+          'client\nproto tcp\nremote vpn.example.net 1194 udp\n';
+
+      expect(OpenVpnConf.parse(remoteFirst).network, 'udp');
+      expect(
+        OpenVpnConf.parse(protoFirst).network,
+        'udp',
+        reason: '同一份配置换个行序不该换协议',
       );
-      expect(tcpNoPort.remotePort, 443);
+
+      // remote 行没写 proto 时才轮到全局值。
+      expect(
+        OpenVpnConf.parse(
+          'client\nproto tcp\nremote vpn.example.net 1194\n',
+        ).network,
+        'tcp',
+      );
+      // 两处都没有时，手册的缺省是 udp。
+      expect(
+        OpenVpnConf.parse('client\nremote vpn.example.net 1194\n').network,
+        'udp',
+      );
+    });
+
+    test('静态密钥模式被识别出来：内核只实现 TLS 模式', () {
+      // 指令写法
+      final byDirective = OpenVpnConf.parse(
+        'client\nremote vpn.example.net 1194\nsecret static.key\n',
+      );
+      expect(byDirective.usesStaticKey, isTrue);
+
+      // 内联写法：<secret> 的内容会被内联正则整段剥掉，指令那一侧什么也留不下，
+      // 因此这一路必须单独覆盖。
+      final byInline = OpenVpnConf.parse(
+        'client\nremote vpn.example.net 1194\n<secret>\n$_staticKey\n</secret>\n',
+      );
+      expect(byInline.usesStaticKey, isTrue, reason: '<secret> 内联块同样要认出来');
+
+      // 这类配置必然连不上，必须出声（warn），而不是躺在「未使用字段」里。
+      final notices = OpenVpnProfile(byDirective).notices;
+      expect(
+        notices.any((n) => n.kind == ProfileNoticeKind.warn),
+        isTrue,
+        reason: '静态密钥模式无法连接，不能只当作普通未使用字段',
+      );
+      expect(notices.first.message, contains('静态密钥'));
+    });
+
+    test('verify-x509-name 的名字断言未被内核执行，界面要说清楚', () {
+      final conf = OpenVpnConf.parse(
+        'client\nremote vpn.example.net 1194\n'
+        'verify-x509-name vpn.example.net\n',
+      );
+      expect(conf.verifyX509Name, 'vpn.example.net');
+      // 退让成「要求服务端证书」是当前能做的全部，但仍应保留这个意图。
+      expect(conf.requiresServerCert, isTrue);
+
+      final profile = OpenVpnProfile(conf);
+      expect(
+        profile.notices.any((ProfileNotice n) => n.message.contains('不比对名字')),
+        isTrue,
+        reason: '名字断言没被执行却不说，用户会以为自己钉死了服务端身份',
+      );
+      expect(
+        profile.details.any(
+          (({String label, String value}) d) =>
+              d.label == '服务端身份' && d.value.contains('vpn.example.net'),
+        ),
+        isTrue,
+        reason: '配置详情里要能看到用户写的那个名字',
+      );
     });
 
     test('auth-user-pass 会标记为需要凭据', () {

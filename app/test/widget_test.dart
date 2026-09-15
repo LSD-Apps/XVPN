@@ -358,6 +358,43 @@ void main() {
     await _stopCore(tester, state);
   });
 
+  // 这条断言的由来：那句文案曾经是「（规则库 2 项）」一个**常量**。写下它的时候
+  // 默认启用的内置规则集确实只有两份，后来 geosite-cn-extra 与 geoip-cn-extra
+  // 加了进来并同样默认启用，文案没跟着改——真机上用户看到「2 项」，内核实际吃到
+  // 的是四份；而且它**永远是 2**，增减规则集时一动不动。
+  //
+  // 与 `takeOverEndpoint`（系统代理地址取自内核实际值）是同一条理由：界面上的
+  // 数字必须是程序此刻真正在用的那个，否则它比不显示更糟。
+  testWidgets('「规则库 N 项」跟随实际启用的规则集，不写死', (WidgetTester tester) async {
+    final state = AppState();
+    addTearDown(state.dispose);
+    await _pumpShell(tester, state, size: const Size(390, 844));
+
+    state.importConf(text: _conf, fileName: 'wg-hk-01.conf');
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 1));
+
+    final enabled = state.ruleSets.where((e) => e.enabled).length;
+    expect(enabled, 4, reason: '出厂默认应当是四份内置规则集全部启用');
+    expect(
+      find.textContaining('规则库 $enabled 项'),
+      findsOneWidget,
+      reason: '界面上的项数必须等于真正交给内核的规则集数量',
+    );
+
+    // 停用一份：数字要跟着走。写死的常量做不到这一点。
+    expect(state.setRuleSetEnabled('geoip-cn-extra', false), isTrue);
+    await tester.pump();
+    expect(find.textContaining('规则库 3 项'), findsOneWidget);
+    expect(
+      find.textContaining('规则库 4 项'),
+      findsNothing,
+      reason: '数字没有跟随启用的规则集变化，说明它又被写死了',
+    );
+
+    await _stopCore(tester, state);
+  });
+
   testWidgets('走了隧道却失败时，归因为节点问题而不是规则问题', (WidgetTester tester) async {
     final state = AppState();
     addTearDown(state.dispose);

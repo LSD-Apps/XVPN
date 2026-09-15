@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'app_state.dart';
+import 'core/android_channel.dart';
 import 'core/android_vpn_core.dart';
 import 'core/screen_navigation.dart';
 import 'core/secret_protector.dart';
@@ -228,7 +229,11 @@ class _XvpnAppState extends State<XvpnApp> {
   /// 原生侧会把内容存起来等 Dart 来取，因此不会因为通道尚未就绪而丢事件。
   void _listenSharedConfig() {
     if (defaultTargetPlatform != TargetPlatform.android) return;
-    _androidChannel.setMethodCallHandler((MethodCall call) async {
+    // 走 [AndroidChannel] 而不是直接在这条通道上 setMethodCallHandler：同一条
+    // 通道上还有 `AndroidVpnCore` 要收内核日志，而 Flutter 每条通道只保留一个
+    // handler，后注册的会把先注册的静默顶掉。此前正是如此——应用连接过一次之后
+    // 「分享配置进来」就再也不响应了，冷启动却正常。详见 AndroidChannel 的说明。
+    AndroidChannel.addHandler((MethodCall call) async {
       if (call.method == 'sharedConfigAvailable') {
         await _consumeSharedConfig();
       }

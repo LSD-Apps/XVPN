@@ -61,13 +61,22 @@ lib/protocols/
 
 | 协议 | 入口格式 | 内核映射 | 状态 |
 | --- | --- | --- | --- |
-| WireGuard | `wg-quick` 的 `.conf` | `endpoints[].type = wireguard` | ✅ 已用真实服务器验证 |
-| OpenVPN | 客户端 `.ovpn`（含内联证书） | `endpoints[].type = openvpn-client` | ✅ 已通过官方 `sing-box check` |
-| Hysteria2 | `.yaml` / `.yml`（分享链接与 sing-box 出站 JSON 也能解析） | `outbounds[].type = hysteria2` | ✅ 已通过官方 `sing-box check`（两种入站） |
-| Shadowsocks | `ss://` 分享链接（SIP002 两种编码 + 旧式整串 base64）与 sing-box 出站 JSON | `outbounds[].type = shadowsocks` | ✅ 已通过官方 `sing-box check`（两种入站） |
-| VMess | `vmess://`（base64 JSON）与 sing-box 出站 JSON | `outbounds[].type = vmess` | ✅ 已通过官方 `sing-box check`（两种入站） |
-| VLESS | `vless://uuid@host:port?params` 与 sing-box 出站 JSON | `outbounds[].type = vless` | ✅ 已通过官方 `sing-box check`（两种入站） |
-| Trojan | `trojan://password@host:port?params` 与 sing-box 出站 JSON | `outbounds[].type = trojan` | ✅ 已通过官方 `sing-box check`（两种入站） |
+| WireGuard | `wg-quick` 的 `.conf` | `endpoints[].type = wireguard` | ✅ 真机连通（对端握手完成，见 `docs/ANDROID.md` 8.5） |
+| OpenVPN | 客户端 `.ovpn`（含内联证书） | `endpoints[].type = openvpn-client` | ⚠️ **仅配置校验通过，未做过端到端**——见下 |
+| Hysteria2 | `.yaml` / `.yml`（分享链接与 sing-box 出站 JSON 也能解析） | `outbounds[].type = hysteria2` | ✅ 真机连通（QUIC 上 TCP 与 UDP 都验到） |
+| Shadowsocks | `ss://` 分享链接（SIP002 两种编码 + 旧式整串 base64）与 sing-box 出站 JSON | `outbounds[].type = shadowsocks` | ✅ 真机连通 |
+| VMess | `vmess://`（base64 JSON）与 sing-box 出站 JSON | `outbounds[].type = vmess` | ✅ 真机连通 |
+| VLESS | `vless://uuid@host:port?params` 与 sing-box 出站 JSON | `outbounds[].type = vless` | ✅ 真机连通 |
+| Trojan | `trojan://password@host:port?params` 与 sing-box 出站 JSON | `outbounds[].type = trojan` | ✅ 真机连通（自签 TLS + insecure） |
+
+> 「真机连通」的判据写在 `docs/ANDROID.md` 8.5：接入端日志里出现
+> `inbound connection to <域名>:443`（TCP 类）或对端握手完成（WireGuard），
+> 而不是界面上的绿环。**OpenVPN 没有这一格**：sing-box 只提供
+> `openvpn-client`，不提供 OpenVPN 服务端，本机也没有可用的 OpenVPN 服务端
+> （装它需要管理员权限），因此握手之后的部分从未被验证过。
+> 已验证的只有两条：`.ovpn` 能生成结构完整的 `openvpn-client` 端点；**随包分发给
+> 安卓的 libbox 确实带 `with_openvpn`，内核实测接受了该端点**
+> （`startOrReloadService ok`）。**不要把「配置校验通过」当成「能连上」。**
 
 ### OpenVPN 实现中踩到的坑（供后续参考）
 
@@ -80,6 +89,15 @@ lib/protocols/
   有效（OpenVPN 的 `key-direction 1` 对应 `client`）；
 * TLS 模式下**不支持**顶层 `static_key` 与 `cipher`，加密套件统一写
   `data_ciphers`（老式 `cipher` 需要并入其中）。
+
+由此推出一条必须**主动告知**用户的事：**静态密钥模式无法使用。** OpenVPN 手册里
+「Static Key mode」与 SSL/TLS mode 是并列的两种模式，用 `secret` 或 `<secret>`
+声明；而 sing-box 的 `openvpn-client` 只实现 TLS 模式，这类配置即便解析通过、
+内核也会接受端点，握手却必然失败。现在解析器把两种写法都识别出来（`secret`
+指令与 `<secret>` 内联块——后者会被内联正则整段剥掉，只看指令列表会漏），
+并给一条 `warn`：「这是静态密钥模式（secret）的配置。本客户端只实现 TLS 模式，
+这份配置无法建立连接」。照着 AmneziaWG 的先例：**识别出来并说清楚，而不是让用户
+对着一个连不上的隧道猜。**
 
 ## 三点五、参数规范化：几个会让内核直接起不来的坑
 
@@ -123,7 +141,37 @@ OpenVPN 2.4+ 用 `data-ciphers` 协商，`data-ciphers-fallback` 是给
 这条指令几乎必然出现在客户端配置里（主流向导都会写），含义是「只接受服务端证书」。
 映射到 sing-box 是 `tls.remote_certificate_tls: "server"`。原实现把它归到
 「无需翻译」的指令里丢掉了——那等于悄悄放弃了服务端身份校验，属于
-「看起来能连、实际不安全」的降级。`verify-x509-name` 同样处理。
+「看起来能连、实际不安全」的降级。
+
+**`verify-x509-name` 只做到一半，这一点必须说清楚。** 它比上面那条更强：手册里
+`--verify-x509-name name type` 的含义是「对端证书的 X.509 名字必须等于 name」
+（默认按完整 subject 比对）。而内核的 `openvpn-client` 端点没有表达名字的字段，
+能做的只有「要求是服务端证书」。所以现在：**照旧置 `remote_certificate_tls`，
+另外把用户写的名字保留下来（配置详情里可见、确认导入后写回），并给一条 info
+提示说明名字没有被比对**。
+
+不写成 warn 是因为连接本身不受影响；必须写出来是因为受影响的正是用户以为已经
+钉死的那个保证——「以为有、其实没有」的保护不能沉默。
+
+> **待真机+真实服务端复验**：sing-box 的 `tls.server_name` 目前被我们填成
+> `remoteHost`（当 SNI 用）。它是否**同时**参与证书主机名校验，尚未验证——
+> OpenVPN 自身在没有 `verify-x509-name` 时**不校验主机名**，若 sing-box 校验，
+> 那么「remote 是 IP、证书 CN 是域名」这类常见配置会比 OpenVPN 更严而连不上。
+> 这一条只有拿真实服务端跑一次才能定论，**不要凭推断改**。
+
+### 3.5.3a 端口默认值是 1194，与协议无关
+
+`--port` 在手册里是「TCP/UDP port number for both local and remote」，并明写
+「The current default of 1194 represents the official IANA port number assignment
+for OpenVPN」；`--remote host [port]` 省略端口时用的就是它。
+
+原先解析器与表单生成器**两处**都写成「TCP 取 443，UDP 取 1194」。那是把「TCP 常
+部署在 443」这个惯例当成了默认值，规范里没有这回事。代价是**静默连错端口**：
+`proto tcp` + `remote host`（省略端口）会去连 `host:443`，而配置作者省略端口恰恰
+是因为服务端就在默认端口上；失败时界面只会说「没能连上服务器」。
+
+两处必须同时改：只改解析器的话，确认导入会用表单**重新生成** `.ovpn`，把 443
+又写回去。
 
 ### 3.5.3b OpenVPN：MTU / 保活 / MSS
 

@@ -273,9 +273,32 @@ MIIBCA
       final parsed = VpnProtocolFactory.parse(model.toConfText(), model.name)
           as OpenVpnProfile;
       expect(parsed.conf.remoteHost, 'vpn.example.com');
-      expect(parsed.conf.remotePort, 443, reason: 'TCP 空端口应回落到 443');
+      // 空端口必须回落到 OpenVPN 自己的默认值 1194，**与协议无关**。
+      // 此前这里（以及生成器）按协议给 TCP 取 443——那是把「TCP 常部署在 443」
+      // 当成默认值，规范里没有，而且会让手填/确认导入把端口写错。
+      expect(
+        parsed.conf.remotePort,
+        1194,
+        reason: 'TCP 空端口应回落到 OpenVPN 的默认端口 1194',
+      );
       expect(parsed.conf.requiresCredentials, isTrue);
       expect(parsed.conf.hasInlineCredentials, isTrue);
+    });
+
+    test('OpenVPN：verify-x509-name 经确认导入后不会丢', () {
+      // 确认导入会用表单**重新生成** .ovpn。生成器漏写这一条，用户写的名字断言
+      // 就会消失——连同「它没有被内核执行」那条提示一起，因为提示是按解析结果给的。
+      // 同一类「解析认了、生成丢了」此前在 tun-mtu / keepalive / mssfix 上发生过。
+      const text =
+          'client\ndev tun\nproto udp\nremote vpn.example.net 1194\n'
+          'verify-x509-name vpn.example.net\n<ca>\nCERT\n</ca>\n';
+      final first = VpnProtocolFactory.parse(text, 'a.ovpn') as OpenVpnProfile;
+      expect(first.conf.verifyX509Name, 'vpn.example.net');
+
+      final model = ConfigFormModel.fromParsed(first, name: 'a.ovpn');
+      final again = VpnProtocolFactory.parse(model.toConfText(), model.name)
+          as OpenVpnProfile;
+      expect(again.conf.verifyX509Name, 'vpn.example.net');
     });
 
     test('Hysteria2：生成的是可解析的 hysteria2:// 链接', () {

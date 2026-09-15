@@ -20,7 +20,13 @@ enum VpnProtocol {
 }
 
 extension VpnProtocolInfo on VpnProtocol {
-  /// 界面展示名。
+  /// 界面展示名。**这是协议名字的唯一来源。**
+  ///
+  /// 「界面不用改」这条承诺一半靠抽象、一半靠这个 getter：任何地方要写协议名，
+  /// 都得从这里取，而不是打一遍字。此前不是这样——手写的清单有三处，其中
+  /// `Hysteria2` 一处写成 `Hysteria 2`（多一个空格）、`config_form.dart` 里
+  /// 又专门为它留了一条 switch 分支去覆盖回来。名字散着写，就会长出这种
+  /// 「一处一个写法、还有一条分支专门修另一处的笔误」的结构。
   String get label => switch (this) {
     VpnProtocol.wireGuard => 'WireGuard',
     VpnProtocol.openVpn => 'OpenVPN',
@@ -28,7 +34,9 @@ extension VpnProtocolInfo on VpnProtocol {
     VpnProtocol.vmess => 'VMess',
     VpnProtocol.vless => 'VLESS',
     VpnProtocol.trojan => 'Trojan',
-    VpnProtocol.hysteria2 => 'Hysteria 2',
+    // 不带空格：仓库里的文档、表单标题与界面文案一直写 `Hysteria2`，
+    // 官方项目名 `Hysteria 2` 里的那个空格在中文语境下也常被省略。
+    VpnProtocol.hysteria2 => 'Hysteria2',
   };
 
   /// 约定的文件扩展名（小写，不含点）。
@@ -62,6 +70,17 @@ extension VpnProtocolInfo on VpnProtocol {
 /// 已实现导入的协议。
 List<VpnProtocol> get importableProtocols =>
     VpnProtocol.values.where((p) => p.isImportable).toList(growable: false);
+
+/// 「支持 …」那句界面文案里的协议清单。
+///
+/// 从 [importableProtocols] 派生，而不是在界面里手写一遍。
+///
+/// `vpn_protocol.dart` 开头的文档明确承诺「新增协议时**界面不需要改动**」，而
+/// 手写的清单正是这条承诺的反例：这一版加进 VMess / VLESS / Trojan / Shadowsocks
+/// 时，就得同步去改两处界面文案——漏掉任何一处，界面就会少说一个已经支持的协议，
+/// 而用户会据此以为它不支持。派生之后，新协议只加枚举值即可自动出现在这里。
+String get supportedProtocolsText =>
+    importableProtocols.map((p) => p.label).join('、');
 
 /// 所有可被识别的扩展名，用于文件选择器过滤。
 ///

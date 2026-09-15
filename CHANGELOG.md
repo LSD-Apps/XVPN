@@ -55,6 +55,113 @@
 
 ### 修正
 
+- **OpenVPN 的默认端口被改错了：TCP 配置会去连 443，而规范里只有 1194。**
+  这条是拿 OpenVPN 手册逐条核对时发现的，不是猜的——手册里 `--port` 是
+  「TCP/UDP port number for both local and remote」，并明写「The current default
+  of 1194 represents the official IANA port number assignment for OpenVPN」；
+  `--remote host [port]` 省略端口时用的就是它，**与协议无关**。
+
+  原实现把「TCP 常部署在 443」当成默认值，**解析器与表单生成器两处都这么写**。
+  代价是静默连错端口：`proto tcp` + `remote host`（省略端口）会去连 `host:443`，
+  而配置作者省略端口恰恰是因为服务端就在默认端口上；失败时界面只说「没能连上
+  服务器」，没有任何线索指向端口被改过。两处必须同时改——只改解析器的话，
+  确认导入会用表单**重新生成** `.ovpn`，把 443 又写回去。
+
+- **`remote` 行自带的 proto 现在优先于全局 `proto`，且不再取决于两行的先后顺序。**
+  此前两者共用一个变量，于是 `remote h 1194 udp` 后面跟 `proto tcp` 会得到 tcp，
+  把两行对调又得到 udp——同一份配置换个行序就换了协议。手册对
+  `--remote host [port] [proto]` 的说法是「proto indicates the protocol to use
+  when connecting **with the remote**」，`--proto` 只是缺省值：更具体的赢。
+
+- **`verify-x509-name` 的名字断言没有被执行，这一点现在会说出来。**
+  这条指令要求「对端证书的 X.509 名字等于 name」，比 `remote-cert-tls server`
+  的「只要是服务端证书」更强；而内核端点没有表达名字的字段。此前它被**默默**
+  降级成后者的等价物——用户以为自己钉死了服务端身份，实际只校验了证书用途。
+
+  现在：名字被解析出来、在配置详情里可见、确认导入后**原样写回**（生成器此前会
+  把它整条丢掉，连提示一起——提示是按解析结果给的），并给一条 info 说明名字没有
+  被比对。不写成 warn 是因为连接本身不受影响；必须写出来是因为受影响的是用户
+  以为已经生效的那个保证。
+
+  仍有**一处未验证**并已写进 `docs/PROTOCOLS.md`：`tls.server_name` 目前填的是
+  `remoteHost`，它是否同时参与证书主机名校验尚未确认。OpenVPN 自身在没有
+  `verify-x509-name` 时**不校验主机名**，若 sing-box 校验，则「remote 是 IP、
+  证书 CN 是域名」这类常见配置会比 OpenVPN 更严而连不上。**只有拿真实服务端跑
+  一次才能定论，不凭推断改。**
+
+- **静态密钥模式（`secret` / `<secret>`）不再沉默地失败。** 它是与 TLS 并列的
+  另一种 OpenVPN 模式，而 sing-box 的 `openvpn-client` 只实现 TLS 模式，这类配置
+  握手必然失败。现在两种写法都会被识别（内联块会被内联正则整段剥掉，只看指令
+  列表会漏掉 `<secret>`），并明确告知「无法建立连接」——照 AmneziaWG 的先例，
+  识别出来并说清楚，而不是让用户对着一个连不上的隧道猜。
+
+- **`docs/PROTOCOLS.md` 的协议状态表按实际验证强度重写。** 原先六个协议都写
+  「已通过官方 `sing-box check`」，把**配置校验**与**能连上**混为一谈。现在区分：
+  五个协议已真机连通（判据是接入端收到隧道侧流量，见 `docs/ANDROID.md` 8.5），
+  **OpenVPN 单独标注为「仅配置校验通过，未做过端到端」**——sing-box 不提供
+  OpenVPN 服务端，本机也没有可用的（装它要管理员权限）。已验证的只有两条：
+  `.ovpn` 能生成结构完整的端点，且随包分发给安卓的 libbox 确实带 `with_openvpn`。
+
+- **应用连接过一次之后，「把配置分享到幽门」就彻底失效了——没有弹窗、没有报错、
+  什么都没有。** 冷启动时却完全正常，因此很容易被当成「偶发」。
+
+  根因在 Flutter 的通道语义：`MethodChannel` 每条通道**只保留一个** handler，
+  `setMethodCallHandler` 是**替换**而不是追加，被替换掉的那条推送不会报错、也不会
+  落日志。而 `com.xvpn.xvpn/vpn` 这条通道上有两类互不相干的推送——原生分享进来的
+  配置（`main.dart` 关心）与内核日志（`AndroidVpnCore` 关心）。两边各自注册，
+  于是谁后注册谁生效：应用一旦连接过，`AndroidVpnCore` 就装上了自己的 handler，
+  而它只认 `coreLog`，`sharedConfigAvailable` 从此无人处理。
+
+  现在 handler 只在 `core/lib/android_channel.dart` 里装一次，所有兴趣方都收到
+  每一条推送、各自忽略不关心的那些。`window_controls.dart` 早就为同一类问题留过
+  一句「两个 setMethodCallHandler 的话，先注册的那条推送会被静默丢弃」——只是这条
+  通道上没人照着做。
+
+  **真机复核**：同一个 `vless://`/`trojan://` 链接，修复前冷启动弹确认框、应用已在
+  运行时什么都不发生；修复后热态立即弹出确认框。
+  `test/android_channel_test.dart` 守住它——那条断言测的不是「某函数被调用」，而是
+  「两个兴趣方都能收到同一条推送」，正是旧实现做不到的事。
+
+- **连接页那句「规则库 2 项」是个写死的常量，真机上一直是错的。** 文案是
+  `命中规则集的流量直连，其余走隧道（规则库 2 项）`，其中 `2` 硬编码。写下它的
+  那年，默认启用的内置规则集确实只有两份（`geosite-cn` / `geoip-cn`）；后来
+  `geosite-cn-extra` 与 `geoip-cn-extra` 加了进来并同样默认启用，这句没跟着改——
+  内核实际吃进去的是四份，界面报的是两份。更糟的是它**永远是 2**：用户在
+  「分流规则」页停用或新增规则集时，这个数字一动不动。
+
+  这不是无害的瑕疵。界面给出的数字与程序此刻真正在用的东西不符时，用户拿它去
+  排查分流问题只会被带偏——而收口「配置里写了、程序却没用」这一类静默失效，
+  正是这一版的主轴。现在项数取自 `state.ruleSets` 里**实际启用**的那些。
+
+  同时补了一条 widget 用例守住它：断言项数等于启用数量，且停用一份后从 4 变成 3
+  ——写死的常量过不了这条。真机复核：卡片显示「规则库 4 项」，与
+  `configuration.json` 里交给内核的四份规则集一致。
+
+  同一张卡片上，系统代理地址早就是取自内核实际值的（`takeOverEndpoint`，注释里
+  明写「写死 2080 等于给用户一个抄不走、也用不上的地址」）。这一处只是漏了。
+
+- **协议展示名不再散着写——「新增协议时界面不用改」这条承诺现在才真的成立。**
+  `vpn_protocol.dart` 开头写着「新增协议只需三步，界面、导入流程、配置生成都
+  不需要改动」，但界面里其实有两处又把协议名打了一遍：
+
+  * 连接页那句「支持 WireGuard、OpenVPN、Shadowsocks、VMess / VLESS / Trojan 与
+    Hysteria2」是手写的。这一版加进 VMess / VLESS / Trojan / Shadowsocks 时就得
+    手工同步它，漏掉任何一处，界面就会**少说一个已经支持的协议**——用户据此以为
+    它不支持，而那正是他手里配置的协议；
+  * `ConfigFormModel.defaultName` 为四个协议各留了一条 switch 分支，外面还套着
+    一条 `_ => '${protocol.label} 配置'` 兜底。两者结果完全一样，**只有
+    `hysteria2` 那条不同**——而它不同，仅仅是因为 `label` 写成了 `Hysteria 2`
+    （多一个空格），需要一条分支专门把空格盖回去。为修一处的笔误再加一处，
+    名字就有了第二个真相。
+
+  现在清单从 `importableProtocols` 派生（`supportedProtocolsText`），默认名直接由
+  `label` 拼出，`label` 统一成 `Hysteria2`（与仓库文档、表单标题、界面文案一致）。
+  新增协议因此真的只改枚举与适配器两处。
+
+  补了 `test/protocol_naming_test.dart` 守住它：展示名非空且互不相同、界面文案必须
+  覆盖每个可导入协议、默认名必须等于 `'${protocol.label} 配置'`。最后一条正是用来
+  挡住「再为某个协议单独留一条分支」。
+
 - **连接失败后，圆环不再退回「未连接」，而是标出失败并写清下一步。** 此前一次失败的
   尝试只会让圆环变回中性灰、写着「未连接」，与「从来没点过连接」长得一模一样；那条
   报错 SnackBar 四秒后就消失，用户隔一会儿回到屏幕前只看到一个不说话的圆环——失败
@@ -236,6 +343,77 @@
   `gtk_widget_show` 之前调用 `gtk_window_move`，GTK 文档明确说多数窗口管理器
   会忽略对**初始位置**的请求、只接受显示**之后**的移动请求。Wayland 下合成器
   按协议自行决定位置，此时这句是无害空操作。
+
+- **「安卓自愈重启会不会再弹系统授权框」有了真机答案：不会。** 这一条此前挂在
+  `docs/RESILIENCE.md` 的「已知限制」里，注明「**这一步只能真机验证**」——它确实
+  只能真机验证，而在这一轮之前没人验过。
+
+  现在补上实测（vivo V1838A / Android 10）：断开接入端触发自愈后，`diag.log` 里
+  出现第二次 `openTun ok`，**fd 从 109 换成 104**——TUN 是真的被拆掉重建，而不是
+  「只把内核重载了一下」；而 200 秒观察窗内
+  `com.android.vpndialogs/ConfirmDialog` 一次都没有出现。原因在 Android 侧：
+  VPN 同意记在**包**上而不是记在单次请求上，`VpnService.prepare()` 只在从未授权时
+  返回非空 Intent，`MainActivity.prepareVpn` 拿到 null 就立刻回 true。撤销授权或
+  卸载重装之后第一次仍会问，那是对的。
+
+  仍未复验的是**真实公网节点**下的自愈：上面那次用的是本机自建的接入端
+  （经 `adb reverse` 回连开发机），不是公网节点。
+
+### 新增
+
+- **真机部署收成一条命令：`scripts/deploy-android.ps1`。** 此前真机安装是一串
+  只存在于脑子里的手工步骤，而其中的关键两步是错的，代价是每次安装都卡满超时。
+
+  脚本负责构建、调设备、安装、启动与取证（`-Evidence` 会把解包出的规则集、
+  `credentials.key` 的长度、`diag.log` 里的默认网卡与 `openTun` fd 一起打出来）。
+  构建固定带 `--target-platform android-arm64`，理由与 `release.yml` 相同：
+  `libbox.aar` 只有这一个 ABI，不加这个开关，debug 包会把三个 ABI 全塞进去
+  （147 MB → 220 MB 以上），而那多出来的两个在运行时根本加载不到内核。
+  它碰的设备设置只有「安装校验」这一类；关动画要 `-RelaxAnimations` 显式打开才做
+  ——那改的是用户日常就能感觉到的系统行为，而脚本的职责只是把包装上。
+  两处「厂商行为」被如实写进注释与 `docs/ANDROID.md`，因为它们都不是猜的：
+
+  * **vivo / iQOO 每次安装非自家商店的应用都会弹 `PackageInterceptActivity`，
+    它让 `adb install` 永远不返回。** `-g`、`-t`、以及伪装安装器
+    （`pm install -i com.bbk.appstore`）都绕不过；只有
+    「设置 → 应用安装 → 应用安全验证 → 关」能一次性解决，而那一项**没有对应的
+    `settings` 键**，只能用手点一次。脚本会在需要时把路径打出来，并把「已了解
+    应用的风险检测结果」与「继续安装」代点掉。
+  * **vivo 的安装器提交会话后不关闭它**，因此 `pm install` 的退出**不能**当作
+    「装完了」：实测包在 19:01:17 已经装好、启动器图标都出来了，命令仍然阻塞。
+    据此判定会把成功报成失败。脚本改以设备侧事实为准（`dumpsys package` 的
+    `lastUpdateTime`），`pm install` 的输出只在失败时用来取原因。
+
+  同理，判断「当前是不是停在拦截页」也不能按 Activity 名认——
+  `PackageInterceptActivity` 只出现在 `dumpsys window` 里，`uiautomator dump` 的
+  XML 只有 `package="com.android.packageinstaller"` 和各控件文本；按名字认的症状
+  是「界面明明停在拦截页，脚本却一直以为没有」，然后超时。
+
+- **`docs/ANDROID.md` 新增第八节：真机部署与端到端复验。** 除了上面两条，还记下
+  「没有公网节点怎么验 TUN 的 TCP 进不进内核」：用随包分发的
+  `app/assets/bin/sing-box.exe` 在开发机上起一个 Shadowsocks 接入端，
+  `adb reverse tcp:8388 tcp:8388` 把手机的端口反向映射回来，再用
+  `ss://…@127.0.0.1:8388` 建一条配置——不走 WiFi，因此不受防火墙与同网段影响。
+  判据取接入端日志里的 `inbound connection to <域名>:443`，**不取界面上的信号**：
+  界面上的延迟与圆环在当初那个有缺陷的 `stack` 下同样是绿的，这正是误判的来源。
+
+  同节附上这一轮复验的结论表：内置规则集 4 份 `.srs` + `cn-ip.bin` 全部解包、
+  规则集大小四项都非 0、`credentials.key` 是 60 字节密文（12 IV + 32 DEK +
+  16 GCM tag，无明文）、默认接口是 `wlan0 index=30` 而不是 `tun0`、
+  网卡列表 3 张且不含 `tun0`、接入端收到隧道侧的 TCP。
+
+- **新增 `test/scripts_syntax_test.dart`：把「脚本必须带 BOM 且能被解析」变成门禁。**
+  这一轮里同一个坑踩了两次——`write` / `edit` 工具**不保留 UTF-8 BOM**，而
+  PowerShell 5.1 按 ANSI 解码没有 BOM 的脚本，中文注释立刻变成乱码并报出
+  「Try 语句缺少 Catch / Finally」这种与真实原因毫不相干的语法错误。改完必须
+  手工补回 BOM，靠人记得不可靠。
+
+  现在两条断言守住它：每个 `.ps1` 必须带 `EF BB BF`，并且（Windows 上）必须能被
+  真正的 PowerShell 解析器读通。这两条都不是形式主义——把 BOM 去掉后**两条同时
+  变红**，第二条正是第一条的真实后果。
+
+  这也延续了 `updater_test.dart` 里那条判断：字符串断言只能证明「该有的片段在」，
+  证明不了整份脚本能被解析。
 
 ## [1.2.1] - 2026-09-14
 

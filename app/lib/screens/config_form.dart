@@ -110,6 +110,7 @@ class ConfigFormModel {
           ..dataCiphersFallback = conf.dataCiphersFallback
           ..auth = conf.auth
           ..remoteCertTls = conf.requiresServerCert
+          ..verifyX509Name = conf.verifyX509Name
           ..requiresCredentials = conf.requiresCredentials
           ..username = conf.username
           ..password = conf.password
@@ -203,6 +204,14 @@ class ConfigFormModel {
   String? username;
   String? password;
   bool remoteCertTls = false;
+
+  /// 原配置里的 `verify-x509-name` 名字断言，**原样带过去**。
+  ///
+  /// 它不参与界面编辑（表单里没有这一项），但必须随配置一起写回：否则确认导入
+  /// 会用表单重新生成一份 `.ovpn`，用户写的名字断言就此消失——连同「它没有被执行」
+  /// 那条提示一起，因为提示是按解析结果给的。这类「解析认了、生成丢了」的字段
+  /// 丢失此前在 tun-mtu / keepalive / mssfix 上已经发生过一次。
+  String? verifyX509Name;
   bool requiresCredentials = false;
   String? tunMtu;
   String? pingInterval;
@@ -244,13 +253,13 @@ class ConfigFormModel {
   List<ProfileNotice> notices = const <ProfileNotice>[];
 
   /// 手填模式下的默认名称。
-  static String defaultName(VpnProtocol protocol) => switch (protocol) {
-    VpnProtocol.wireGuard => 'WireGuard 配置',
-    VpnProtocol.openVpn => 'OpenVPN 配置',
-    VpnProtocol.shadowsocks => 'Shadowsocks 配置',
-    VpnProtocol.hysteria2 => 'Hysteria2 配置',
-    _ => '${protocol.label} 配置',
-  };
+  ///
+  /// 直接由 [VpnProtocolInfo.label] 拼出来，不再逐个协议写一条分支。
+  /// 原先这里为四个协议各留了一条 switch 分支，外加一条
+  /// `_ => '${protocol.label} 配置'` 兜底——两者结果一样，只有 `hysteria2`
+  /// 那条不同，而它不同仅仅是为了把别处多打的一个空格盖回去。改协议名本该只改
+  /// `label` 一处，留着这些分支就等于留了第二个真相。
+  static String defaultName(VpnProtocol protocol) => '${protocol.label} 配置';
 
   /// 生成规范配置文本。
   ///
@@ -344,7 +353,13 @@ class ConfigFormModel {
     final proto = (_clean(transport) ?? 'udp').toLowerCase().startsWith('tcp')
         ? 'tcp'
         : 'udp';
-    final port = _requirePort(remotePort, fallback: proto == 'tcp' ? 443 : 1194);
+    final port = _requirePort(
+      remotePort,
+      // 与解析器同一个默认值，且**与协议无关**：OpenVPN 手册的 `--port` 对
+      // TCP/UDP 都是 1194。此前这里按协议给 TCP 取 443，于是即便解析器改对了，
+      // 确认导入重新生成的 `.ovpn` 也会把 443 写回去，等于把端口又改错一次。
+      fallback: OpenVpnConf.defaultRemotePort,
+    );
 
     final certText = _clean(cert);
     final keyText = _clean(clientKey);
@@ -370,6 +385,10 @@ class ConfigFormModel {
     final authValue = _clean(auth);
     if (authValue != null) buffer.writeln('auth ${authValue.toUpperCase()}');
     if (remoteCertTls) buffer.writeln('remote-cert-tls server');
+    // 原样写回用户的名字断言。内核不执行它（见 OpenVpnProfile.notices），但把它
+    // 从配置里抹掉是另一回事：那会让用户再也看不到自己写过这一条。
+    final verifyName = _clean(verifyX509Name);
+    if (verifyName != null) buffer.writeln('verify-x509-name $verifyName');
     if (requiresCredentials) buffer.writeln('auth-user-pass');
 
     _writeInline(buffer, 'ca', ca);
@@ -659,6 +678,8 @@ class _ConfigFormDialogState extends State<_ConfigFormDialog> {
   late bool _remoteCertTls =
       widget.initial.protocol == VpnProtocol.openVpn &&
       widget.initial.remoteCertTls;
+  /// 隐藏的带过字段：界面上不编辑，但生成时必须写回（见 [ConfigFormModel.verifyX509Name]）。
+  late final String? _verifyX509Name = widget.initial.verifyX509Name;
   late bool _requiresCredentials =
       widget.initial.protocol == VpnProtocol.openVpn &&
       widget.initial.requiresCredentials;
@@ -798,6 +819,7 @@ class _ConfigFormDialogState extends State<_ConfigFormDialog> {
           ..tlsCrypt = _rawText('ovpn.tlsCrypt')
           ..keyDirection = _text('ovpn.keyDirection')
           ..remoteCertTls = _remoteCertTls
+          ..verifyX509Name = _verifyX509Name
           ..requiresCredentials = _requiresCredentials
           ..tunMtu = _text('ovpn.tunMtu')
           ..pingInterval = _text('ovpn.pingInterval')

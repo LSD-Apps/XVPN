@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
 import '../models.dart';
+import 'android_channel.dart';
 import 'auto_route.dart';
 import 'core_monitor.dart';
 import 'cn_ip_index.dart';
@@ -73,7 +74,21 @@ class AndroidVpnCore extends VpnCore {
   void Function(String ruleSetDir)? debugRuleSetDirObserver;
 
   /// 与 MainActivity / XvpnVpnService 约定的通道名。
+  ///
+  /// **只用来 invokeMethod，不要在这条通道上 setMethodCallHandler。** 它上面还有
+  /// 原生分享进来的配置（`main.dart` 关心），而 Flutter 每条通道只保留一个
+  /// handler，后注册的会把先注册的静默顶掉——订阅一律走 [AndroidChannel]。
   static const MethodChannel _channel = MethodChannel('com.xvpn.xvpn/vpn');
+
+  /// [AndroidChannel] 的注销回调。见 [_subscribeChannel]。
+  void Function()? _channelSubscription;
+
+  /// 登记「内核日志」这一项兴趣，交给 [AndroidChannel] 统一分发。
+  ///
+  /// 可以重复调用：只登记一次，重复调用不会让同一条推送被处理两遍。
+  void _subscribeChannel() {
+    _channelSubscription ??= AndroidChannel.addHandler(_onPlatformCall);
+  }
 
   /// 内置规则集在 APK 资源里的位置。
   ///
@@ -285,7 +300,7 @@ class AndroidVpnCore extends VpnCore {
       );
 
       // 4) 接收内核日志，供失败归因与自动纠正使用。
-      _channel.setMethodCallHandler(_onPlatformCall);
+      _subscribeChannel();
 
       // 5) 启动服务并等内核就绪。
       await _channel.invokeMethod<void>('connect', <String, Object?>{
@@ -473,6 +488,9 @@ class AndroidVpnCore extends VpnCore {
   @override
   void dispose() {
     monitor.stop();
+    // 注销通道兴趣：测试里这个对象会被构造很多次，不注销就会越堆越多。
+    _channelSubscription?.call();
+    _channelSubscription = null;
     unawaited(_ruleSetHost.stop());
     super.dispose();
   }
