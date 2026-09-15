@@ -62,21 +62,21 @@ lib/protocols/
 | 协议 | 入口格式 | 内核映射 | 状态 |
 | --- | --- | --- | --- |
 | WireGuard | `wg-quick` 的 `.conf` | `endpoints[].type = wireguard` | ✅ 真机连通（对端握手完成，见 `docs/ANDROID.md` 8.5） |
-| OpenVPN | 客户端 `.ovpn`（含内联证书） | `endpoints[].type = openvpn-client` | ⚠️ **仅配置校验通过，未做过端到端**——见下 |
+| OpenVPN | 客户端 `.ovpn`（含内联证书） | `endpoints[].type = openvpn-client` | ✅ 真机连通（真实节点：隧道建立并转发 TCP） |
 | Hysteria2 | `.yaml` / `.yml`（分享链接与 sing-box 出站 JSON 也能解析） | `outbounds[].type = hysteria2` | ✅ 真机连通（QUIC 上 TCP 与 UDP 都验到） |
 | Shadowsocks | `ss://` 分享链接（SIP002 两种编码 + 旧式整串 base64）与 sing-box 出站 JSON | `outbounds[].type = shadowsocks` | ✅ 真机连通 |
 | VMess | `vmess://`（base64 JSON）与 sing-box 出站 JSON | `outbounds[].type = vmess` | ✅ 真机连通 |
 | VLESS | `vless://uuid@host:port?params` 与 sing-box 出站 JSON | `outbounds[].type = vless` | ✅ 真机连通 |
 | Trojan | `trojan://password@host:port?params` 与 sing-box 出站 JSON | `outbounds[].type = trojan` | ✅ 真机连通（自签 TLS + insecure） |
 
-> 「真机连通」的判据写在 `docs/ANDROID.md` 8.5：接入端日志里出现
-> `inbound connection to <域名>:443`（TCP 类）或对端握手完成（WireGuard），
-> 而不是界面上的绿环。**OpenVPN 没有这一格**：sing-box 只提供
-> `openvpn-client`，不提供 OpenVPN 服务端，本机也没有可用的 OpenVPN 服务端
-> （装它需要管理员权限），因此握手之后的部分从未被验证过。
-> 已验证的只有两条：`.ovpn` 能生成结构完整的 `openvpn-client` 端点；**随包分发给
-> 安卓的 libbox 确实带 `with_openvpn`，内核实测接受了该端点**
-> （`startOrReloadService ok`）。**不要把「配置校验通过」当成「能连上」。**
+> 「真机连通」的判据写在 `docs/ANDROID.md` 8.5。自建接入端时看服务端日志里出现
+> `inbound connection to <域名>:443`；**真实节点没有服务端日志**，判据换成客户端侧
+> 两条可核验的证据：内核自己的探针经该出口拿到响应（`GET /proxies/vpn/delay` 返回
+> `delay` 而不是 503），以及 `/connections` 里出现 `chains` 含 `vpn` 的连接且字节数在增长。
+> **都不是界面上的绿环。**
+>
+> OpenVPN 这一格是 1.3.0 发布之后才补上的：拿一份真实节点配置一跑，立刻暴露
+> 「`remote` 写 IP 的配置一律连不上」（见 3.5.3d）。**1.3.0 里 OpenVPN 对这类配置是坏的。**
 
 ### OpenVPN 实现中踩到的坑（供后续参考）
 
@@ -143,21 +143,48 @@ OpenVPN 2.4+ 用 `data-ciphers` 协商，`data-ciphers-fallback` 是给
 「无需翻译」的指令里丢掉了——那等于悄悄放弃了服务端身份校验，属于
 「看起来能连、实际不安全」的降级。
 
-**`verify-x509-name` 只做到一半，这一点必须说清楚。** 它比上面那条更强：手册里
-`--verify-x509-name name type` 的含义是「对端证书的 X.509 名字必须等于 name」
-（默认按完整 subject 比对）。而内核的 `openvpn-client` 端点没有表达名字的字段，
-能做的只有「要求是服务端证书」。所以现在：**照旧置 `remote_certificate_tls`，
-另外把用户写的名字保留下来（配置详情里可见、确认导入后写回），并给一条 info
-提示说明名字没有被比对**。
+**`verify-x509-name` 现在真的被执行了。** 它是名字断言：手册里
+`--verify-x509-name name [type]` 的含义是「对端证书的 X.509 名字必须等于 name」，
+比上面那条「只要是服务端证书」更强。内核没有单独的名字字段，但 `tls.server_name`
+恰好就是这个语义——**所以声明了 `verify-x509-name` 就把它写进 `server_name`**。
 
-不写成 warn 是因为连接本身不受影响；必须写出来是因为受影响的正是用户以为已经
-钉死的那个保证——「以为有、其实没有」的保护不能沉默。
+没声明时**不写** `server_name`：写了就等于强制做一次 OpenVPN 自己都不做的名字校验，
+而那会让 IP 端点的配置全部连不上（3.5.3d 是实测）。配置详情里能看到这个名字；
+界面另给一条 info 说明内核按**主机名**比对，若原配置用的是 `subject` / `name-prefix`，
+判定会比 OpenVPN 更严格——宁可连不上，也不放行名字不对的服务端。
 
-> **待真机+真实服务端复验**：sing-box 的 `tls.server_name` 目前被我们填成
-> `remoteHost`（当 SNI 用）。它是否**同时**参与证书主机名校验，尚未验证——
-> OpenVPN 自身在没有 `verify-x509-name` 时**不校验主机名**，若 sing-box 校验，
-> 那么「remote 是 IP、证书 CN 是域名」这类常见配置会比 OpenVPN 更严而连不上。
-> 这一条只有拿真实服务端跑一次才能定论，**不要凭推断改**。
+> **已定论（真机 + 真实节点实测）**：sing-box **会**拿 `tls.server_name` 做
+> verify-x509-name 式的名字校验。原先无条件填 `remoteHost`，于是 `remote` 写 IP 的
+> 配置必然连不上——现场与修法见 3.5.3d。现在的规则是：只在配置声明了
+> `verify-x509-name` 时才写 `server_name`，其余情况不写。
+
+### 3.5.3d `server_name` 写错会让 IP 端点的配置一律连不上
+
+这是 1.3.0 发布之后补验 OpenVPN 时抓到的，也是这一块最严重的一处：**凡是 `remote`
+写成 IP 的配置，OpenVPN 一律连不上**——而服务商直接给 IP 端点是常态。
+
+现象是「界面显示已连接、什么都没通」：内核起来了、端点也注册了，探针却一直失败，
+`/connections` 里没有一条走 `vpn`，而客户端侧看不到原因。
+
+根因是适配器无条件把 `tls.server_name` 写成了 `remoteHost`，而 sing-box 会拿它做
+**verify-x509-name 式的名字校验**。对端证书签给的是域名，拿 IP 去比对必然失败。
+在 PC 上用同一份端点配置开 debug 日志跑，原话是：
+
+```
+ERROR endpoint/openvpn-client[vpn]: client terminated:
+      (peer certificate verification failed | peer certificate fails verify-x509-name check)
+```
+
+去掉 `server_name` 之后同一份配置立刻变成 `tunnel established to <ip>:1194 over udp`，
+请求拿到 204。
+
+**OpenVPN 自身在没有 `verify-x509-name` 时并不校验主机名**，只校验证书链与
+`remote-cert-tls server` 要求的服务端用途，所以这里也不该校验。现在的规则是：
+声明了 `verify-x509-name` 就把名字写进 `server_name`，没声明就完全不写。
+SNI 不受影响——OpenVPN 默认也不发 SNI（要发得用 `--tls-hostname`）。
+
+这一处靠**真机 + 真实节点**才暴露得出来：`sing-box check` 与单元测试都发现不了，
+因为它们都不做真实的 TLS 握手。
 
 ### 3.5.3a 端口默认值是 1194，与协议无关
 

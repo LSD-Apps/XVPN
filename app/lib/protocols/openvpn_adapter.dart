@@ -132,8 +132,26 @@ class OpenVpnAdapter implements VpnProtocolAdapter {
       if (conf.key != null && conf.key!.isNotEmpty)
         'client_key': <String>[conf.key!],
       if (controlWrap.isNotEmpty) 'control_wrap': controlWrap,
-      // 服务端域名同样使用直连解析器，理由与 WireGuard 端点一致。
-      'server_name': conf.remoteHost,
+      // `server_name` **只在配置明确要求校验服务端证书名时才写**。
+      //
+      // 这条是拿真实节点验出来的，不是推的：sing-box 的 `openvpn-client` 会把
+      // `tls.server_name` 拿去做 **verify-x509-name 式的名字校验**。此前这里无条件
+      // 写 `conf.remoteHost`，于是 `remote` 写成 IP 的配置（服务商直接给 IP 端点
+      // 是常态）必然连不上——对端证书是签给域名的，实测报：
+      //   endpoint/openvpn-client[vpn]: client terminated:
+      //     (peer certificate verification failed |
+      //      peer certificate fails verify-x509-name check)
+      // 现象是「界面显示已连接、什么都没通」，而 OpenVPN 官方客户端连同一份配置
+      // 是好的。
+      //
+      // OpenVPN 自身在没有 `verify-x509-name` 时**不校验主机名**，只校验证书链与
+      // `remote-cert-tls server` 要求的服务端用途。这里照做：声明了
+      // `verify-x509-name` 就把名字钉上去，没声明就不写——主机名校验交还给本来就在
+      // 的那两道关（证书链 + 服务端用途）。
+      //
+      // 顺带说明 SNI 不受影响：OpenVPN 默认也不发 SNI（要发得用 `--tls-hostname`），
+      // 实测不带 server_name 时握手正常、隧道能建立。
+      if (conf.verifyX509Name != null) 'server_name': conf.verifyX509Name!,
       // `remote-cert-tls server` 的等价物。
       //
       // 这条指令在客户端配置里几乎必然存在（所有主流向导生成的配置都带），

@@ -153,21 +153,24 @@ remote vpn.example.net 443
       expect(notices.first.message, contains('静态密钥'));
     });
 
-    test('verify-x509-name 的名字断言未被内核执行，界面要说清楚', () {
+    test('verify-x509-name 会被解析出来，并在详情里标明语义差别', () {
       final conf = OpenVpnConf.parse(
         'client\nremote vpn.example.net 1194\n'
         'verify-x509-name vpn.example.net\n',
       );
       expect(conf.verifyX509Name, 'vpn.example.net');
-      // 退让成「要求服务端证书」是当前能做的全部，但仍应保留这个意图。
       expect(conf.requiresServerCert, isTrue);
 
-      final profile = OpenVpnProfile(conf);
+      // 带引号的写法也要能剥掉引号（subject 形式的 DN 里会有空格与引号）。
       expect(
-        profile.notices.any((ProfileNotice n) => n.message.contains('不比对名字')),
-        isTrue,
-        reason: '名字断言没被执行却不说，用户会以为自己钉死了服务端身份',
+        OpenVpnConf.parse(
+          'client\nremote vpn.example.net 1194\n'
+          'verify-x509-name "vpn.example.net" name\n',
+        ).verifyX509Name,
+        'vpn.example.net',
       );
+
+      final profile = OpenVpnProfile(conf);
       expect(
         profile.details.any(
           (({String label, String value}) d) =>
@@ -175,6 +178,17 @@ remote vpn.example.net 443
         ),
         isTrue,
         reason: '配置详情里要能看到用户写的那个名字',
+      );
+      // 名字现在**真的**被拿去校验了，因此不再有「没比对名字」这种提示；
+      // 保留的是一条语义说明：内核按主机名比对，比 subject / name-prefix 更严。
+      expect(
+        profile.notices.any((ProfileNotice n) => n.message.contains('更严格')),
+        isTrue,
+      );
+      expect(
+        profile.notices.any((ProfileNotice n) => n.message.contains('不比对名字')),
+        isFalse,
+        reason: '名字已经用于校验，不能再提示「没比对」',
       );
     });
 
@@ -275,7 +289,42 @@ $_ca
         (tls['certificate']! as List<Object?>).first.toString(),
         contains('BEGIN CERTIFICATE'),
       );
-      expect(tls['server_name'], 'ovpn.example.net');
+      // 没有 `verify-x509-name` 时**绝不能**写 server_name。
+      //
+      // 这是拿真实节点验出来的：sing-box 会拿 `tls.server_name` 做
+      // verify-x509-name 式的**名字校验**，而 OpenVPN 自己在这条指令缺席时并不
+      // 校验主机名。此前无条件写 remoteHost，于是 `remote` 写成 IP 的配置必然
+      // 连不上（对端证书签给的是域名），实测报：
+      //   client terminated: (peer certificate verification failed |
+      //                      peer certificate fails verify-x509-name check)
+      expect(
+        tls.containsKey('server_name'),
+        isFalse,
+        reason: '未声明 verify-x509-name 时写 server_name 会让名字校验失败、隧道建不起来',
+      );
+    });
+
+    test('声明 verify-x509-name 时，用它当 server_name 把服务端名字钉住', () {
+      // 与上一条配对：名字校验要么由配置明确要求（此时必须写 server_name），
+      // 要么完全不写。两种都对应 OpenVPN 自身的行为。
+      final adapter = OpenVpnAdapter();
+      final profile = adapter.parse(
+        'client\ndev tun\nproto udp\nremote 203.0.113.9 1194\n'
+        'remote-cert-tls server\nverify-x509-name vpn.example.net name\n'
+        '<ca>\n$_ca\n</ca>\n',
+        'client.ovpn',
+      );
+      final ep = adapter.buildEndpoint(
+        profile,
+        const OutboundContext(tag: 'vpn', resolverTag: 'dns-cn'),
+      );
+      final tls = ep['tls']! as Map<String, Object?>;
+      expect(
+        tls['server_name'],
+        'vpn.example.net',
+        reason: 'remote 是 IP 而配置钉了名字时，必须拿名字去校验，否则名字断言形同虚设',
+      );
+      expect(tls['remote_certificate_tls'], 'server');
     });
 
     test('tls-auth 走 control_wrap，type 用下划线且 direction 映射为 client', () {

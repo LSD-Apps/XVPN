@@ -361,7 +361,7 @@ inbound/shadowsocks[ss-lan-test]: inbound connection to www.gstatic.com:443
 | Trojan | `inbounds[].type=trojan` + 自签 TLS | ✅ | 同上（TLS 握手在内核里完成） |
 | Hysteria2 | `inbounds[].type=hysteria2` + 自签 TLS | ✅ | `inbound packet connection to 1.1.1.1:53` |
 | WireGuard | `endpoints[].type=wireguard` | ✅ | `peer(…) - received handshake initiation` |
-| OpenVPN | **没有可用的服务端** | ⚠️ 部分 | 见下 |
+| OpenVPN | **真实节点**（1.3.0 之后补验） | ✅ | 探针经 `vpn` 出口返回 `delay`；`/connections` 出现 `chains` 含 `vpn` 的连接 |
 
 TCP 类协议同时验到了 **UDP 也走隧道**：每个协议下都出现
 `inbound packet connection to 1.1.1.1:53`，即内核劫持的 DNS 查询确实经隧道发出。
@@ -382,17 +382,28 @@ TCP 类协议同时验到了 **UDP 也走隧道**：每个协议下都出现
    `bad header` / `unknown version` / `TLS handshake: unexpected EOF` 之类，
    而 QUIC 类的会**静默丢弃**——因此 UDP 探针不能用来判断「包有没有到」。
 
-**OpenVPN 为什么只算部分验证。** 本机没有 OpenVPN 服务端（`openvpn` 未安装，
-装它要管理员权限），而 sing-box 又不提供，所以握手跑不完。可验证的部分已经验证：
+**OpenVPN：改用真实节点补验（1.3.0 之后）。** 自建接入端这条路走不通——sing-box
+不提供 OpenVPN 服务端，本机也没有可用的（装它要管理员权限）。后来直接拿一份
+真实节点配置来验，判据换成客户端侧两条：
 
-* `.ovpn` 被正确解析，并生成了结构完整的 `openvpn-client` 端点（内联 CA、
-  `control_wrap` 的 `tls_auth` 与 `direction: client`、`server_name`、
-  `remote_certificate_tls`）；
-* **随包分发给安卓的 libbox 确实带 `with_openvpn`**：内核接受了这个端点并
-  `startOrReloadService ok`。这一条值得单独记下来——若那次构建漏了该标签，
-  OpenVPN 对所有用户就是「导得进、连不上」，而界面只会说「没能连上服务器」。
+* 内核自己的探针经该出口拿到响应：`GET /proxies/vpn/delay` 返回 `{"delay":…}`，
+  而不是 `503` + `{"message":"An error occurred in the delay test"}`；
+* `/connections` 里出现 `chains` 含 `vpn` 的连接，且 up/down 字节数在增长。
 
-**未验证的是握手之后的隧道**。不要把它当成已验证。
+自建接入端那套（服务端日志）在这里用不上：**真实节点没有我们能看的日志**，所以
+「界面显示已连接」永远不算判据，必须有上面这两条之一。
+
+**这一验立刻抓到一个缺陷**：适配器无条件把 `tls.server_name` 写成 `remoteHost`，
+而 sing-box 会拿它做名字校验，于是 `remote` 写 IP 的配置**一律连不上**——而服务商
+直接给 IP 端点是常态。现场、根因与修法见 `docs/PROTOCOLS.md` 3.5.3d。
+**1.3.0 里 OpenVPN 对这类配置是坏的。**
+
+排查手法值得记下来：客户端侧看不到原因（界面照旧显示已连接、探针只说一句
+`An error occurred in the delay test`）。于是把**应用自己生成的**
+`files/configuration.json` 里的 `endpoints[0]` 取出来，在 PC 上配一个最小 sing-box
+配置（socks 入站 + 该端点 + `route.final = vpn`）开 **debug** 日志跑，错误原文
+立刻出来。这份产物是应用亲手写的，保真度比手抄高——**排查「内核那边到底怎么了」
+时优先用它。**
 
 顺带记下一条用来切换被测配置的捷径：内核与界面读的都是 `files/config.json`，
 把它改成只剩目标配置、并把 `activeProfileId` 置空即可——`AppState` 在存档里的

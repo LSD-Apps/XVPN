@@ -229,7 +229,9 @@ class OpenVpnConf {
           // 这是一条**名字断言**。内核端点没有对应字段，只能退而求其次地要求
           // 「是服务端证书」；把这个退让如实说出来（见 notices），比让用户以为
           // 名字已经在被校验要诚实。
-          verifyX509Name = parts.length >= 2 ? parts[1] : null;
+          verifyX509Name = parts.length >= 2
+              ? parts[1].replaceAll('"', '').replaceAll("'", '')
+              : null;
           requiresServerCert = true;
         case 'auth-user-pass':
           // 可能不带参数（交互输入），也可能指向一个文件。
@@ -461,7 +463,7 @@ class OpenVpnProfile extends ParsedProfile {
             label: '服务端身份',
             value: conf.verifyX509Name == null
                 ? '要求服务端证书'
-                : '要求服务端证书（名字断言未执行：${conf.verifyX509Name}）',
+                : '要求服务端证书（名字：${conf.verifyX509Name}）',
           ),
         (
           label: 'MTU',
@@ -501,13 +503,15 @@ class OpenVpnProfile extends ParsedProfile {
       );
     }
     if (conf.verifyX509Name != null) {
-      // 不写成 warn：连接本身不受影响，受影响的是「用户以为钉死了服务端身份，
-      // 而实际只校验收到了服务端证书」。这类「以为有、其实没有」的保护必须说
-      // 出来，否则用户会基于一个不存在的保证做判断。
+      // 不再提示「名字没被校验」——它现在真的被校验了（见适配器里 server_name 的
+      // 说明）。这里只把语义差别交代清楚：内核是按**主机名**比对的，而 OpenVPN
+      // 还有 `subject`（整条 DN）与 `name-prefix`（前缀）两种更宽的写法。
+      // 差别只影响「比 OpenVPN 更严」，也就是宁可连不上也不会放行错误的服务端。
       items.add(
         ProfileNotice.info(
-          '配置要求校验服务端证书名（verify-x509-name ${conf.verifyX509Name}）。'
-          '本客户端只校验「是服务端证书」，不比对名字',
+          '已要求校验服务端证书名（verify-x509-name ${conf.verifyX509Name}）。'
+          '内核按主机名比对；若原配置用的是 subject / name-prefix，'
+          '判定会比 OpenVPN 更严格',
         ),
       );
     }
