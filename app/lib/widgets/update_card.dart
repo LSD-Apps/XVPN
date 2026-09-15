@@ -1,6 +1,8 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+
+import '../core/update_session.dart';
 import 'package:flutter/services.dart';
 
 import '../core/links.dart';
@@ -29,6 +31,7 @@ class UpdateCard extends StatefulWidget {
   const UpdateCard({
     super.key,
     this.compact = false,
+    this.session,
     this.updater,
     this.updateCenter,
     this.openExternalUrl = launchInBrowser,
@@ -38,6 +41,13 @@ class UpdateCard extends StatefulWidget {
 
   /// 移动端卡片规范（panel2 / 12 圆角 / 更紧的内边距），与其它设置卡片一致。
   final bool compact;
+
+  /// 更新流程的进程级状态机。
+  ///
+  /// **真实运行不要传它**——默认用 [UpdateSession.instance]，那正是「切页不中断
+  /// 下载」的前提（见 [UpdateSession] 的说明）。传它只用于测试，让一条用例拿到
+  /// 自己的一份会话，从而能断言下载期间卡片被销毁也不会中断。
+  final UpdateSession? session;
 
   /// **仅供测试注入**更新引擎。为 null 时用 [Updater.forCurrentPlatform]。
   ///
@@ -72,157 +82,92 @@ class UpdateCard extends StatefulWidget {
 }
 
 class _UpdateCardState extends State<UpdateCard> {
-  late final Updater _updater;
+  /// 状态机**不在这张卡片里**，而在 [UpdateSession]（进程级）。
+  ///
+  /// 卡片只是它的一个视图：切页会把本 State 销毁，但下载必须继续。
+  late final UpdateSession _session;
 
-  /// 启动检查的共享结果。卡片只**读**它来决定初始呈现，绝不为它发起请求。
-  late final UpdateCenter _updateCenter;
+  /// 本 State 是否**拥有**这个会话。
+  ///
+  /// 只有测试注入了替身时为真（那份额外的会话属于这条用例）；真实运行走
+  /// [UpdateSession.instance]，由进程持有，卡片**绝不**释放它——一释放就等于
+  /// 关掉 HTTP 客户端、把正在传的字节流切断。
+  late final bool _ownsSession;
 
-  bool _checking = false;
-  bool _downloading = false;
-  bool _installing = false;
-
-  UpdateCheckResult? _checkResult;
-  UpdateDownloadResult? _downloadResult;
-  UpdateInstallResult? _installResult;
-
-  /// 当前可下载/已下载的发布信息。
-  UpdateInfo? _info;
-
-  File? _downloadedFile;
-  UpdateCancellation? _cancellation;
-
-  int _received = 0;
-  int? _total;
+  // 以下一律委托给会话，好让下面几百行构建代码不必跟着改。
+  bool get _checking => _session.checking;
+  bool get _downloading => _session.downloading;
+  bool get _installing => _session.installing;
+  UpdateCheckResult? get _checkResult => _session.checkResult;
+  UpdateDownloadResult? get _downloadResult => _session.downloadResult;
+  UpdateInstallResult? get _installResult => _session.installResult;
+  File? get _downloadedFile => _session.downloadedFile;
+  int get _received => _session.received;
+  int? get _total => _session.total;
 
   @override
   void initState() {
     super.initState();
-    _updater = widget.updater ?? Updater.forCurrentPlatform();
-    _updateCenter = widget.updateCenter ?? UpdateCenter.instance;
+    final injected = widget.session;
+    if (injected != null) {
+      _session = injected;
+      _ownsSession = false;
+    } else if (widget.updater != null || widget.updateCenter != null) {
+      // 测试注入了替身：给这条用例配一份自己的会话。
+      _session = UpdateSession(
+        updater: widget.updater ?? Updater.forCurrentPlatform(),
+        center: widget.updateCenter ?? UpdateCenter.instance,
+        exitProcess: widget.exitProcess,
+      );
+      _ownsSession = true;
+    } else {
+      _session = UpdateSession.instance;
+      _ownsSession = false;
+    }
+    _session.addListener(_onSessionChanged);
+  }
+
+  void _onSessionChanged() {
+    if (!mounted) return;
+    setState(() {});
   }
 
   @override
   void dispose() {
-    // 默认实现里可能握着一个 HTTP 客户端；不使用注入替身时由这里释放。
-    _updater.dispose();
+    _session.removeListener(_onSessionChanged);
+    // **绝不**在这里释放会话：真实运行时它是进程级的，释放它就会关掉 HTTP
+    // 客户端、切断正在进行的下载——那正是「切页就断」的成因。
+    // 只有测试注入出来的那一份额外会话才归本 State 收掉。
+    if (_ownsSession) _session.dispose();
     super.dispose();
   }
 
-  /// 是否有异步操作正在进行。所有按钮据此禁用，保证重复点击安全。
-  bool get _busy => _checking || _downloading || _installing;
-
   /// 桌面端：安装助手启动后必须由应用主动退出。安卓不在其列。
-  bool get _isDesktop =>
-      _updater.platform == TargetPlatform.windows ||
-      _updater.platform == TargetPlatform.linux;
+  bool get _isDesktop => _session.isDesktop;
 
   // ------------------------------------------------------------ 动作
 
-  Future<void> _check() async {
-    if (_busy) return;
-    setState(() {
-      _checking = true;
-      _checkResult = null;
-      _downloadResult = null;
-      _installResult = null;
-      _info = null;
-      _downloadedFile = null;
-      _cancellation = null;
-      _received = 0;
-      _total = null;
-    });
-    final result = await _updater.checkForUpdate();
-    if (!mounted) return;
-    setState(() {
-      _checking = false;
-      _checkResult = result;
-      if (result is UpdateAvailable) _info = result.info;
-    });
-  }
+  // 检查、下载、取消、安装一律转发给**进程级**会话 [UpdateSession]：状态、
+  // 进度与取消语义都在那边，卡片因此可以在下载途中被安全销毁（切页）。
+  Future<void> _check() => _session.check();
 
   /// [target] 用于启动检查已经发现更新、卡片尚未走过 `_check()` 的场景：
   /// 此时 `_info` 仍是 null，由入口把 notice 里的信息显式带进来。
-  Future<void> _download([UpdateInfo? target]) async {
-    final info = target ?? _info;
-    if (info == null || _busy) return;
-    final cancellation = UpdateCancellation();
-    setState(() {
-      _downloading = true;
-      _downloadResult = null;
-      _installResult = null;
-      _downloadedFile = null;
-      _cancellation = cancellation;
-      _received = 0;
-      _total = info.assetSize;
-      // 记下来，之后「重试下载」等入口无需再传参数。
-      _info = info;
-    });
-    final result = await _updater.download(
-      info,
-      cancellation: cancellation,
-      onProgress: (int received, int? total) {
-        if (!mounted) return;
-        setState(() {
-          _received = received;
-          // 服务器不给长度时保留引擎从附件信息里拿到的预估大小，
-          // 两者都没有则进度条退化为不确定态。
-          _total = total ?? info.assetSize;
-        });
-      },
-    );
-    if (!mounted) return;
-    setState(() {
-      _downloading = false;
-      _cancellation = null;
-      _downloadResult = result;
-      if (result is UpdateDownloaded) _downloadedFile = result.file;
-    });
-  }
+  Future<void> _download([UpdateInfo? target]) => _session.download(target);
 
-  void _cancelDownload() => _cancellation?.cancel();
+  void _cancelDownload() => _session.cancelDownload();
 
   /// 用户忽略启动检查发现的更新：本次运行内标题栏与卡片都不再提示。
-  void _dismissNotice() {
-    if (_busy) return;
-    _updateCenter.dismiss();
-  }
+  void _dismissNotice() => _session.dismissNotice();
 
   /// 用户在确认步骤里选择「稍后」：退回「有更新」状态，不安装。
-  void _dismissDownload() {
-    if (_busy) return;
-    setState(() {
-      _downloadResult = null;
-      _downloadedFile = null;
-      _received = 0;
-      _total = null;
-    });
-  }
+  void _dismissDownload() => _session.dismissDownload();
 
   /// 用户已经在确认步骤里点了「安装更新」——这是唯一的安装入口。
   ///
   /// [elevate] 为 true 表示用户已在上一步同意用管理员权限完成写入（Windows）。
-  Future<void> _install({bool elevate = false}) async {
-    final info = _info;
-    final file = _downloadedFile;
-    if (info == null || file == null || _busy) return;
-    setState(() {
-      _installing = true;
-      _installResult = null;
-    });
-    final result = await _updater.install(info, file, elevate: elevate);
-    if (!mounted) return;
-    setState(() {
-      _installing = false;
-      _installResult = result;
-    });
-    // 桌面端的重启助手在等当前进程退出。消息先渲染一帧再退出，
-    // 让用户看到「正在更新」而不是应用凭空消失；安卓交给系统安装器，绝不退出。
-    if (result is UpdateInstallStarted && _isDesktop) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        widget.exitProcess(0);
-      });
-    }
-  }
+  Future<void> _install({bool elevate = false}) =>
+      _session.install(elevate: elevate);
 
   Future<void> _openRelease(UpdateInfo info) async {
     // 与标题栏 GitHub 入口同一套做法：异步前先取 messenger，避免跨 await 用 context。
@@ -308,7 +253,7 @@ class _UpdateCardState extends State<UpdateCard> {
       // 订阅启动检查的结果：notice 从「有新版本」变成「已忽略」时，
       // 卡片无需 setState 就会退回初始态。
       child: ValueListenableBuilder<UpdateNotice?>(
-        valueListenable: _updateCenter.notice,
+        valueListenable: _session.center.notice,
         builder: (BuildContext context, UpdateNotice? notice, Widget? _) {
           return Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,

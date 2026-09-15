@@ -5,6 +5,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:xvpn/app_state.dart';
+import 'package:xvpn/core/update_center.dart';
+import 'package:xvpn/core/update_session.dart';
 import 'package:xvpn/core/updater.dart';
 import 'package:xvpn/screens/settings_screen.dart';
 import 'package:xvpn/theme.dart';
@@ -99,8 +101,15 @@ class _FakeUpdater extends Updater {
     return Future<UpdateInstallResult>.value(installResult);
   }
 
+  /// 引擎是否被释放。
+  ///
+  /// 真实 [Updater.dispose] 会关掉 HTTP 客户端——正在传的字节流随之被切断。
+  /// 因此「卡片被销毁时有没有把不归它的引擎一并释放」必须可断言，否则
+  /// 「切页就断下载」这条回归没有证据。
+  bool disposed = false;
+
   @override
-  void dispose() {}
+  void dispose() => disposed = true;
 }
 
 /// 假「新版本」号。
@@ -133,6 +142,7 @@ UpdateInfo _info({
 Future<void> _pumpCard(
   WidgetTester tester,
   _FakeUpdater updater, {
+  UpdateSession? session,
   bool compact = false,
   List<int>? exits,
   List<Uri>? opened,
@@ -149,6 +159,7 @@ Future<void> _pumpCard(
         body: SingleChildScrollView(
           child: UpdateCard(
             compact: compact,
+            session: session,
             updater: updater,
             openExternalUrl: (Uri uri) async {
               opened?.add(uri);
@@ -317,6 +328,67 @@ void main() {
     expect(find.textContaining('已取消下载'), findsOneWidget);
   });
 
+  testWidgets('下载途中切页（卡片被销毁）不会中断下载', (WidgetTester tester) async {
+    // 真机上撞到过：更新下载到一半切到别的页面，下载就断了。
+    //
+    // 成因是整套更新状态长在卡片 State 里，而切页会把设置页连同卡片一起销毁；
+    // 那份 dispose 又顺手释放了引擎——真实引擎会在这里关掉 HTTP 客户端，正在
+    // 传的字节流随之被切断。即便网络层侥幸没断，进度与结果也随 State 一起没了，
+    // 用户切回来看到的是一个「还没开始」的卡片，只能重下。
+    //
+    // 下载是应用的事，不该由用户的操作顺序决定。因此断言两件事：
+    // **卡片没有释放不归它的引擎**，以及**会话照旧把结果收下来**。
+    final updater = _FakeUpdater(platform: TargetPlatform.windows)
+      ..checkResult = UpdateAvailable(_info())
+      ..pendingDownload = Completer<UpdateDownloadResult>();
+    // 本用例只走下载：这个检查不会被触发（卡片不自动联网），给个不联网的
+// 失败结果即可，避免为一个用不到的分支编造版本号。
+    final center = UpdateCenter(
+      check: () async => const UpdateCheckFailure('测试不联网'),
+    );
+    final session = UpdateSession(updater: updater, center: center);
+    addTearDown(session.dispose);
+    addTearDown(center.dispose);
+
+    final separator = Platform.pathSeparator;
+    final target = File(
+      '${Directory.systemTemp.path}${separator}XVPN-9.9.9.zip',
+    );
+
+    await _pumpCard(tester, updater, session: session);
+    await tester.tap(find.text('检查更新'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('下载更新'));
+    await tester.pump();
+    expect(session.downloading, isTrue, reason: '前置条件：下载已经开始且未完成');
+
+    // 切到别的页面：整张卡片被销毁。
+    await tester.pumpWidget(const MaterialApp(home: SizedBox.shrink()));
+    await tester.pump();
+
+    expect(
+      updater.disposed,
+      isFalse,
+      reason: '卡片销毁时释放了引擎——真实引擎会因此关掉 HTTP 客户端、切断下载',
+    );
+
+    // 下载照旧完成，结果留在会话里而不是随卡片消失。
+    updater.pendingDownload!.complete(UpdateDownloaded(target, 'a' * 64));
+    await tester.pump();
+    expect(session.downloading, isFalse);
+    expect(session.downloadResult, isA<UpdateDownloaded>());
+    expect(session.downloadedFile, target);
+    expect(updater.lastCancellation!.isCancelled, isFalse, reason: '没有任何人取消它');
+
+    // 回到设置页：直接停在「已下载、待确认」，而不是退回未开始。
+    await _pumpCard(tester, updater, session: session);
+    await tester.pumpAndSettle();
+    expect(
+      find.text('安装更新'),
+      findsOneWidget,
+      reason: '回到设置页应看到下载成果，而不是一个「下载更新」按钮让人重下',
+    );
+  });
   testWidgets('下载失败：直接渲染引擎给出的中文原因', (WidgetTester tester) async {
     const message = '下载校验文件失败：无法连接更新服务器，请检查网络后重试。';
     final updater = _FakeUpdater(platform: TargetPlatform.windows)
