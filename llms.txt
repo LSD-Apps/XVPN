@@ -10,13 +10,17 @@ Android VPN notification). `XVPN` remains the repository / executable / release
 asset name. Author: LUSIDA — <https://www.lusida.net>.
 
 Canonical repository: https://github.com/LSD-Apps/XVPN
+Canonical product page: https://lsd-apps.github.io/XVPN/
 Android applicationId: `net.lusida.xvpnclient` (debug builds add a `.dev` suffix)
-Mirror: https://gitcode.com/start-ai/XVPN
+Mirror (GitCode): https://gitcode.com/start-ai/XVPN
+This file: https://lsd-apps.github.io/XVPN/llms.txt
+Sitemap: https://lsd-apps.github.io/XVPN/sitemap.xml
 
 ## What it is
 
 XVPN is a **config parser and split-tunnel client** for Windows, Linux and Android.
-The user supplies their own WireGuard or OpenVPN configuration; the app:
+The user supplies their own profile — WireGuard, OpenVPN, Hysteria2, Shadowsocks,
+VMess, VLESS or Trojan; the app:
 
 1. Translates the profile into a sing-box configuration (all protocol-specific
    fields are mapped automatically, and invalid/outdated parameter names are
@@ -56,12 +60,17 @@ analytics, advertising, tracking, or crash reporting, and no backend.
 
 ## Keywords
 
-split-tunnel VPN client, zero-config VPN client, WireGuard client for Windows,
-WireGuard client for Android, OpenVPN client for Windows, OpenVPN client for
-Android, sing-box GUI, sing-box frontend, Clash API client, DNS leak prevention,
+split-tunnel VPN client, zero-config VPN client, bring-your-own-config VPN client,
+WireGuard client for Windows, WireGuard client for Android, OpenVPN client for
+Windows, OpenVPN client for Android, Hysteria2 client, Shadowsocks client,
+VMess client, VLESS client, Trojan client, v2ray share-link client, sing-box GUI,
+sing-box frontend, Clash API client, VpnService / TUN client, DNS leak prevention,
 DNS answer cross-validation, geoip-cn, geosite-cn, rule-set based routing,
-automatic rule learning, network
-diagnostics, Flutter desktop app, Flutter Android app, GPL-3.0-or-later.
+automatic rule learning, network diagnostics, Flutter desktop app, Flutter Android
+app, GPL-3.0-or-later.
+
+Chinese: 幽门, 规则分流 VPN 客户端, 自备配置, 开源 VPN 客户端, 域名分流, 分流规则,
+DNS 交叉校验. Romanised product name: Youmen (幽门).
 
 ## Documentation
 

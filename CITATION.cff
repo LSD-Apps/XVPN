@@ -1,32 +1,44 @@
 cff-version: 1.2.0
 message: If you use XVPN in academic work, please cite it as below.
-title: XVPN
+title: XVPN (幽门)
 abstract: >-
-  A split-tunnel VPN client that takes a user-supplied WireGuard, OpenVPN or
-  Hysteria2 profile and applies automatic traffic splitting with bundled rule
-  sets, dual-resolver DNS with cross-validation, failure attribution derived
-  from core logs, and evidence-based automatic routing correction. Built on
-  sing-box for Windows, Linux and Android with a shared Flutter UI. Ships no
-  nodes or accounts; the user brings their own configuration.
-  Distributed under the product name 幽门.
+  A split-tunnel VPN client for Windows, Linux and Android that takes a
+  user-supplied WireGuard, OpenVPN, Hysteria2, Shadowsocks, VMess, VLESS or
+  Trojan profile and applies automatic traffic splitting with bundled rule sets,
+  dual-resolver DNS with cross-validation, failure attribution derived from core
+  logs, and evidence-based automatic routing correction. Built on sing-box, with
+  a shared Flutter UI across the three platforms. Ships no nodes, subscriptions
+  or accounts — the user brings their own configuration — and collects no data.
+  Distributed under the product name 幽门 (romanised: Youmen).
 type: software
 license: GPL-3.0-or-later
 license-url: https://github.com/LSD-Apps/XVPN/blob/main/LICENSE
 repository-code: https://github.com/LSD-Apps/XVPN
-url: https://www.lusida.net
-version: 1.2.1
-date-released: 2026-09-14
+url: https://lsd-apps.github.io/XVPN/
+version: 1.3.0
+date-released: 2026-09-15
 keywords:
   - vpn
+  - vpn-client
   - split-tunnel
+  - byo-config
   - wireguard
   - openvpn
   - hysteria2
+  - shadowsocks
+  - vmess
+  - vless
+  - trojan
+  - v2ray
   - sing-box
+  - clash-api
+  - tun
+  - vpnservice
   - dns
   - dns-validation
   - geoip
   - geosite
+  - rule-set
   - flutter
   - windows
   - linux

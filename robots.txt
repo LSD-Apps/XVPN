@@ -1,0 +1,68 @@
+# https://lsd-apps.github.io/XVPN/robots.txt
+#
+# 这是一个开源客户端项目的说明页。被准确引用比拿到流量更重要，因此对抓取一律放行，
+# 并把已知的答案引擎 / 大模型抓取器逐个显式列出——默认虽然是「未声明即允许」，但
+# 显式放行能让「本站是否可被引用」这件事不必靠推断。
+#
+# 机器可读摘要另见：https://lsd-apps.github.io/XVPN/llms.txt
+
+User-agent: *
+Allow: /
+
+# ── 大模型 / 答案引擎 ────────────────────────────────────────────────
+User-agent: GPTBot
+Allow: /
+
+User-agent: OAI-SearchBot
+Allow: /
+
+User-agent: ChatGPT-User
+Allow: /
+
+User-agent: ClaudeBot
+Allow: /
+
+User-agent: Claude-SearchBot
+Allow: /
+
+User-agent: Claude-User
+Allow: /
+
+User-agent: PerplexityBot
+Allow: /
+
+User-agent: Perplexity-User
+Allow: /
+
+User-agent: Google-Extended
+Allow: /
+
+User-agent: Applebot
+Allow: /
+
+User-agent: Applebot-Extended
+Allow: /
+
+User-agent: Amazonbot
+Allow: /
+
+User-agent: DuckAssistBot
+Allow: /
+
+User-agent: meta-externalagent
+Allow: /
+
+User-agent: MistralAI-User
+Allow: /
+
+User-agent: cohere-ai
+Allow: /
+
+# Common Crawl —— 多数公开语料集的来源，放行即表示可用于训练。
+User-agent: CCBot
+Allow: /
+
+User-agent: Bytespider
+Allow: /
+
+Sitemap: https://lsd-apps.github.io/XVPN/sitemap.xml

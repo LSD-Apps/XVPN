@@ -7,11 +7,82 @@
 <meta name="description" content="XVPN is a split-tunnel VPN client for Windows, Linux and Android. Import your own WireGuard, OpenVPN, Hysteria2, Shadowsocks, VMess, VLESS or Trojan profile; traffic matched by bundled rule sets goes direct, the rest uses your tunnel. Open source, GPL-3.0-or-later. No nodes, no accounts, collects no data.">
 <meta name="keywords" content="split-tunnel VPN client, WireGuard client, OpenVPN client, Hysteria2 client, Shadowsocks client, VMess client, VLESS client, Trojan client, sing-box GUI, Windows VPN, Linux VPN, Android VPN, open source VPN, BYO config">
 <link rel="canonical" href="https://lsd-apps.github.io/XVPN/">
+<meta name="author" content="LUSIDA">
+<meta name="robots" content="index, follow, max-snippet:-1, max-image-preview:large">
 <meta property="og:type" content="website">
+<meta property="og:site_name" content="XVPN (幽门)">
+<meta property="og:locale" content="en">
+<meta property="og:locale:alternate" content="zh_CN">
 <meta property="og:title" content="XVPN (幽门) — split-tunnel VPN client">
 <meta property="og:description" content="Bring your own WireGuard / OpenVPN / Hysteria2 / Shadowsocks / VMess / VLESS / Trojan profile. Automatic split tunnelling, DNS cross-validation, failure attribution. Windows · Linux · Android. GPL-3.0-or-later.">
 <meta property="og:url" content="https://lsd-apps.github.io/XVPN/">
-<meta name="twitter:card" content="summary">
+<meta property="og:image" content="https://lsd-apps.github.io/XVPN/design/brand/preview.png">
+<meta property="og:image:type" content="image/png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="700">
+<meta property="og:image:alt" content="XVPN (幽门) — split-tunnel VPN client for Windows, Linux and Android">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="XVPN (幽门) — split-tunnel VPN client">
+<meta name="twitter:description" content="Bring your own WireGuard / OpenVPN / Hysteria2 / Shadowsocks / VMess / VLESS / Trojan profile. Automatic split tunnelling, DNS cross-validation, failure attribution. GPL-3.0-or-later.">
+<meta name="twitter:image" content="https://lsd-apps.github.io/XVPN/design/brand/preview.png">
+<meta name="twitter:image:alt" content="XVPN (幽门) — split-tunnel VPN client">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "SoftwareApplication",
+      "@id": "https://lsd-apps.github.io/XVPN/#software",
+      "name": "XVPN",
+      "alternateName": ["幽门", "Youmen", "XVPN (幽门)"],
+      "description": "Split-tunnel VPN client for Windows, Linux and Android that takes a user-supplied WireGuard, OpenVPN, Hysteria2, Shadowsocks, VMess, VLESS or Trojan profile. Traffic matched by bundled rule sets goes direct; everything else uses the user's own tunnel. Ships no nodes, subscriptions or accounts, and collects no data.",
+      "applicationCategory": "SecurityApplication",
+      "applicationSubCategory": "VPN client / split tunnelling",
+      "operatingSystem": "Windows, Linux, Android",
+      "softwareVersion": "1.3.0",
+      "softwareRequirements": "Flutter 3.44+; sing-box 1.14.0 core",
+      "isAccessibleForFree": true,
+      "license": "https://www.gnu.org/licenses/gpl-3.0.html",
+      "downloadUrl": "https://github.com/LSD-Apps/XVPN/releases/latest",
+      "installUrl": "https://github.com/LSD-Apps/XVPN/releases/latest",
+      "codeRepository": "https://github.com/LSD-Apps/XVPN",
+      "programmingLanguage": ["Dart", "Kotlin", "Go"],
+      "inLanguage": ["en", "zh-CN"],
+      "keywords": "split-tunnel VPN client, WireGuard client, OpenVPN client, Hysteria2 client, Shadowsocks client, VMess client, VLESS client, Trojan client, sing-box GUI, Windows VPN, Linux VPN, Android VPN, open source VPN, bring your own config",
+      "offers": {
+        "@type": "Offer",
+        "price": "0",
+        "priceCurrency": "USD"
+      },
+      "author": { "@id": "https://lsd-apps.github.io/XVPN/#author" },
+      "publisher": { "@id": "https://lsd-apps.github.io/XVPN/#author" },
+      "isPartOf": { "@id": "https://lsd-apps.github.io/XVPN/#website" }
+    },
+    {
+      "@type": "Person",
+      "@id": "https://lsd-apps.github.io/XVPN/#author",
+      "name": "LUSIDA",
+      "alternateName": "LSD2024",
+      "url": "https://www.lusida.net",
+      "sameAs": [
+        "https://github.com/LSD2024",
+        "https://github.com/LSD-Apps",
+        "https://www.lusida.net"
+      ]
+    },
+    {
+      "@type": "WebSite",
+      "@id": "https://lsd-apps.github.io/XVPN/#website",
+      "url": "https://lsd-apps.github.io/XVPN/",
+      "name": "XVPN (幽门)",
+      "alternateName": ["幽门", "Youmen"],
+      "inLanguage": ["en", "zh-CN"],
+      "publisher": { "@id": "https://lsd-apps.github.io/XVPN/#author" },
+      "about": { "@id": "https://lsd-apps.github.io/XVPN/#software" }
+    }
+  ]
+}
+</script>
 <style>
   :root {
     color-scheme: light dark;
@@ -158,6 +229,10 @@ e.g. <code>https://github.com/LSD-Apps/XVPN/tree/v&lt;version&gt;</code>.</p>
   <a href="https://github.com/LSD-Apps/XVPN/blob/main/docs/LEGAL.en.md">docs/LEGAL.en.md</a>
   ·
   <a href="https://github.com/LSD-Apps/XVPN/blob/main/docs/LEGAL.md">docs/LEGAL.md</a>.</p>
+<p>Machine-readable summary for language models:</p>
+<p><a href="llms.txt">llms.txt</a> — a plain-text digest of what this software is,
+does, and does not do, written to be quoted accurately. Also
+<a href="sitemap.xml">sitemap.xml</a>.</p>
 </footer>
 
 </main>

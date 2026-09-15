@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  GitHub Pages 站点地图（发布源是 main 分支根目录，因此本文件即
+  https://lsd-apps.github.io/XVPN/sitemap.xml）。
+
+  只列**可索引页面**。llms.txt 与 robots.txt 是给机器读的文件、不是页面，
+  因此不进 sitemap——它们分别由 robots.txt 的 Sitemap 行与页面页脚的链接暴露。
+-->
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url>
+    <loc>https://lsd-apps.github.io/XVPN/</loc>
+    <lastmod>2026-09-15</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>1.0</priority>
+  </url>
+  <url>
+    <loc>https://lsd-apps.github.io/XVPN/privacy.html</loc>
+    <lastmod>2026-09-15</lastmod>
+    <changefreq>yearly</changefreq>
+    <priority>0.4</priority>
+  </url>
+</urlset>
