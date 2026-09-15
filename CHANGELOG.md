@@ -8,7 +8,11 @@
 > （去掉 `+build` 后缀）。发布 tag 必须与它一致，否则发布流水线会直接失败——
 > 见 [`.github/workflows/release.yml`](.github/workflows/release.yml)。
 
-## [未发布]
+## [1.3.0] - 2026-09-15
+
+本版把应用改名为「幽门」、安卓包名改成 `net.lusida.xvpnclient`，补齐 VMess /
+VLESS / Trojan / Shadowsocks 与自备订阅，修掉安卓「连上了却打不开网页」的根因，
+并在真机上把协议矩阵验到 6/7。
 
 ### 变更
 
