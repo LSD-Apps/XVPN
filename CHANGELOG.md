@@ -8,50 +8,11 @@
 > （去掉 `+build` 后缀）。发布 tag 必须与它一致，否则发布流水线会直接失败——
 > 见 [`.github/workflows/release.yml`](.github/workflows/release.yml)。
 
-## [未发布]
-
-### 修正
-
-- **OpenVPN：`remote` 写成 IP 的配置一律连不上——1.3.0 里这个协议对这类配置是坏的。**
-  服务商直接给 IP 端点是常态，所以这不是边角情况。
-
-  现象是「界面显示已连接、什么都没通」：内核起来了、`openvpn-client` 端点也注册了，
-  探针却一直失败，`/connections` 里没有一条走 `vpn`，而客户端侧看不到原因。
-
-  根因是适配器无条件把 `tls.server_name` 写成了 `remoteHost`。sing-box 会拿它做
-  **verify-x509-name 式的名字校验**，而对端证书签给的是域名——拿 IP 去比对必然失败。
-  在 PC 上用同一份端点配置开 debug 日志跑，原话是：
-
-  ```
-  ERROR endpoint/openvpn-client[vpn]: client terminated:
-        (peer certificate verification failed | peer certificate fails verify-x509-name check)
-  ```
-
-  去掉 `server_name` 之后同一份配置立刻变成 `tunnel established to <ip>:1194 over udp`。
-
-  **OpenVPN 自身在没有 `verify-x509-name` 时并不校验主机名**，只校验证书链与
-  `remote-cert-tls server` 要求的服务端用途，所以这里也照做：声明了 `verify-x509-name`
-  就把名字写进 `server_name`（这也让上一版那条「名字断言没被执行」的提示变成**真实
-  校验**），没声明就完全不写。SNI 不受影响——OpenVPN 默认也不发 SNI。
-
-  这个缺陷 `sing-box check` 与单元测试都发现不了，因为它们都不做真实的 TLS 握手；
-  它是拿**真机 + 真实节点**验出来的。协议矩阵随之补到 **7/7**：判据是内核探针经该出口
-  返回 `delay`，且 `/connections` 出现 `chains` 含 `vpn` 的连接并带着增长的字节数——
-  **不是界面上的绿环**。
-
-### 新增
-
-- **`docs/PROTOCOLS.md` 新增 3.5.3d**，完整记下上面这一处：现场、根因、内核原话、修法，
-  以及为什么只有真机加真实节点才能发现它。
-- **`docs/ANDROID.md` 8.5 补上「用真实节点怎么验」**：自建接入端那套判据在真实节点上
-  用不了（没有服务端日志），换成客户端侧两条可核验的证据；并记下排查手法——取应用
-  自己生成的 `files/configuration.json` 里的端点，在 PC 上配最小 sing-box 开 debug 日志跑。
-
 ## [1.3.0] - 2026-09-15
 
 本版把应用改名为「幽门」、安卓包名改成 `net.lusida.xvpnclient`，补齐 VMess /
 VLESS / Trojan / Shadowsocks 与自备订阅，修掉安卓「连上了却打不开网页」的根因，
-并在真机上把协议矩阵验到 6/7。
+并在真机上把协议矩阵验到 7/7。
 
 ### 变更
 
@@ -97,6 +58,33 @@ VLESS / Trojan / Shadowsocks 与自备订阅，修掉安卓「连上了却打不
   标记（带图标，颜色之外还有形状），标题保持稳定，不再随状态在标题里换词。
 
 ### 修正
+
+- **OpenVPN：`remote` 写成 IP 的配置一律连不上——1.3.0 里这个协议对这类配置是坏的。**
+  服务商直接给 IP 端点是常态，所以这不是边角情况。
+
+  现象是「界面显示已连接、什么都没通」：内核起来了、`openvpn-client` 端点也注册了，
+  探针却一直失败，`/connections` 里没有一条走 `vpn`，而客户端侧看不到原因。
+
+  根因是适配器无条件把 `tls.server_name` 写成了 `remoteHost`。sing-box 会拿它做
+  **verify-x509-name 式的名字校验**，而对端证书签给的是域名——拿 IP 去比对必然失败。
+  在 PC 上用同一份端点配置开 debug 日志跑，原话是：
+
+  ```
+  ERROR endpoint/openvpn-client[vpn]: client terminated:
+        (peer certificate verification failed | peer certificate fails verify-x509-name check)
+  ```
+
+  去掉 `server_name` 之后同一份配置立刻变成 `tunnel established to <ip>:1194 over udp`。
+
+  **OpenVPN 自身在没有 `verify-x509-name` 时并不校验主机名**，只校验证书链与
+  `remote-cert-tls server` 要求的服务端用途，所以这里也照做：声明了 `verify-x509-name`
+  就把名字写进 `server_name`（这也让上一版那条「名字断言没被执行」的提示变成**真实
+  校验**），没声明就完全不写。SNI 不受影响——OpenVPN 默认也不发 SNI。
+
+  这个缺陷 `sing-box check` 与单元测试都发现不了，因为它们都不做真实的 TLS 握手；
+  它是拿**真机 + 真实节点**验出来的。协议矩阵随之补到 **7/7**：判据是内核探针经该出口
+  返回 `delay`，且 `/connections` 出现 `chains` 含 `vpn` 的连接并带着增长的字节数——
+  **不是界面上的绿环**。
 
 - **OpenVPN 的默认端口被改错了：TCP 配置会去连 443，而规范里只有 1194。**
   这条是拿 OpenVPN 手册逐条核对时发现的，不是猜的——手册里 `--port` 是
@@ -265,6 +253,12 @@ VLESS / Trojan / Shadowsocks 与自备订阅，修掉安卓「连上了却打不
   一条探针），不再引用一个会移动的位置。
 
 ### 新增
+
+- **`docs/PROTOCOLS.md` 新增 3.5.3d**，完整记下上面这一处：现场、根因、内核原话、修法，
+  以及为什么只有真机加真实节点才能发现它。
+- **`docs/ANDROID.md` 8.5 补上「用真实节点怎么验」**：自建接入端那套判据在真实节点上
+  用不了（没有服务端日志），换成客户端侧两条可核验的证据；并记下排查手法——取应用
+  自己生成的 `files/configuration.json` 里的端点，在 PC 上配最小 sing-box 开 debug 日志跑。
 
 - **下载完成后显示安装包位置，并给出「自行安装」的两个动作**。此前卡片的确认
   步骤只说「更新包已下载并通过校验」，安装包落在哪全靠用户自己猜（它在下一次
