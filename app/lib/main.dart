@@ -8,6 +8,7 @@ import 'package:flutter/services.dart';
 import 'app_state.dart';
 import 'core/android_channel.dart';
 import 'core/android_vpn_core.dart';
+import 'core/auto_start.dart';
 import 'core/screen_navigation.dart';
 import 'core/secret_protector.dart';
 import 'core/singbox_runner.dart';
@@ -151,6 +152,12 @@ class _XvpnAppState extends State<XvpnApp> {
     protector: widget.protector,
   );
 
+  /// 「开机自动启动」的状态与原生桥。
+  ///
+  /// 与 [_state] 同时构造，但事实要等 [AutoStartController.refresh] 问过原生
+  /// 才知道——它不阻塞首帧，界面在结果回来之前不渲染这一行。
+  late final AutoStartController _autoStart = AutoStartController(state: _state);
+
   final ThemeController _theme = ThemeController();
 
   /// MaterialApp 之内那层 Navigator 的 Key。
@@ -201,6 +208,12 @@ class _XvpnAppState extends State<XvpnApp> {
     // 翻译由外壳负责，桌面与移动端落点不同（见 XvShell._onNavigationRequested）。
     WindowControls.onShowUpdateRequested = () =>
         ScreenNavigation.instance.request(AppSection.settings);
+    // 托盘「开机自动启动」被勾选/取消：原生已经落地并回读，这里把同一个事实
+    // 收进设置，设置页的开关因此不会与托盘各说一套。
+    WindowControls.onAutoStartChanged = _autoStart.onNativeChanged;
+    // 问原生「这一项在当前形态下能不能用、系统里现在是不是开着」。
+    // 不 await：它只影响设置页那一行与托盘菜单项的显示，绝不该拖住首帧。
+    unawaited(_autoStart.refresh());
 
     // 启动参数里的配置优先导入（「双击配置文件打开」的场景）。
     final path = widget.launchConfPath;
@@ -296,6 +309,8 @@ class _XvpnAppState extends State<XvpnApp> {
   @override
   void dispose() {
     WindowControls.onQuitRequested = null;
+    WindowControls.onAutoStartChanged = null;
+    _autoStart.dispose();
     _state.dispose();
     _theme.dispose();
     super.dispose();
@@ -328,8 +343,11 @@ class _XvpnAppState extends State<XvpnApp> {
           // 用 builder 而不是直接给 home 传实例：每次重建都生成新的 widget，
           // 保证切换主题时下层界面一定会重新读取调色板。
           home: _PaletteSync(
-            builder: (BuildContext inner) =>
-                XvShell(state: _state, theme: _theme),
+            builder: (BuildContext inner) => XvShell(
+              state: _state,
+              theme: _theme,
+              autoStart: _autoStart,
+            ),
           ),
           builder: (BuildContext context, Widget? child) {
             // 只锁定文字缩放，保证两端排版与设计稿一致；亮度交由主题系统决定。

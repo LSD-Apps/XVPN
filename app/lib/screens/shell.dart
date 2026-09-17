@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../app_state.dart';
+import '../core/auto_start.dart';
 import '../core/screen_navigation.dart';
 import '../core/system_tray.dart';
 import '../core/window_controls.dart';
@@ -21,10 +22,22 @@ import 'split_screen.dart';
 /// 自适应外壳：宽度 >= 900 用侧边导航（桌面端），否则用底部标签栏（移动端）。
 /// 两种布局共用同一批屏幕，保证体验一致。
 class XvShell extends StatefulWidget {
-  const XvShell({super.key, required this.state, required this.theme});
+  const XvShell({
+    super.key,
+    required this.state,
+    required this.theme,
+    this.autoStart,
+  });
 
   final AppState state;
   final ThemeController theme;
+
+  /// 「开机自动启动」的状态。为 null 时设置页与托盘都不显示这一项
+  /// （测试里只关心别的功能时不必构造它）。
+  ///
+  /// 由 [XvpnApp] 创建并传下来而不是在这里 new：托盘菜单在原生侧、
+  /// 设置页在 Dart 侧，两处必须显示同一个事实，因此只能有一个实例。
+  final AutoStartController? autoStart;
 
   @override
   State<XvShell> createState() => _XvShellState();
@@ -50,7 +63,8 @@ class _XvShellState extends State<XvShell> {
   void initState() {
     super.initState();
     widget.state.addListener(_onStateChanged);
-    _tray = SystemTray(state: widget.state)..attach();
+    _tray = SystemTray(state: widget.state, autoStart: widget.autoStart)
+      ..attach();
     // 页面自己够不到本层持有的标签索引，跨页跳转因此走 [ScreenNavigation]
     // 的意图通道（同 UpdateCenter.notice 的做法）。
     ScreenNavigation.instance.addListener(_onNavigationRequested);
@@ -360,6 +374,7 @@ class _XvShellState extends State<XvShell> {
         state: widget.state,
         compact: compact,
         theme: widget.theme,
+        autoStart: widget.autoStart,
       ),
     };
   }

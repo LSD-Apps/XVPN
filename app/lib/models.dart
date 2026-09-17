@@ -214,6 +214,7 @@ class ConnectionTraffic {
 class AppSettings {
   const AppSettings({
     this.autoConnectOnImport = true,
+    this.autoRunAtStartup = false,
     this.splitMode = SplitMode.smart,
     this.logSplits = true,
     this.ruleSetUpdatedAt,
@@ -221,6 +222,17 @@ class AppSettings {
   });
 
   final bool autoConnectOnImport;
+
+  /// 随系统启动。
+  ///
+  /// 默认 **false**：装完就自己出现在开机项里，是用户没要求过的事。
+  ///
+  /// 这个字段是界面用的**镜像**，事实在系统里（Windows 上是注册表 Run 键或
+  /// MSIX 的 StartupTask，用户可以随时在「任务管理器 → 启动」里改）。每次启动
+  /// 都会由 `AutoStartController.refresh()` 与系统核对一次，因此存档里的值不会
+  /// 长期偏离真实状态——见 core/auto_start.dart。
+  final bool autoRunAtStartup;
+
   final SplitMode splitMode;
   final bool logSplits;
   final DateTime? ruleSetUpdatedAt;
@@ -233,6 +245,7 @@ class AppSettings {
 
   AppSettings copyWith({
     bool? autoConnectOnImport,
+    bool? autoRunAtStartup,
     SplitMode? splitMode,
     bool? logSplits,
     DateTime? ruleSetUpdatedAt,
@@ -240,6 +253,7 @@ class AppSettings {
   }) {
     return AppSettings(
       autoConnectOnImport: autoConnectOnImport ?? this.autoConnectOnImport,
+      autoRunAtStartup: autoRunAtStartup ?? this.autoRunAtStartup,
       splitMode: splitMode ?? this.splitMode,
       logSplits: logSplits ?? this.logSplits,
       ruleSetUpdatedAt: ruleSetUpdatedAt ?? this.ruleSetUpdatedAt,

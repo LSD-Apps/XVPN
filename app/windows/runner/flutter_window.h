@@ -8,6 +8,7 @@
 #include <shellapi.h>
 
 #include <memory>
+#include <optional>
 #include <string>
 
 #include "win32_window.h"
@@ -46,6 +47,19 @@ class FlutterWindow : public Win32Window {
   /// 应用 Dart 推来的托盘状态（版本 / 状态文案 / 是否已连接 / 更新版本）。
   void ApplyTrayState(const flutter::EncodableMap& state);
 
+  /// 「开机自动启动」这一项由**原生**写进系统（注册表 Run 键，或 MSIX 包内的
+  /// StartupTask），状态也由原生回读后推给 Dart——Dart 那边只存一份供界面显示
+  /// 的镜像。见 auto_start.h。
+  ///
+  /// 托盘菜单的勾选状态来自 Dart 推送的托盘载荷（见 [ApplyTrayState]）：
+  /// 原生不自己去查，否则托盘与设置页会各有一份可能过期的结果。
+
+  /// 把当前的开机自启状态推给 Dart（方法 `autoStartChanged`）。
+  ///
+  /// 托盘菜单里勾选后调用：切换动作已经由原生落地，Dart 需要据此更新设置页
+  /// 的开关，否则同一个事实会在一端显示为开、另一端显示为关。
+  void NotifyAutoStartChanged();
+
   /// 按当前状态刷新图标的 tooltip 与图标本身，并通知通知区（NIM_MODIFY）。
   void UpdateTrayIcon();
 
@@ -72,6 +86,8 @@ class FlutterWindow : public Win32Window {
   /// native → Dart 通道」，但那条通道本就在用（同文件的 maximizedChanged、
   /// Linux 的 quitRequested），于是托盘告诉用户有新版本却无处可去。
   static constexpr int kTrayMenuUpdate = 40003;
+  /// 「开机自动启动」——复选菜单项。用户能在托盘上直接开关，不必先进设置页。
+  static constexpr int kTrayMenuAutoStart = 40004;
 
   NOTIFYICONDATAW tray_icon_ = {};
   bool tray_installed_ = false;
@@ -83,6 +99,19 @@ class FlutterWindow : public Win32Window {
   std::wstring tray_down_rate_;
   std::wstring tray_up_rate_;
   bool tray_connected_ = false;
+
+  /// 最近一次推送的开机自启状态。
+  ///
+  /// 「随系统启动」两端共用一个事实：托盘菜单的勾在原生侧画，设置页的开关在
+  /// Dart 侧画。原生这边的来源是 Dart 推来的托盘载荷（见 [ApplyTrayState]），
+  /// **不自己去查**——否则托盘与设置页会各有一份可能过期的结果。
+  ///
+  /// 用户在托盘上切换时由本类就地更新，落地（回读）后再推给 Dart。
+  bool tray_auto_start_ = false;
+
+  /// 开机自启后端是否可用。不可用时菜单项灰掉——勾一个不会有任何效果的开关，
+  /// 比没有这个开关更糟。
+  bool tray_auto_start_supported_ = false;
 
   HICON tray_icon_normal_ = nullptr;
   HICON tray_icon_grey_ = nullptr;

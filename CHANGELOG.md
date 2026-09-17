@@ -8,6 +8,179 @@
 > （去掉 `+build` 后缀）。发布 tag 必须与它一致，否则发布流水线会直接失败——
 > 见 [`.github/workflows/release.yml`](.github/workflows/release.yml)。
 
+## [1.4.0] - 2026-09-17
+
+### 新增
+
+- **「随系统启动」真的能用了，并且托盘菜单里可以直接开关。** 托盘右键菜单多了
+  一项「开机自动启动」（复选），设置页「启动」卡片里也多了一个同名开关，两处显示
+  同一个状态。
+
+  这一项**此前被移除过**，原因是它只把一个布尔值存进设置文件，从来没有任何代码把
+  它落到系统的启动项里——一个拨了不会有任何反应的开关比没有这个开关更糟。现在后端
+  落地了，因此加了回来，并且区分两种运行形态（见
+  [`app/windows/runner/auto_start.cc`](app/windows/runner/auto_start.cc)）：
+
+  - **绿色解压版**（zip）：写 `HKCU\...\CurrentVersion\Run`，与以往一致；
+  - **MSIX 安装版**：走系统托管的 `Windows.ApplicationModel.StartupTask`。
+    MSIX 包内**写不了** Run 键——写入被重定向到包私有的虚拟存储，而 Windows 不会
+    为虚拟存储里的 Run 项创建登录启动项，于是「开关拨过去了、写注册表也返回成功，
+    下次开机却什么也没发生」，没有任何报错。这是本次改动里最容易被做成静默失效的
+    一处。
+
+  状态的事实来源**在系统里**：用户随时能在「任务管理器 → 启动」或
+  「设置 → 应用 → 启动」里改它，因此每次启动都会回读一次并校准界面，而不是信一份
+  自己维护的存档副本。后端在当前形态下不可用时（MSIX 包没声明扩展、通道缺失），
+  设置页**不渲染**这一行、托盘菜单项灰掉，而不是给一个假的开关。
+
+  开启后开机时应用会自动启动并显示主界面；**不会**自动拨号（连接仍由用户或
+  「导入后自动连接」那条规则决定）。
+
+- **Windows MSIX 安装包**（`XVPN-<ver>-windows-x64.msix`）。打包脚本
+  [`scripts/package-msix.ps1`](scripts/package-msix.ps1)，安装与桌面快捷方式由
+  [`scripts/install-msix.ps1`](scripts/install-msix.ps1) 完成，两者都接进了
+  [`scripts/build-release.ps1`](scripts/build-release.ps1)（`-Msix`）与发布流水线。
+
+  安装后**自动创建桌面快捷方式**。MSIX 没有「安装完成后运行脚本」的标准钩子，而
+  打包进程写 `%USERPROFILE%\Desktop` 会被文件系统虚拟化到包私有目录、写不到真实
+  桌面，因此快捷方式由一个未打包的进程（安装脚本）创建。它的目标指向清单声明的
+  执行别名 `%LOCALAPPDATA%\Microsoft\WindowsApps\xvpn.exe`，而不是
+  `%ProgramFiles%\WindowsApps\XVPN_<版本>_x64__<哈希>\` 下那个带版本号的真实路径
+  ——后者每次升级都会变，指向它的快捷方式升级后就是死链接。
+
+  许可与第三方声明（`LICENSE` / `NOTICE.md` / `THIRD-PARTY-NOTICES.md`）同样随
+  MSIX 分发，并在流水线里断言它们真的在包内。
+
+  > **自签名包的安装需要管理员提权一次**。实测踩到并已修：证书放进
+  > `CurrentUser\Root` + `CurrentUser\TrustedPeople` 后 `signtool verify /pa`
+  > 报 0 错误，`Add-AppxPackage` 却仍以 `0x800B0109` 失败——**AppX 部署服务以
+  > SYSTEM 身份运行，不读 CurrentUser 证书存储**，自签名证书必须落到机器级。
+  > `install-msix.ps1` 现在会检测提权状态、写对应作用域的存储，未提权时明确
+  > 说明下一步该做什么，而不是把 HRESULT 甩给用户。另一处实测修正：写
+  > `CurrentUser\Root` 不能用 `Import-Certificate`（报 "UI is not allowed in
+  > this operation"），必须走 .NET 的 `X509Store`。
+
+- [`app/test/msix_packaging_test.dart`](app/test/msix_packaging_test.dart)：守住
+  清单与原生代码之间的文本契约。最贵的一条是 `windows.startupTask` 的 `TaskId`
+  必须与 `auto_start.cc` 里的 `kStartupTaskId` 逐字一致——不一致时
+  `StartupTask.GetAsync` 抛异常、原生按「后端不可用」处理，于是设置页里那一行
+  **悄悄消失**，用户看到的是「这个版本没有开机自启」，而不是任何错误。
+
+### 变更
+
+- 设置页「启动」卡片由桌面端与移动端各自的写法合并成一个 `_buildStartupCard`，
+  两端展示同一组选项；「随系统启动」只在后端可用时出现。
+
+- **重做「分流规则 → 域名分流规则」卡片输入行下方的动作区**（桌面与移动端同一处
+  代码）。此前它是四行同款灰色文字链接平铺在卡片底部：导出规则包、导入规则包、
+  清理过期、全部清除。问题不是「不好看」，而是四条可被证伪的缺陷：
+
+  - **不相干的动作被平铺成同一个列表。** 导出/导入（把规则变成文件）与
+    清理/全部清除（删本机数据）语义、风险、频率都不同，却都是等权的 12.5px 灰字。
+    实测其在 1180px 下每个链接的命中盒是 **1110×40**（几乎整张卡片宽），在 390px
+    下各自独占一行 324×40。这也违背项目自己的规范：
+    `rules_screen.dart` 的卡片级动作（新增 / 检查更新 / 恢复内置规则）一律是
+    真实按钮，`TapAction` 只用于列表项内部的逐条操作。
+  - **不可逆的「全部清除」与「导出规则包」长得一模一样。**
+  - **「清理过期（N 条中）」的计数口径是错的**：`N` 是全部条目（手工 + 学到 +
+    白名单），而这个动作只删「程序学到」那一类。实测 1 条学习规则 + 4 条手工规则
+    时标签写「8 条中」，其中可被清理的是 0 条。
+  - **校验提示离输入框 108px，中间隔着两个可点动作**（导出、导入），
+    错误提示因此脱离了它要解释的那个控件。
+
+  现在分成两段、各带标题与一句说明：**规则包**（导出/导入成对、等宽并排、带图标）
+  与**批量清理**（真实按钮；「全部清除」用 danger 变体并说明不会动手工规则；
+  「清理过期」只数可清理的条数，为 0 时禁用）。校验提示移到输入行正下方并带图标，
+  输入框同时支持回车提交。「最近一次自动纠正」从卡片最底部挪回「程序学到」一节——
+  它解释的正是上面那些规则的来历，放在页脚离被解释对象隔了整张卡片。
+
+  回归由 `app/test/auto_route_card_layout_test.dart` 守住（分组标题、控件类型、
+  danger 变体、成对等宽、计数口径、提示与输入行的距离、回车提交）。
+  改动前后的整卡渲染图见 `design/shots/v4-rules-card-{desktop,mobile}.png`。
+
+### 修复
+
+- **托盘菜单的「开机自动启动」勾的是缓存镜像，而这一项的事实只在系统里。**
+  于是系统状态被应用之外改过之后（用户在「任务管理器 → 启动」或
+  「设置 → 应用 → 启动」里动过它），托盘的勾会与真实状态**相反**——用户点它一下
+  反而什么都没变，因为它以为要关，而系统本来就已经关着。体感就是「托盘菜单这一项
+  没对接上」。
+
+  现在弹托盘菜单之前**先回读一次系统**；回读结果与镜像不一致时，顺手把镜像和
+  Dart 侧都校准过来，设置页的开关会跟着对齐。这条纪律写进了
+  [`app/test/auto_start_abi_layout_test.dart`](app/test/auto_start_abi_layout_test.dart)
+  （回读必须在 `AppendMenuW` 之前、且不一致时要通知 Dart）。
+
+- **「随系统启动」在 MSIX 安装版里完全不起作用（拨了没反应），而它的根因是一处
+  手写的接口 vtable 写错了。** 绿色解压版一直是好的（写注册表 Run 键）；只有打包
+  形态那条 `Windows.ApplicationModel.StartupTask` 的路是坏的。
+
+  开发时为了「顺手看一眼异步操作的进度」而复述了 `IAsyncOperation<T>` 的 vtable。
+  但 SDK 里它是
+
+  ```cpp
+  template <class TResult>
+  struct IAsyncOperation_impl : IInspectable   // 只继承 IInspectable
+  ```
+
+  并且**只有三个自有方法**：`put_Completed` / `get_Completed` / `GetResults`——
+  **根本没有 `IAsyncInfo` 的 `get_Status`**（出处：
+  `windows.foundation.collections.h`）。于是「按自己以为的顺序去调 `get_Status`」
+  在第一次调用就访问冲突（`0xc0000005`）。改对顺序也没有用，因为顺序本身就不存在。
+
+  这类错误的形态是**编译期零提示**：vtable 错位不会报错，只会在真机上以
+  「访问冲突」或「读到垃圾指针」收场。中间还因此误判过好几次（以为是 STA 不能挂
+  回调、以为是跨线程封送问题、以为是消息泵不对），绕了很远。
+
+  现在的做法是**不再复述异步接口的 ABI**，只用 SDK 给的具体类型
+  （`__FIAsyncOperation_1_...`）、只调确实存在的方法；完成信号一律由
+  `put_Completed` 的回调给出，不再轮询 `get_Status`。
+
+  为防止复发，新增 [`app/test/auto_start_abi_layout_test.dart`](app/test/auto_start_abi_layout_test.dart)：
+  禁止再出现手写的异步 vtable、禁止出现 `get_Status`、要求用 MIDL 生成的类型别名、
+  回调只继承一个接口且不在 `Invoke` 里自我释放、`GetResults` 必须在等到完成之后。
+
+  实测（MSIX 安装版）：开关拨到开会把系统里的 StartupTask 状态从 `Disabled(0)`
+  改成 `Enabled(2)`，关掉回到 `Disabled(0)`，重启后保持；托盘菜单项与设置页开关
+  同步。绿色解压版仍走 Run 键，回归未受影响。
+
+- `scripts/package-msix.ps1` 的**无时间戳回退路径根本执行不到**。代码里本来就有
+  「带时间戳签名失败就改写不带时间戳的签名」，但 `signtool` 把错误写到 **stderr**，
+  而脚本开头设了 `$ErrorActionPreference = 'Stop'`——于是这条**本可以被回退处理**
+  的失败先抛了出去，整个构建白失败。实测：DigiCert 时间戳服务偶发不可达时，
+  包其实完全可用。现在与 `deploy-android.ps1` 一致，临时放宽偏好、只看退出码。
+
+- `scripts/deploy-android.ps1` 在**构建成功后仍以退出码 1 中止**。原因与脚本自己
+  在 `Invoke-Adb` 里已经处理过的那条完全相同，但构建那一步漏了：`flutter build`
+  会把**正常的**提示写到 stderr（「Flutter assets will be downloaded from ...」、
+  插件 KGP 的弃用警告），而脚本开头设了 `$ErrorActionPreference = 'Stop'`，于是
+  「stderr 有输出」被当成终止性错误——它在自己那句 `if ($LASTEXITCODE -ne 0)`
+  **之前**就抛了出去，把一条成功消息报成失败，而 `build/app/outputs/flutter-apk/`
+  下的 APK 其实是好的。现在与 `Invoke-Adb` 一致：临时放宽偏好，成败只看退出码。
+
+  实测踩到：真机部署时脚本以退出码 1 结束，但 APK 已生成且可用。
+
+- **MSIX 安装后桌面快捷方式是一块白板图标。** `install-msix.ps1` 把快捷方式的
+  `IconLocation` 指到了它的**目标**——而那个目标是执行别名
+  `%LOCALAPPDATA%\Microsoft\WindowsApps\xvpn.exe`，一个 **0 字节的重解析点**
+  （属性 `ReparsePoint`），里面没有任何图标资源可提取。实测确认：包内真实的
+  `xvpn.exe` 有图标，别名没有。
+
+  也不能把图标指向包内那个带版本号的 exe
+  （`...\WindowsApps\LUSIDA.XVPN_<版本>_x64__<哈希>\xvpn.exe`）——路径每次升级
+  都会变，图标会静默退回白板。
+
+  现在由 `Install-AppIcon` 取一份 .ico 放到稳定位置
+  `%LOCALAPPDATA%\XVPN\app.ico`，快捷方式引用它（**目标仍是执行别名**——那个是
+  稳定的，只有图标需要真实文件）。图标来源按优先级：显式给的 `.ico`（发布包里
+  与 `.msix` 并排）→ 包内 `Assets\` 的 PNG 磁贴现场合成多帧 ico → 从 exe 抽单帧
+  兜底。为此 `package-msix.ps1` 额外产出 `Assets\Icon-256.png`（不被清单引用，
+  只作图标来源；小尺寸从它缩小比从 44 放大清楚得多）。
+
+  另外修掉卸载时一处枚举失效：删证书的管道里直接在枚举过程中 `Remove-Item`，
+  集合被改动后枚举器失效，于是打出一句**指纹为空**的「无法移除」——而那张证书
+  其实已经删掉了。改为先物化成数组再遍历。
+
 ## [1.3.0] - 2026-09-15
 
 本版把应用改名为「幽门」、安卓包名改成 `net.lusida.xvpnclient`，补齐 VMess /

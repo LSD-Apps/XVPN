@@ -1297,6 +1297,10 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
       try {
         _settings = AppSettings(
           autoConnectOnImport: settings['autoConnectOnImport'] as bool? ?? true,
+          // 键缺失（旧版本存档）按「关」恢复：这一项是用户主动开启的，
+          // 老存档里没有它就等于用户从来没开过。真正的结论随后由
+          // AutoStartController.refresh() 与系统核对（见 core/auto_start.dart）。
+          autoRunAtStartup: settings['autoRunAtStartup'] as bool? ?? false,
           // 枚举按下标存：名字改了也不会让用户的选择失效。
           splitMode: _enumAt(
             SplitMode.values,
@@ -1538,6 +1542,9 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
         'legalNoticeAcknowledged': _legalNoticeAcknowledged,
         'settings': <String, Object?>{
           'autoConnectOnImport': _settings.autoConnectOnImport,
+          // 只是界面用的镜像；事实在系统里（注册表 Run 键或 MSIX 的
+          // StartupTask），启动时会被回读结果校准。
+          'autoRunAtStartup': _settings.autoRunAtStartup,
           'splitMode': _settings.splitMode.index,
           'logSplits': _settings.logSplits,
           'ruleSetUpdatedAt': _settings.ruleSetUpdatedAt?.toIso8601String(),

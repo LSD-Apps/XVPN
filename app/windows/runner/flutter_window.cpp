@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "flutter/generated_plugin_registrant.h"
+#include "auto_start.h"
 #include "resource.h"
 
 namespace {
@@ -341,6 +342,17 @@ std::string MapString(const flutter::EncodableMap& map, const char* key) {
   return text == nullptr ? std::string() : *text;
 }
 
+// 取一个布尔字段。字段缺失时返回 [fallback]——Dart 侧按需附带这些键，
+// 「没带」与「false」必须区分得开。
+bool MapBool(const flutter::EncodableMap& map, const char* key, bool fallback) {
+  const flutter::EncodableValue* value = MapValue(map, key);
+  if (value == nullptr) {
+    return fallback;
+  }
+  const bool* flag = std::get_if<bool>(value);
+  return flag == nullptr ? fallback : *flag;
+}
+
 // 用 32 位 BGRA 像素造一个 HICON。
 HICON IconFromPixels(int width, int height,
                      const std::vector<uint32_t>& pixels) {
@@ -578,6 +590,42 @@ bool FlutterWindow::OnCreate() {
           }
           ApplyTrayState(*state);
           result->Success();
+        } else if (method == "autoStartSupported") {
+          // 界面据此决定「开机自动启动」那个开关是可用还是灰着。
+          //
+          // 这里必须由原生回答而不是 Dart 猜：同一个 exe 既可能是绿色解压版
+          // （注册表后端总是可用），也可能是 MSIX 包（只有清单里声明了
+          // windows.startupTask 扩展才可用）。这是运行形态的事实，只有原生知道。
+          //
+          // **同步回**：它只创建激活工厂，不等任何异步操作。
+          result->Success(flutter::EncodableValue(auto_start::IsSupported()));
+        } else if (method == "getAutoStart") {
+          // 读的是**系统里的真实状态**，不是 Dart 存档里的镜像：用户可能在
+          // 「设置 → 应用 → 启动」里改过，也可能换了安装形态（绿色版→MSIX），
+          // 存档里的值此时已经不对了。
+          //
+          // 同步回：未打包形态读注册表即可；打包形态当前不支持（见 auto_start.cc
+          // 里 IsSupported 的说明），因此这里是同步且不会阻塞的。
+          result->Success(flutter::EncodableValue(auto_start::QueryEnabled()));
+        } else if (method == "setAutoStart") {
+          const bool* enabled = std::get_if<bool>(call.arguments());
+          if (enabled == nullptr) {
+            result->Error("bad_args", "setAutoStart 需要一个布尔值");
+            return;
+          }
+          const bool supported = auto_start::IsSupported();
+          if (supported) {
+            // 落地之后再回：返回值是**回读确认的最终状态**，不是「请求发出了」。
+            // 直接回 true 会让界面显示一个「开了但其实没开」的开关。
+            const bool applied = auto_start::SetEnabled(*enabled);
+            // 让托盘菜单的勾与设置页的开关跟上同一个事实。
+            tray_auto_start_ = applied;
+            NotifyAutoStartChanged();
+            result->Success(flutter::EncodableValue(applied));
+          }
+          else {
+            result->Success(flutter::EncodableValue(false));
+          }
         } else {
           result->NotImplemented();
         }
@@ -744,11 +792,18 @@ void FlutterWindow::ApplyTrayState(const flutter::EncodableMap& state) {
   tray_update_ = Utf8ToWide(MapString(state, "updateVersion"));
   tray_down_rate_ = Utf8ToWide(MapString(state, "downRate"));
   tray_up_rate_ = Utf8ToWide(MapString(state, "upRate"));
-  const flutter::EncodableValue* connected = MapValue(state, "connected");
-  const bool* flag = connected == nullptr ? nullptr
-                                          : std::get_if<bool>(connected);
-  tray_connected_ = flag != nullptr && *flag;
+  tray_connected_ = MapBool(state, "connected", false);
+  tray_auto_start_supported_ = MapBool(state, "autoStartSupported", false);
+  tray_auto_start_ = MapBool(state, "autoStart", false);
   UpdateTrayIcon();
+}
+
+
+void FlutterWindow::NotifyAutoStartChanged() {
+  if (!window_channel_) return;
+  window_channel_->InvokeMethod(
+      "autoStartChanged",
+      std::make_unique<flutter::EncodableValue>(tray_auto_start_));
 }
 
 void FlutterWindow::ShowMainWindow() {
@@ -785,11 +840,31 @@ void FlutterWindow::ShowTrayMenu() {
   HWND handle = GetHandle();
   if (handle == nullptr) return;
 
+  // 弹菜单之前**回读一次系统里的真实状态**，而不是直接用 tray_auto_start_。
+  //
+  // 为什么必须回读：`tray_auto_start_` 只在两个时刻被赋值——Dart 推来托盘载荷，
+  // 或本进程自己切换完。而这一项的事实**在系统里**：用户随时能在
+  // 「任务管理器 → 启动」或「设置 → 应用 → 启动」里改它，应用完全不知情。
+  // 实测踩到过：系统里已经是「关」，而应用里的镜像还停在「开」——于是托盘菜单
+  // 的勾与真实状态相反，用户点它一下反而什么都没变（因为它以为要关，
+  // 而系统本来就已经关了）。这正是「托盘点了没对接上」的那种体感。
+  //
+  // 回读之后若与镜像不一致，顺手把镜像和 Dart 都校准过来，让设置页也跟着对齐。
+  if (tray_auto_start_supported_) {
+    const bool live = auto_start::QueryEnabled();
+    if (live != tray_auto_start_) {
+      tray_auto_start_ = live;
+      NotifyAutoStartChanged();
+    }
+  }
+
   HMENU menu = CreatePopupMenu();
   if (menu == nullptr) return;
 
   // 菜单结构（与 Linux 托盘对齐）：
   //   显示主界面
+  //   ──
+  //   开机自动启动（复选；后端不可用时灰掉）
   //   ──
   //   <连接状态>（灰，纯信息；有则显示）
   //   幽门 <版本>（灰，纯信息；有则显示）
@@ -800,6 +875,21 @@ void FlutterWindow::ShowTrayMenu() {
   // 「发现新版本」必须可点：它承载的是可操作信息。此前版本项与更新项绑在
   // 同一个 if (version) 里——版本字段偶发缺失时，更新入口会一起消失。
   AppendMenuW(menu, MF_STRING, kTrayMenuShow, L"显示主界面");
+  AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+  {
+    // 复选菜单项：勾选状态来自 Dart 推送的托盘载荷，用户在设置页拨开关后
+    // 下一次推送就会同步到这里——两处永远是同一个事实。
+    //
+    // 后端不可用时**灰掉而不是隐藏**：隐藏会让「为什么没有这一项」无从解释，
+    // 灰掉配合 tooltip 之外的一句说明至少表明它存在但当前形态用不了。
+    UINT flags = MF_STRING;
+    if (!tray_auto_start_supported_) {
+      flags |= MF_GRAYED;
+    } else if (tray_auto_start_) {
+      flags |= MF_CHECKED;
+    }
+    AppendMenuW(menu, flags, kTrayMenuAutoStart, L"开机自动启动");
+  }
   AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
   if (!tray_status_.empty()) {
     AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, tray_status_.c_str());
@@ -904,6 +994,20 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
       case kTrayMenuShow:
         ShowMainWindow();
         return 0;
+      case kTrayMenuAutoStart: {
+        if (!tray_auto_start_supported_) {
+          return 0;
+        }
+        // 同步切换；返回值是**回读确认的最终状态**，不是「请求发出去了」。
+        const bool wanted = !tray_auto_start_;
+        const bool applied = auto_start::SetEnabled(wanted);
+        // 用回读到的值更新勾：点下去的意图与系统最终接受的可能是两回事
+        // （策略拒绝、需要用户去系统设置里放行）。
+        tray_auto_start_ = applied;
+        // 让设置页的开关跟上同一个事实，否则同一边显示为开、另一边显示为关。
+        NotifyAutoStartChanged();
+        return 0;
+      }
       case kTrayMenuUpdate:
         // 先把窗口亮出来，再让 Dart 切到设置页的「版本更新」卡片。
         // 两步都做：只切页而不显示窗口的话，用户点的东西"没反应"

@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../app_state.dart';
+import '../core/auto_start.dart';
 import '../core/links.dart';
 import '../theme.dart';
 import '../theme_controller.dart';
@@ -18,6 +19,7 @@ class SettingsScreen extends StatelessWidget {
     required this.state,
     required this.compact,
     required this.theme,
+    this.autoStart,
     this.openExternalUrl = launchInBrowser,
   });
 
@@ -26,6 +28,13 @@ class SettingsScreen extends StatelessWidget {
 
   /// 主题控制器。桌面端标题栏右侧也有一个切换按钮，两处共用同一份状态。
   final ThemeController theme;
+
+  /// 「开机自动启动」的状态与原生桥。
+  ///
+  /// 为 null（或原生回答「当前形态用不了」）时这一行**不渲染**：一个拨了不会
+  /// 有任何效果的开关比没有这个开关更糟。桌面端由 [XvShell] 传下来，与托盘
+  /// 菜单共用同一个实例。
+  final AutoStartController? autoStart;
 
   /// 打开外部链接的实现。默认交给系统浏览器；测试注入记录器断言点了哪个地址。
   ///
@@ -37,6 +46,12 @@ class SettingsScreen extends StatelessWidget {
 
   /// 桌面端页面级滚动容器的 Key。
   static const Key desktopScrollKey = Key('settings-desktop-scroll');
+
+  /// 「随系统启动」那一行的开关。
+  ///
+  /// 具名 Key 是给测试用的：这一行只在后端可用时才渲染，而设置页里有多个
+  /// 外观相同的开关，按类型取「最后一个」会随卡片顺序变化而悄悄指错对象。
+  static const Key autoStartSwitchKey = Key('settings-auto-start-switch');
 
   @override
   Widget build(BuildContext context) {
@@ -64,7 +79,7 @@ class SettingsScreen extends StatelessWidget {
           const SizedBox(height: 13),
           _buildAppearanceCard(compact: false),
           const SizedBox(height: 13),
-          _buildStartupCard(),
+          _buildStartupCard(compact: false),
           const SizedBox(height: 13),
           _buildTakeoverCard(compact: false),
           const SizedBox(height: 13),
@@ -139,23 +154,37 @@ class SettingsScreen extends StatelessWidget {
 
   /// 启动相关设置。
   ///
-  /// 这里**只有**「导入后自动连接」一项——它是真的：`AppState.importConf`
-  /// 在导入成功且当前未连接时会立刻拨号。
+  /// 「导入后自动连接」是真的：`AppState.importConf` 在导入成功且当前未连接时
+  /// 会立刻拨号。
   ///
-  /// 原先还有一项「开机自动启动并连接」。它只是把一个布尔值存进设置文件，
-  /// 从来没有任何代码把它落到系统的启动项里（Windows 需要写注册表 Run 键，
-  /// 安卓需要 BOOT_COMPLETED 接收器），开关拨过去不会产生任何效果。
-  /// 一个拨了没反应的开关比没有这个开关更糟，因此去掉，等真正能兑现时再加回来。
-  Widget _buildStartupCard() {
+  /// 「随系统启动」也是真的，而且**这次是真的落地了**：Windows 上由原生写注册表
+  /// Run 键（绿色解压版），或走 MSIX 包内的 StartupTask（打包版）——见
+  /// windows/runner/auto_start.cc。此前这一项只是把一个布尔值存进设置文件，
+  /// 从来没有任何代码把它落到系统的启动项里，于是被去掉了；现在后端存在，
+  /// 因此加了回来，并且同样出现在托盘菜单上（用户可以不开设置页就切换）。
+  ///
+  /// 后端在当前形态下用不了时（Linux 尚未实现、MSIX 包没声明 startupTask
+  /// 扩展），这一行**整个不渲染**——见 [autoStart] 的说明。
+  Widget _buildStartupCard({required bool compact}) {
+    final controller = autoStart;
+    // 系统启动项那一行只有在后端可用时才出现，而「谁在最后」决定谁不画分隔线：
+    // 写死在某一项上，另一项成为末行时就会多出一条悬空的分隔线。
+    final showAutoStart = controller != null && controller.supported;
+
     return XvCard(
+      color: compact ? XV.panel2 : XV.panel,
+      radius: compact ? 12 : XV.rCard,
+      padding: compact
+          ? const EdgeInsets.fromLTRB(14, 13, 14, 13)
+          : const EdgeInsets.all(16),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: <Widget>[
           const XvCardTitle('启动'),
           SettingRow(
-            title: '导入配置后自动连接',
-            description: '免去点一次连接的步骤',
-            isLast: true,
+            title: compact ? '导入后自动连接' : '导入配置后自动连接',
+            description: compact ? '导入配置文件或 ss:// 分享链接后直接建立隧道' : '免去点一次连接的步骤',
+            isLast: !showAutoStart,
             control: XvSwitch(
               value: state.settings.autoConnectOnImport,
               onChanged: (bool v) => state.updateSettings(
@@ -163,6 +192,22 @@ class SettingsScreen extends StatelessWidget {
               ),
             ),
           ),
+          if (showAutoStart)
+            // 状态由原生回读（用户在「任务管理器 → 启动」里也能改），因此这一行
+            // 必须跟着控制器重建，而不是只读一次 `state.settings`。
+            ListenableBuilder(
+              listenable: controller,
+              builder: (BuildContext context, _) => SettingRow(
+                title: '随系统启动',
+                description: controller.enabled ? '开机后自动运行' : '开机后自动启动幽门',
+                isLast: true,
+                control: XvSwitch(
+                  key: autoStartSwitchKey,
+                  value: controller.enabled,
+                  onChanged: controller.setEnabled,
+                ),
+              ),
+            ),
         ],
       ),
     );
@@ -376,28 +421,7 @@ class SettingsScreen extends StatelessWidget {
                 const SizedBox(height: 10),
                 _buildAppearanceCard(compact: true),
                 const SizedBox(height: 12),
-                XvCard(
-                  color: XV.panel2,
-                  radius: 12,
-                  padding: const EdgeInsets.fromLTRB(14, 13, 14, 6),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: <Widget>[
-                      const XvCardTitle('启动'),
-                      SettingRow(
-                        title: '导入后自动连接',
-                        description: '导入配置文件或 ss:// 分享链接后直接建立隧道',
-                        isLast: true,
-                        control: XvSwitch(
-                          value: state.settings.autoConnectOnImport,
-                          onChanged: (bool v) => state.updateSettings(
-                            state.settings.copyWith(autoConnectOnImport: v),
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
+                _buildStartupCard(compact: true),
                 const SizedBox(height: 12),
                 // 与桌面端保持一致的信息结构：接管方式两端都讲清楚，
                 // 只是内容按平台不同（桌面系统代理 / 安卓 TUN）。

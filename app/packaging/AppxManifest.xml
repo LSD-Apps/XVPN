@@ -1,0 +1,110 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  MSIX 包清单模板（app/packaging/AppxManifest.xml）。
+
+  它不是最终清单：`scripts/package-msix.ps1` 会把下面这几个占位符替换掉后写到
+  包目录里，再交给 makeappx：
+
+    @VERSION@        四段版本号（1.3.0 → 1.3.0.0）。MSIX 的 Version 必须是
+                     四段，而 pubspec 是三段 + build，转换规则见该脚本。
+    @PUBLISHER@      发布者 DN。**必须与签名证书的 Subject 逐字相同**，
+                     否则 Add-AppxPackage 直接拒绝安装。
+    @DISPLAY_NAME@   用户在开始菜单、任务管理器里看到的名字。
+    @DESCRIPTION@    描述。
+    @IDENTITY_NAME@  包标识名（反向域名），也是包家族名的主体。
+    @EXECUTABLE@     主程序的包内相对路径。
+
+  两个扩展是这个包**存在意义的一部分**，删掉任何一个都会带来一处静默失效：
+
+  * `windows.startupTask`（uap5）：打包应用**写不了**注册表 Run 键——写入会被
+    重定向到包私有的虚拟存储，而 Windows 不会为虚拟存储里的 Run 项创建登录
+    启动项。于是「开关拨过去了、写注册表也返回成功，下次开机却什么也没发生」。
+    声明这个扩展之后，原生侧才能通过 Windows.ApplicationModel.StartupTask 把
+    启动项交给系统托管（见 app/windows/runner/auto_start.cc）。TaskId 必须与
+    那里的 kStartupTaskId 逐字一致。
+  * `windows.appExecutionAlias`（uap3）：给应用一个稳定的启动别名
+    （%LOCALAPPDATA%\Microsoft\WindowsApps\xvpn.exe）。桌面快捷方式指向它而不是
+    %ProgramFiles%\WindowsApps\XVPN_<版本>_x64__<哈希>\ 下那个带版本号的真实
+    路径——后者每次升级都会变，指向它的快捷方式升级后就成了死链接。
+-->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:uap3="http://schemas.microsoft.com/appx/manifest/uap/windows10/3"
+  xmlns:uap5="http://schemas.microsoft.com/appx/manifest/uap/windows10/5"
+  xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap uap3 uap5 desktop rescap">
+
+  <Identity
+    Name="@IDENTITY_NAME@"
+    Publisher="@PUBLISHER@"
+    Version="@VERSION@"
+    ProcessorArchitecture="x64" />
+
+  <Properties>
+    <DisplayName>@DISPLAY_NAME@</DisplayName>
+    <PublisherDisplayName>LUSIDA</PublisherDisplayName>
+    <!-- 这几张图由 scripts/package-msix.ps1 从 app/windows/runner/resources/
+         app_icon.ico 合成（该 .ico 内含 16…256 的 PNG 帧；宽磁贴与启动画面
+         由方图按短边居中合成），因此仓库里不放重复的二进制资源。 -->
+    <Logo>Assets\StoreLogo.png</Logo>
+    <Description>@DESCRIPTION@</Description>
+  </Properties>
+
+  <Dependencies>
+    <!-- 只支持 Windows 10 1809（17763）及以上：startupTask 需要 1709、
+         appExecutionAlias 需要 1709，而 1809 是这两者都稳定可用的第一个
+         长期支持版本。Windows 11 自然涵盖在内。 -->
+    <TargetDeviceFamily
+      Name="Windows.Desktop"
+      MinVersion="10.0.17763.0"
+      MaxVersionTested="10.0.26100.0" />
+  </Dependencies>
+
+  <Resources>
+    <Resource Language="zh-CN" />
+  </Resources>
+
+  <Applications>
+    <Application Id="XVPN"
+                 Executable="@EXECUTABLE@"
+                 EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements
+        DisplayName="@DISPLAY_NAME@"
+        Description="@DESCRIPTION@"
+        BackgroundColor="transparent"
+        Square150x150Logo="Assets\Square150x150Logo.png"
+        Square44x44Logo="Assets\Square44x44Logo.png">
+        <uap:DefaultTile Wide310x150Logo="Assets\Wide310x150Logo.png" />
+        <uap:SplashScreen Image="Assets\SplashScreen.png" />
+      </uap:VisualElements>
+
+      <Extensions>
+        <!-- 「随系统启动」的后端。Enabled 留空 = 默认不启用：装完就自己出现在
+             开机项里是用户没要求过的事，得由他在设置页或托盘菜单里主动开启。 -->
+        <uap5:Extension Category="windows.startupTask">
+          <uap5:StartupTask
+            TaskId="XVPNStartup"
+            Enabled="false"
+            DisplayName="@DISPLAY_NAME@" />
+        </uap5:Extension>
+
+        <!-- 稳定的启动别名，桌面快捷方式指向它。 -->
+        <uap3:Extension Category="windows.appExecutionAlias"
+                        Executable="@EXECUTABLE@"
+                        EntryPoint="Windows.FullTrustApplication">
+          <uap3:AppExecutionAlias>
+            <desktop:ExecutionAlias Alias="xvpn.exe" />
+          </uap3:AppExecutionAlias>
+        </uap3:Extension>
+      </Extensions>
+    </Application>
+  </Applications>
+
+  <Capabilities>
+    <!-- 本应用要跑自己的内核子进程、改系统代理、写 HKCU，这些都要求完全信任，
+         因此**不是** Store 沙箱应用。 -->
+    <rescap:Capability Name="runFullTrust" />
+  </Capabilities>
+</Package>

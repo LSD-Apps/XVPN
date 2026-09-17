@@ -1381,6 +1381,7 @@ class XvSearchField extends StatelessWidget {
     required this.hint,
     this.controller,
     this.onChanged,
+    this.onSubmitted,
     this.onClear,
     this.focused = false,
   });
@@ -1388,6 +1389,13 @@ class XvSearchField extends StatelessWidget {
   final String hint;
   final TextEditingController? controller;
   final ValueChanged<String>? onChanged;
+
+  /// 按下回车时的回调。
+  ///
+  /// 「在输入框里打完字按回车」是绝大多数人提交表单的默认动作；没有它，
+  /// 用户敲完域名会先愣一下再去找按钮。同时它也是键盘/无障碍路径上唯一的
+  /// 提交方式——只用鼠标能完成的操作不算可用。
+  final ValueChanged<String>? onSubmitted;
 
   /// 非空时在右侧显示一个清除按钮。
   ///
@@ -1410,6 +1418,7 @@ class XvSearchField extends StatelessWidget {
             child: TextField(
               controller: controller,
               onChanged: onChanged,
+              onSubmitted: onSubmitted,
               cursorWidth: 1.5,
               style: TextStyle(fontSize: 12.5, color: XV.text),
               decoration: InputDecoration(

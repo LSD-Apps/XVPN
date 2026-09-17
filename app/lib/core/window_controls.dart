@@ -123,6 +123,16 @@ class WindowControls {
   /// 由入口注册（见 main.dart），与 [onQuitRequested] 同一处。
   static void Function()? onShowUpdateRequested;
 
+  /// 原生侧改了「开机自动启动」（用户点了托盘菜单里那一项）。
+  ///
+  /// 托盘在原生侧，而状态由 [AutoStartController] 持有；这条推送就是把两者接
+  /// 起来的那一步。没有它，用户会在托盘上把勾打上、设置页却仍然显示为关——
+  /// 同一个事实出现两种说法。
+  ///
+  /// 参数是**回读到的真实状态**，不是用户点的那一下的意图：MSIX 下启用请求是
+  /// 异步的，还可能被系统策略拒绝。
+  static void Function(bool enabled)? onAutoStartChanged;
+
   /// 请原生真正退出进程。只在 [onQuitRequested] 收尾完成（或失败）之后调用。
   ///
   /// 刻意不用 `exit()`：让 GTK 正常走完 shutdown。原生另有兜底超时，即使这条
@@ -169,6 +179,11 @@ class WindowControls {
         // 让界面切到更新入口。回调缺失（测试、嵌入场景）时静默——原生那边
         // 至少还把窗口亮了出来，不会变成完全没反应。
         onShowUpdateRequested?.call();
+      } else if (call.method == 'autoStartChanged') {
+        // 托盘「开机自动启动」被切换。原生已经把状态落到系统并回读过，
+        // 这里只负责让设置页跟上同一个事实。
+        final value = call.arguments;
+        if (value is bool) onAutoStartChanged?.call(value);
       } else if (call.method == 'quitRequested') {
         try {
           await onQuitRequested?.call();

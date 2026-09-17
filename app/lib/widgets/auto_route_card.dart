@@ -129,7 +129,14 @@ class _AutoRouteCardState extends State<AutoRouteCard> {
       (AutoRouteEntry a, AutoRouteEntry b) =>
           b.directFailures.compareTo(a.directFailures),
     );
+    // 三个数各自有用，不要合并：
+    //   * [total] 是「这张表一共管着多少条」，写在卡片说明里；
+    //   * [learnedCount] 是**可以被「清理过期」删掉的条数**——清理只动程序学到的，
+    //     此前标签写的是 total，于是「清理过期（8 条中）」在一个只有 1 条学习规则、
+    //     7 条手工规则的机器上会让用户以为要删掉 8 条。计数口径必须与动作的作用域
+    //     一致，否则它就在误导。
     final total = user.length + learned.length + preset.length;
+    final learnedCount = learned.length;
 
     return XvCard(
       color: widget.compact ? XV.panel2 : XV.panel,
@@ -158,6 +165,17 @@ class _AutoRouteCardState extends State<AutoRouteCard> {
             Text('还没有程序学到的规则。', style: XvText.rowDesc)
           else
             for (final entry in learned) _buildEntry(entry),
+          // 最近一次自动纠正的原因紧跟在「程序学到」这一节之后，而不是丢在卡片
+          // 最底部：它解释的正是**上面这些规则是怎么来的**。放在页脚结尾会让它
+          // 离被解释的对象隔了整张卡片，读起来像一句无主的脚注。
+          if (state.learnedDecisions.isNotEmpty) ...<Widget>[
+            const SizedBox(height: 6),
+            Text(
+              '最近一次自动纠正：${state.learnedDecisions.first.domain} — '
+              '${state.learnedDecisions.first.reason}',
+              style: XvText.caption,
+            ),
+          ],
           // 内置白名单单列一组：它由「直连白名单」卡片的开关驱动，
           // 混进「程序学到」会让用户以为那也是程序自己判断出来的。
           // 放在「手工指定」之上：底部输入区逻辑上对应手工规则，顺序要对齐。
@@ -169,73 +187,134 @@ class _AutoRouteCardState extends State<AutoRouteCard> {
           Divider(height: 18, thickness: 1, color: XV.line2),
           _sectionLabel('手工指定', count: user.length),
           if (user.isEmpty)
-            Text('还没有手工指定的域名。可在下面新增一条。', style: XvText.rowDesc)
+            Text('还没有手工指定的域名。在下面输入一个，选好走向后点「添加」。',
+                style: XvText.rowDesc)
           else
             for (final entry in user) _buildEntry(entry),
-          const SizedBox(height: 10),
+          // 输入行与上方内容多留一点距离：它既是「手工指定」这一组的落点，
+          // 又是整张卡片最后一段内容区的开头，紧贴列表会让它看起来像另一条记录。
+          const SizedBox(height: 14),
           _buildManualInput(),
-          Padding(
-            padding: const EdgeInsets.only(top: 12),
-            child: Wrap(
-              spacing: 14,
-              runSpacing: 8,
-              children: <Widget>[
-                TapAction(label: '导出规则包', onTap: _exportPack),
-                TapAction(label: '导入规则包', onTap: _importPack),
-              ],
-            ),
-          ),
-          if (_inputError != null)
-            Padding(
-              padding: const EdgeInsets.only(top: 8),
-              child: Text(
-                _inputError!,
-                style: XvText.caption.copyWith(color: XV.amberSoft),
-              ),
-            ),
-          if (total > 0)
-            Padding(
-              padding: const EdgeInsets.only(top: 12),
-              child: Row(
-                children: <Widget>[
-                  TapAction(
-                    label: '清理过期（$total 条中）',
-                    onTap: () {
-                      final removed = state.pruneAutoRoute();
-                      if (!mounted) return;
-                      ScaffoldMessenger.maybeOf(context)?.showSnackBar(
-                        SnackBar(
-                          content: Text(
-                            removed.isEmpty
-                                ? '没有可清理的规则：长期未命中的学习规则会自动淘汰'
-                                : '已清理 ${removed.length} 条长期未命中的规则',
-                          ),
-                          behavior: SnackBarBehavior.floating,
-                        ),
-                      );
-                    },
-                  ),
-                  const SizedBox(width: 14),
-                  TapAction(
-                    label: '全部清除',
-                    danger: true,
-                    onTap: _confirmClearAll,
-                  ),
-                ],
-              ),
-            ),
-          // 最近一次自动纠正的原因。把「为什么改」写清楚，
-          // 否则用户只看到域名列表，不知道程序依据什么做的判断。
-          if (state.learnedDecisions.isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.only(top: 10),
-              child: Text(
-                '最近一次自动纠正：${state.learnedDecisions.first.domain} — '
-                '${state.learnedDecisions.first.reason}',
-                style: XvText.caption,
-              ),
-            ),
+          _buildActions(learnedCount: learnedCount),
         ],
+      ),
+    );
+  }
+
+  /// 输入行下方的动作区。
+  ///
+  /// 这里此前是**四行同款灰色文字链接**平铺在卡片底部：导出、导入、清理过期、
+  /// 全部清除。它违反的正是这个项目自己写在 `rules_screen.dart` 里的规范——那里
+  /// 的卡片级动作（新增 / 检查更新 / 恢复内置规则）一律是 [XvButton]，而
+  /// [TapAction] 只用于列表项内部的逐条操作。实测那段页脚在 1180px 下每个链接的
+  /// 命中盒是 1110×40（几乎整张卡片宽），在 390px 下则各自独占一行 324×40：
+  /// 四个等权的裸文字既没有主次、也看不出「哪几个是一组」，而且**不可逆的
+  /// 「全部清除」和「导出规则包」长得一模一样**。
+  ///
+  /// 改成分成两段、各带标题：
+  ///   * **规则包**——导出/导入是同一件事的两个方向，成对出现；
+  ///   * **批量清理**——风险不同，用真实按钮承载，破坏性的那个用 danger 变体，
+  ///     并明确写出「不会动手工指定的规则」，让用户在按下去之前就知道边界。
+  Widget _buildActions({required int learnedCount}) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: <Widget>[
+        const SizedBox(height: 14),
+        Divider(height: 1, thickness: 1, color: XV.line2),
+        const SizedBox(height: 14),
+        Text('规则包', style: XvText.rowTitle),
+        // 4px：与页面上其它「小标题 + 说明」的间距一致（见 rules_screen.dart 的
+        // 「推荐规则集」一节）。此前这里写 3px，是一处没有理由的独值。
+        const SizedBox(height: 4),
+        Text(
+          '把手工指定的规则导出成文件，或从文件导入别人的规则。'
+          '导入的规则会变成「手工指定」，不会被程序改写。',
+          style: XvText.caption,
+        ),
+        const SizedBox(height: 10),
+        // 桌面并排、窄屏两列等宽：两者是同一件事的两个方向，权重相同，因此不给
+        // 谁更大的位置。窄屏下 expand 会让它们各占一半宽，而不是各占一整行——
+        // 两个次要动作不该在手机上吃掉 80px 的垂直空间。
+        Row(
+          children: <Widget>[
+            Expanded(
+              child: XvButton(
+                label: '导出规则包',
+                icon: Icons.file_upload_outlined,
+                expand: true,
+                onPressed: _exportPack,
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: XvButton(
+                label: '导入规则包',
+                icon: Icons.file_download_outlined,
+                expand: true,
+                onPressed: _importPack,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 16),
+        Text('批量清理', style: XvText.rowTitle),
+        const SizedBox(height: 4),
+        Text(
+          // 刻意**不写 Markdown 的星号**：这是 Text，没有 Markdown 渲染，
+          // 写进去的 `**手工指定**` 会连星号一起原样显示出来。
+          '只清理程序自己学到的规则。手工指定的规则与内置白名单都不会被改动。',
+          style: XvText.caption,
+        ),
+        const SizedBox(height: 10),
+        Row(
+          children: <Widget>[
+            Expanded(
+              child: XvButton(
+                // 计数只说**可被清理的条数**。写全部条数会让用户以为手工规则也会
+                // 被删——实测过：1 条学习规则 + 4 条手工规则时，旧标签写「8 条中」。
+                //
+                // 文案不带「可清理」三个字：实测（390px 两列各 158px、Noto Sans SC）
+                // 「清理过期（0 条可清理）」的文字宽 124px，而按钮内可用净宽也是
+                // 124px——余量 0，任何字体差异或数字变宽都会立刻变成省略号。
+                // 这三个字由上面那句说明承担。
+                label: '清理过期（$learnedCount 条）',
+                expand: true,
+                // 一条学习规则都没有时**禁用**而不是隐藏：隐藏会让两行的排布在
+                // 「有没有学习规则」之间跳变，禁用则明确表示「这个动作现在没事可做」。
+                onPressed: learnedCount > 0 ? _pruneExpired : null,
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: XvButton(
+                label: '全部清除',
+                kind: XvButtonKind.danger,
+                expand: true,
+                onPressed: _confirmClearAll,
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  /// 清理长期未命中的**学习**规则。
+  ///
+  /// 原先这段逻辑内联在 build 里的 onTap 闭包里，顺带把「标签里的 total」和
+  /// 「实际能删的东西」这两个不同的量混在了一起。抽出来是为了让计数口径与动作
+  /// 作用域在同一个地方就能对照着看。
+  void _pruneExpired() {
+    final removed = state.pruneAutoRoute();
+    if (!mounted) return;
+    ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+      SnackBar(
+        content: Text(
+          removed.isEmpty
+              ? '没有可清理的规则：长期未命中的学习规则会自动淘汰'
+              : '已清理 ${removed.length} 条长期未命中的规则',
+        ),
+        behavior: SnackBarBehavior.floating,
       ),
     );
   }
@@ -324,9 +403,12 @@ class _AutoRouteCardState extends State<AutoRouteCard> {
       onChanged: (_) {
         if (_inputError != null) setState(() => _inputError = null);
       },
+      // 回车即提交：输入框与「添加」是同一件事的两个入口，只认鼠标会让
+      // 键盘用户每次都要把手移开。两处走同一个 _submit，校验与提示完全一致。
+      onSubmitted: (_) => _submit(),
     );
 
-    return LayoutBuilder(
+    final layout = LayoutBuilder(
       builder: (BuildContext context, BoxConstraints constraints) {
         // 阈值 = 最小输入宽度 + 选择器 + 按钮 + 两处间距。
         const breakpoint = AutoRouteCard.rowLayoutBreakpoint;
@@ -371,6 +453,46 @@ class _AutoRouteCardState extends State<AutoRouteCard> {
           ],
         );
       },
+    );
+
+    final error = _inputError;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: <Widget>[
+        layout,
+        // 校验提示必须**紧贴**触发它的输入行。
+        //
+        // 它此前挂在卡片最底部，紧跟导出/导入两个动作之后：实测（390px）输入框
+        // 底边到提示文字相距 **108px**，中间还隔着两个可点的动作。用户点了
+        // 「添加」之后，视线落点与提示之间隔着一整组别的东西——这恰好是错误呈现
+        // 最不该出现的形态，也会让人误以为那是导出/导入的结果。
+        if (error != null)
+          Padding(
+            padding: const EdgeInsets.only(top: 6),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                // 一个警告图标：纯色小字在暗色面板上很容易被当成普通说明文字，
+                // 而这条是**刚刚的操作失败了**。
+                Padding(
+                  padding: const EdgeInsets.only(top: 1.5),
+                  child: Icon(
+                    Icons.error_outline,
+                    size: 14,
+                    color: XV.amberSoft,
+                  ),
+                ),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    error,
+                    style: XvText.caption.copyWith(color: XV.amberSoft),
+                  ),
+                ),
+              ],
+            ),
+          ),
+      ],
     );
   }
 

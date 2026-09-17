@@ -636,8 +636,23 @@ try {
             # ABI。不加这个开关，debug 包会把三个 ABI 全塞进去（147 MB → 220 MB
             # 以上），而那多出来的两个 ABI 在运行时根本加载不到内核——推一台
             # 32 位机器上去只会拿到一个「装得上、一开就崩」的应用。
-            & flutter build apk "--$Mode" --target-platform android-arm64
-            if ($LASTEXITCODE -ne 0) { throw "flutter build apk 失败（退出码 $LASTEXITCODE）。" }
+            #
+            # **必须临时放宽 $ErrorActionPreference**，与 [Invoke-Adb] 同一个理由：
+            # flutter 会把**正常的**提示写到 stderr（「Flutter assets will be
+            # downloaded from ...」、插件 KGP 的弃用警告等），而 'Stop' 配 `2>&1`
+            # 会把「stderr 有输出」当成终止性错误。后果是：APK 已经构建成功、
+            # 脚本却在下面那句 `if ($code -ne 0)` **之前**就抛出去，把一条成功
+            # 消息当成失败报出来。实测踩过——脚本以退出码 1 中止，而
+            # `build/app/outputs/flutter-apk/app-debug.apk` 是好的。
+            # 成败一律只看退出码。
+            $previous = $ErrorActionPreference
+            $ErrorActionPreference = 'Continue'
+            try {
+                & flutter build apk "--$Mode" --target-platform android-arm64
+                $code = $LASTEXITCODE
+            }
+            finally { $ErrorActionPreference = $previous }
+            if ($code -ne 0) { throw "flutter build apk 失败（退出码 $code）。" }
         }
         finally { Pop-Location }
         Write-Ok '构建完成'

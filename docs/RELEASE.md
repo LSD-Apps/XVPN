@@ -155,9 +155,14 @@ Apple 对 VPN 应用依 Guideline 5.4 审核，需要 `NEVPNManager` 与相应 e
       debug 密钥），因此正式分发前必须由维护者按「五、构建与发布流水线」
       创建 secrets。密钥本身无法提交进仓库。
 - [x] **Release 附件**：已由 `.github/workflows/release.yml` 自动附上
-      Windows / Linux 压缩包、Android APK 与 `SHA256SUMS.txt`
+      Windows 压缩包与 MSIX 安装包、Linux 压缩包、Android APK 与 `SHA256SUMS.txt`
 - [x] **发布脚本**：构建一律带 `--dart-define=XVPN_VERSION=<ver>`，
       CI 与本地脚本都会先把 tag/输入与 `pubspec.yaml` 校验一致后再构建
+- [x] **Windows MSIX 安装包**：清单（`app/packaging/AppxManifest.xml`）、打包
+      （`scripts/package-msix.ps1`）与安装/桌面快捷方式（`scripts/install-msix.ps1`）
+      均已就位并接进 CI，见「5.2.1 Windows MSIX」。**仍需真机验证**：装包、
+      桌面快捷方式、托盘与设置页里的「随系统启动」四项只能在有桌面的 Windows 上
+      实测，单元测试只守住了清单与原生代码之间的文本契约
 
 ### 建议的发布顺序
 
@@ -196,15 +201,92 @@ pubspec 写成 `1.2.0+<build>`。
 | 附件 | 内容 |
 | --- | --- |
 | `XVPN-<ver>-windows-x64.zip` | Windows release bundle 目录的**内容**（`xvpn.exe`、`sing-box.exe`、`data/` 等位于压缩包根），另含 `LICENSE`、`NOTICE.md` 与 `THIRD-PARTY-NOTICES.md` |
+| `XVPN-<ver>-windows-x64.msix` | Windows MSIX 安装包（含 `windows.startupTask` 与 `windows.appExecutionAlias` 两项扩展），另含三份许可文本 |
+| `XVPN-<ver>-windows-msix.cer` | 未配置发布证书时附上的自签名证书公钥；安装前需先信任它 |
 | `XVPN-<ver>-linux-x64.zip` | Linux release bundle 目录的内容（`xvpn`、`sing-box`、`data/` 等），另含 `LICENSE`、`NOTICE.md` 与 `THIRD-PARTY-NOTICES.md` |
 | `XVPN-<ver>-android-arm64.apk` | **裸 APK**——更新器需要它才能调起系统安装器；内含 `assets/licenses/` 下的 `LICENSE`、`NOTICE.md` 与 `THIRD-PARTY-NOTICES.md` |
 | `XVPN-<ver>-android-arm64.zip` | 装着上面那份 APK 的 zip，让三端都有一个 zip 入口 |
-| `SHA256SUMS.txt` | 上面四个文件的 SHA-256（`sha256sum -c` 可直接校验） |
+| `SHA256SUMS.txt` | 上面全部产物的 SHA-256（`sha256sum -c` 可直接校验） |
 
 `<ver>` 是 tag 去掉前导 `v`，例如 tag `v1.0.0` → `<ver>` = `1.0.0`。
 
 两个 zip 都采用「bundle 目录内容在压缩包根」的布局，解压即可就地覆盖安装目录。
 不要改成「外面再套一层目录名」——这是更新器的解压约定。
+
+> **`.msix` 与 `.cer` 不参与应用内自动更新**：更新器读的是
+> `windows-x64.zip`，而 MSIX 版本由包管理器（`Add-AppxPackage` / 应用安装程序）
+> 自行升级。因此 `windows-x64.zip` 的**附件名不能改**——已经装好的旧版本靠它
+> 找到升级包。
+
+### 5.2.1 Windows MSIX
+
+两种 Windows 分发形态（zip 绿色版 / MSIX 安装版）**必须来自同一次
+`flutter build windows`**：`scripts/build-release.ps1 -Msix` 与发布流水线都是拿
+同一个 bundle 分别打包的，各构建一次迟早会出现「zip 里有新内核、msix 里还是旧的」
+这种谁也想不到的差异。
+
+构建与安装：
+
+```powershell
+# 只打 MSIX（需要 Windows SDK 的 makeappx / signtool）
+pwsh scripts/package-msix.ps1 `
+  -BundleDir app\build\windows\x64\runner\Release `
+  -Version 1.3.0 `
+  -OutFile dist\XVPN-1.3.0-windows-x64.msix `
+  -CertificateOut dist\XVPN-1.3.0-windows-msix.cer
+
+# 安装（当前用户）并在桌面创建快捷方式
+pwsh scripts/install-msix.ps1 -Package dist\XVPN-1.3.0-windows-x64.msix `
+  -Certificate dist\XVPN-1.3.0-windows-msix.cer
+
+# 卸载（同时删掉桌面快捷方式；用户配置保留在包的数据目录里）
+pwsh scripts/install-msix.ps1 -Uninstall
+```
+
+几点必须知道的事实：
+
+- **签名**。MSIX 必须签名才能安装，且清单 `Identity/Publisher` 必须与证书
+  `Subject` **逐字相同**，否则 `Add-AppxPackage` 会以 `0x800B0109` / `0x80073CF0`
+  之类拒绝。`package-msix.ps1` 在找不到可用证书时**生成一张自签名证书并复用**
+  （每次构建新造一张会让已装旧版的用户升级时签名不一致，只能卸载重装，而卸载会
+  清掉配置）。
+
+  > **自签名包的安装需要一次管理员提权**，这一点实测确认过，而且它的表现很有
+  > 误导性：
+  >
+  > - 证书放进 `CurrentUser\Root` + `CurrentUser\TrustedPeople` 之后，
+  >   `signtool verify /pa` **通过**（`Number of errors: 0`）；
+  > - 但 `Add-AppxPackage` 仍然以 `0x800B0109`「签名的根证书必须是受信任的
+  >   证书」失败。
+  >
+  > 原因是 **AppX 部署服务以 SYSTEM 身份运行，不读 `CurrentUser` 的证书存储**。
+  > 自签名证书必须落到**机器级**存储。因此 `install-msix.ps1` 会检测当前是否
+  > 提权：是则写 `LocalMachine`，否则退回 `CurrentUser` 并明确警告「下一步很可能
+  > 失败、请以管理员重跑」。提权的那一次提的是**信任证书**，不是安装应用本身。
+  >
+  > 配了正式代码签名证书（`MSIX_PFX_*`）时不存在这个问题：那类证书的根已在
+  > Windows 受信任根里，双击 `.msix` 即可。
+  >
+  > 另一条**不需要信任证书**的运行期验证路径：开启「开发人员模式」后用
+  > `Add-AppxPackage -Register <解包目录>\AppxManifest.xml` 直接注册松散文件，
+  > 签名与证书都不参与（包会标记为 `IsDevelopmentMode`）。它适合验证包身份相关
+  > 的行为（执行别名、开始菜单入口、扩展声明），但不能替代真实安装。
+- **发布证书**。配了 `MSIX_PFX_BASE64` / `MSIX_PFX_PASSWORD` secret 时用正式证书
+  签，不再发布 `.cer`。发布者 DN 用仓库变量 `MSIX_PUBLISHER` 对齐（默认
+  `CN=LUSIDA`，与清单模板一致）。
+- **桌面快捷方式**。MSIX **没有**「安装完成后运行脚本」的标准钩子，而打包进程写
+  `%USERPROFILE%\Desktop` 会被文件系统虚拟化到包私有目录、写不到真实桌面。因此
+  快捷方式由未打包的 `install-msix.ps1` 创建，目标指向清单声明的执行别名
+  `%LOCALAPPDATA%\Microsoft\WindowsApps\xvpn.exe`，而**不是**
+  `%ProgramFiles%\WindowsApps\XVPN_<版本>_x64__<哈希>\xvpn.exe`——后者每次升级都
+  会变，指向它的快捷方式升级后就是死链接。
+- **「随系统启动」在 MSIX 形态下走 `StartupTask`**，不是注册表 Run 键：包内的
+  Run 写入会被重定向到虚拟存储，Windows 不会为它创建登录启动项，于是开关会
+  **静默失效**。任务 id 必须与 `app/windows/runner/auto_start.cc` 的
+  `kStartupTaskId` 一致，`app/test/msix_packaging_test.dart` 守着这条契约。
+- **用户配置位置会变**。未打包时是 `%LOCALAPPDATA%\XVPN\`；打包后 `LOCALAPPDATA`
+  被重定向到 `%LOCALAPPDATA%\Packages\<包家族>\LocalCache\Local\XVPN\`。从绿色版
+  迁到 MSIX 版等于全新安装，需要重新导入配置。
 
 ### 5.3 需要的 Actions Secrets
 
@@ -216,6 +298,19 @@ pubspec 写成 `1.2.0+<build>`。
 | `ANDROID_KEYSTORE_PASSWORD` | keystore 口令 |
 | `ANDROID_KEY_ALIAS` | 密钥别名 |
 | `ANDROID_KEY_PASSWORD` | 该别名对应的口令 |
+| `MSIX_PFX_BASE64` | （可选）Windows MSIX 发布证书的 PFX base64；留空则用自签名并附 `.cer` |
+| `MSIX_PFX_PASSWORD` | （可选）该 PFX 的口令 |
+
+仓库变量（`Settings → Secrets and variables → Actions → Variables`）：
+
+| 变量 | 内容 |
+| --- | --- |
+| `MSIX_PUBLISHER` | MSIX 发布者 DN，必须与证书 `Subject` 逐字相同（默认 `CN=LUSIDA`） |
+
+`MSIX_PFX_*` 与 Android 的 keystore 不同，**缺失不会让发布失败**：MSIX 目前是
+额外的分发形态（zip 仍是主路径，应用内自动更新走 zip），让它因为没证书就挡掉整个
+发布，代价远大于收益；缺证书时退回自签名并在 Release 里附上 `.cer`。一旦 MSIX
+成为主推形态，这里应当改成与 Android 一样的硬失败。
 
 生成 keystore（只需做一次，**务必备份**——丢了就再也无法覆盖安装旧版本）。
 本仓库已生成一份 4096 位、有效期约 30 年的发行密钥库，口令由持有者单独保存：
@@ -268,6 +363,7 @@ with_gvisor / with_clash_api / with_naive_outbound` 等构建标签，缺标签�
 ```powershell
 pwsh scripts/build-release.ps1            # 只构建 Windows
 pwsh scripts/build-release.ps1 -Android   # Windows + Android APK
+pwsh scripts/build-release.ps1 -Msix      # Windows + MSIX 安装包
 ```
 
 产物写入 `dist/` 并生成 `SHA256SUMS.txt`。脚本在

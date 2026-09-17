@@ -7,6 +7,7 @@ project(runner LANGUAGES CXX)
 #
 # Any new source files that you add to the application should be added here.
 add_executable(${BINARY_NAME} WIN32
+  "auto_start.cc"
   "flutter_window.cpp"
   "main.cpp"
   "utils.cpp"
@@ -38,6 +39,10 @@ target_link_libraries(${BINARY_NAME} PRIVATE "dwmapi.lib")
 target_link_libraries(${BINARY_NAME} PRIVATE "wininet.lib")
 # 系统托盘需要 Shell_NotifyIcon。
 target_link_libraries(${BINARY_NAME} PRIVATE "shell32.lib")
+# 「随系统启动」在 MSIX 形态下要用 WinRT 的 Windows.ApplicationModel.StartupTask
+# （RoGetActivationFactory / WindowsCreateString 等），它们的导入库是
+# runtimeobject.lib（实现在 combase.dll 里）。见 runner/auto_start.cc。
+target_link_libraries(${BINARY_NAME} PRIVATE "runtimeobject.lib")
 target_include_directories(${BINARY_NAME} PRIVATE "${CMAKE_SOURCE_DIR}")
 
 # Run the Flutter tool portions of the build. This must not be removed.

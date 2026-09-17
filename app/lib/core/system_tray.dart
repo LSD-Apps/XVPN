@@ -7,6 +7,7 @@ import '../app_state.dart';
 import '../format.dart';
 import '../models.dart';
 import '../version.dart';
+import 'auto_start.dart';
 import 'update_center.dart';
 
 /// 把托盘要显示的事推给原生：版本号、连接状态、速率、有没有新版本。
@@ -32,12 +33,18 @@ class SystemTray {
   SystemTray({
     required this.state,
     UpdateCenter? updateCenter,
+    this.autoStart,
     MethodChannel? channel,
   }) : _updateCenter = updateCenter ?? UpdateCenter.instance,
        _channel = channel ?? const MethodChannel('com.xvpn.xvpn/platform');
 
   final AppState state;
   final UpdateCenter _updateCenter;
+
+  /// 「开机自动启动」的状态来源。为 null 时载荷里不带这两个键
+  /// （测试与不关心托盘的场景），原生据此把菜单项显示为灰色不可点。
+  final AutoStartController? autoStart;
+
   final MethodChannel _channel;
 
   /// 是否支持托盘。Windows 与 Linux 的 runner 都装了托盘。
@@ -55,11 +62,18 @@ class SystemTray {
   /// 由外壳在 `initState` 调用。外壳本来就会监听 [state]，但更新提示是另一条
   /// 通知源，因此这里两个都订阅——否则「启动检查查到新版本」这件事永远到不了
   /// 托盘。
+  ///
+  /// 也订阅 [autoStart]：托盘菜单上那个复选项的状态就在这份载荷里，而它会被
+  /// 两种与连接状态无关的事情改变——用户在设置页拨开关，或原生侧回读到系统里
+  /// 的真实状态。不订阅的话菜单上的勾要等到下一次**连接状态**变化才会更新，
+  /// 用户看到的是「我明明拨开了，托盘上还是没勾」。这条链路此前只是**恰好**
+  /// 通着（设置变更会经 AppState 触发一次同步），显式订阅是为了不依赖那个巧合。
   void attach() {
     if (_attached) return;
     _attached = true;
     state.addListener(_onChanged);
     _updateCenter.notice.addListener(_onChanged);
+    autoStart?.addListener(_onChanged);
     _onChanged();
   }
 
@@ -68,6 +82,7 @@ class SystemTray {
     _attached = false;
     state.removeListener(_onChanged);
     _updateCenter.notice.removeListener(_onChanged);
+    autoStart?.removeListener(_onChanged);
   }
 
   void _onChanged() => unawaited(sync());
@@ -87,6 +102,7 @@ class SystemTray {
   Map<String, Object?> payload() {
     final notice = _updateCenter.notice.value;
     final connected = state.isConnected;
+    final autoStart = this.autoStart;
     return <String, Object?>{
       'version': appVersion,
       'status': state.status.label,
@@ -95,6 +111,14 @@ class SystemTray {
       if (connected) 'upRate': fmtRateLabel(state.upBps),
       // 已忽略的提示不再是「有更新」：载荷里连这个 key 都不出现。
       if (notice != null && !notice.dismissed) 'updateVersion': notice.version,
+      // 托盘菜单上那个「开机自动启动」复选项的状态。由 Dart 推给原生，而不是
+      // 让原生自己去查：托盘与设置页必须显示同一个事实，两处各查一次迟早会
+      // 出现一份过期结果。状态不对时（后端不可用）**两个键都不出现**，
+      // 原生据此把菜单项灰掉。
+      if (autoStart != null && autoStart.resolved) ...<String, Object?>{
+        'autoStartSupported': autoStart.supported,
+        if (autoStart.supported) 'autoStart': autoStart.enabled,
+      },
     };
   }
 

@@ -2,6 +2,7 @@
 #
 #   pwsh scripts/build-release.ps1            # 只构建 Windows
 #   pwsh scripts/build-release.ps1 -Android   # Windows + Android APK
+#   pwsh scripts/build-release.ps1 -Msix      # Windows + MSIX 安装包
 #
 # 这是「本机能跑的那一半」的便捷脚本；正式的发布由
 # .github/workflows/release.yml 在 GitHub runner 上完成（Windows/Linux/Android
@@ -17,9 +18,15 @@
 #
 # 附件命名（exact，改动必须同步 CI 与更新器）：
 #   XVPN-<ver>-windows-x64.zip
+#   XVPN-<ver>-windows-x64.msix          （-Msix 时，见 scripts/package-msix.ps1）
+#   XVPN-<ver>-windows-msix.cer          （-Msix 且用自签名证书时）
 #   XVPN-<ver>-android-arm64.apk
 #   XVPN-<ver>-android-arm64.zip
 #   SHA256SUMS.txt
+#
+# .msix 与 .cer **不在** in-app 更新器消费的附件集合里：更新器读的是
+# windows-x64.zip，MSIX 版本由包管理器（Add-AppxPackage / 应用安装程序）自行
+# 升级。附件名保持不变，旧版本才找得到升级包。
 
 [CmdletBinding()]
 param(
@@ -36,7 +43,17 @@ param(
     [string]$Version = '',
 
     # 同时构建 Android arm64 APK。
-    [switch]$Android
+    [switch]$Android,
+
+    # 同时构建 Windows MSIX 安装包。
+    #
+    # 需要 Windows SDK 的 makeappx / signtool（见 scripts/package-msix.ps1）。
+    # 默认**不**构建：CI 上另有一步专门处理它，而本机快速构建时多花一分钟签名
+    # 没有意义。要用就显式传 -Msix。
+    [switch]$Msix,
+
+    # MSIX 的发布者 DN。必须与签名证书 Subject 逐字相同。
+    [string]$MsixPublisher = 'CN=LUSIDA'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -173,9 +190,32 @@ function Assert-ZipContains {
 
 Push-Location $appDir
 try {
+    # 跑 flutter，退出码写进 $script:FlutterExitCode。
+    #
+    # 为什么要包一层：flutter 会把**正常的**提示写到 stderr（「Flutter assets will
+    # be downloaded from ...」、插件 KGP 的弃用警告），而本脚本开头设了
+    # `$ErrorActionPreference = 'Stop'`——于是「stderr 有输出」被当成终止性错误，
+    # 脚本会在自己的退出码检查**之前**就抛出去，把一条成功消息报成失败。
+    # 实测踩过两次：`deploy-android.ps1` 的构建步、以及这里。
+    #
+    # 退出码用 `$script:` 传出来而**不是** `return`：`return` 会把函数内的所有输出
+    # 一并返回，而 flutter 是往 stdout 打字的——写成 `if ((Invoke-Flutter ...) -ne 0)`
+    # 拿到的是「0 加上一堆日志」这个数组，与 0 比较恒为真，于是把成功判成失败。
+    # （这个坑紧接着又踩了一次。）
+    function Invoke-Flutter {
+        param([Parameter(Mandatory = $true)][string[]]$Arguments)
+        $previous = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            & flutter @Arguments
+            $script:FlutterExitCode = $LASTEXITCODE
+        }
+        finally { $ErrorActionPreference = $previous }
+    }
+
     Write-Host '=== flutter pub get ===' -ForegroundColor Cyan
-    flutter pub get
-    if ($LASTEXITCODE -ne 0) { throw 'flutter pub get 失败' }
+    Invoke-Flutter -Arguments @('pub', 'get')
+    if ($script:FlutterExitCode -ne 0) { throw 'flutter pub get 失败' }
 
     # 应用内「法律与使用声明」读的是 Flutter assets（app/assets/legal/LEGAL.md），
     # 打包前从 docs/ 同步一次，保证副本不过期。
@@ -183,8 +223,9 @@ try {
 
     # ------------------------------------------------------------ Windows
     Write-Host '=== 构建 Windows Release ===' -ForegroundColor Cyan
-    flutter build windows --release "--dart-define=XVPN_VERSION=$ver"
-    if ($LASTEXITCODE -ne 0) { throw 'flutter build windows 失败' }
+    Invoke-Flutter -Arguments @('build', 'windows', '--release',
+        "--dart-define=XVPN_VERSION=$ver")
+    if ($script:FlutterExitCode -ne 0) { throw 'flutter build windows 失败' }
 
     $winBundle = Join-Path $appDir 'build/windows/x64/runner/Release'
     if (-not (Test-Path -LiteralPath (Join-Path $winBundle 'xvpn.exe'))) {
@@ -201,6 +242,36 @@ try {
     Assert-ZipContains -ZipPath $winZip -Entries @('LICENSE', 'NOTICE.md', 'THIRD-PARTY-NOTICES.md')
     Write-Host "已生成：$winZip（含 LICENSE、NOTICE.md 与 THIRD-PARTY-NOTICES.md）" -ForegroundColor Green
 
+    # ------------------------------------------------------------ Windows MSIX
+    #
+    # 与 zip 共用同一个 bundle：两种分发形态的**内容**必须一致，各构建一次迟早
+    # 会出现「zip 里有新内核、msix 里还是旧的」这种谁也想不到的差异。
+    #
+    # 注意 Copy-LegalFiles 已经往 bundle 里放了三份许可文本，而 MakeAppx 会把
+    # 包目录下的**所有**文件都收进去——因此许可也会随 MSIX 分发，与
+    # package-msix.ps1 自己那一步是同一个目的（那里是给「单独跑该脚本」用的）。
+    if ($Msix) {
+        Write-Host '=== 打包 MSIX ===' -ForegroundColor Cyan
+        $msixPath = Join-Path $distDir "XVPN-$ver-windows-x64.msix"
+        $cerPath = Join-Path $distDir "XVPN-$ver-windows-msix.cer"
+        & (Join-Path $PSScriptRoot 'package-msix.ps1') `
+            -BundleDir $winBundle `
+            -Version $ver `
+            -OutFile $msixPath `
+            -Publisher $MsixPublisher `
+            -CertificateOut $cerPath
+        if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $msixPath)) {
+            throw "MSIX 打包失败：$msixPath"
+        }
+        Write-Host "已生成：$msixPath" -ForegroundColor Green
+        if (Test-Path -LiteralPath $cerPath) {
+            Write-Host "已生成：$cerPath（安装前需先信任，见 scripts/install-msix.ps1）" -ForegroundColor Yellow
+        }
+    }
+    else {
+        Write-Host '（未传 -Msix，跳过 MSIX 打包）' -ForegroundColor Yellow
+    }
+
     # ------------------------------------------------------------ Android
     if ($Android) {
         # 许可与第三方声明必须先于构建放进 AGP 默认合并的 native assets 源集
@@ -211,8 +282,10 @@ try {
         Copy-LegalFiles -DestDir $androidLegalDir
         try {
             Write-Host '=== 构建 Android arm64 Release ===' -ForegroundColor Cyan
-            flutter build apk --release --target-platform android-arm64 "--dart-define=XVPN_VERSION=$ver"
-            if ($LASTEXITCODE -ne 0) { throw 'flutter build apk 失败' }
+            Invoke-Flutter -Arguments @('build', 'apk', '--release',
+                '--target-platform', 'android-arm64',
+                "--dart-define=XVPN_VERSION=$ver")
+            if ($script:FlutterExitCode -ne 0) { throw 'flutter build apk 失败' }
 
             $apk = Join-Path $appDir 'build/app/outputs/flutter-apk/app-release.apk'
             if (-not (Test-Path -LiteralPath $apk)) { throw "未找到 APK：$apk" }

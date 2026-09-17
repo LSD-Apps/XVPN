@@ -19,10 +19,16 @@
 #
 # 附件命名（exact）：
 #   XVPN-<ver>-windows-x64.zip
+#   XVPN-<ver>-windows-x64.msix          （MSIX 安装包，另附 .cer 供自签名场景）
+#   XVPN-<ver>-windows-msix.cer
 #   XVPN-<ver>-linux-x64.zip
 #   XVPN-<ver>-android-arm64.apk
 #   XVPN-<ver>-android-arm64.zip
 #   SHA256SUMS.txt
+#
+# .msix / .cer **不在** in-app 更新器消费的附件集合里（更新器读
+# windows-x64.zip）。MSIX 版本由 Add-AppxPackage / 应用安装程序自行升级，
+# 因此 zip 的附件名不能改——旧版本靠它找到升级包。
 
 name: Release
 
@@ -228,12 +234,101 @@ jobs:
           } finally { $zip.Dispose() }
           Write-Host "已生成 $out"
 
-      - name: 上传产物
+      # MSIX 安装包。与 zip 共用同一个 bundle（见 scripts/package-msix.ps1），
+      # 保证两种分发形态的内容完全一致。
+      #
+      # 签名：windows-latest runner 上有 Windows SDK（makeappx / signtool），
+      # 但没有发布证书。这里的行为与 Android 的签名守卫**不同**，是有意的：
+      #   * 配了 MSIX_PFX_BASE64 secret → 用正式证书签，用户装得上且升级平滑；
+      #   * 没配 → 退回自签名，并把公钥 .cer 一并发布，用户按
+      #     scripts/install-msix.ps1 的说明先信任它再安装。
+      # 之所以不在这里直接失败：MSIX 目前是**额外的**分发形态（zip 仍是主路径，
+      # 自动更新走 zip），让它因为没有证书就挡掉整个发布，代价远大于收益。
+      # 一旦 MSIX 成为主推形态，这里应当改成与 Android 一样的硬失败。
+      - name: 打包为 XVPN-<ver>-windows-x64.msix
+        shell: pwsh
+        env:
+          MSIX_PFX_BASE64: ${{ secrets.MSIX_PFX_BASE64 }}
+          MSIX_PFX_PASSWORD: ${{ secrets.MSIX_PFX_PASSWORD }}
+          # 与 app/packaging/AppxManifest.xml 的默认值一致；有正式证书时
+          # 由 MSIX_PUBLISHER 覆盖（必须与证书 Subject 逐字相同）。
+          MSIX_PUBLISHER: ${{ vars.MSIX_PUBLISHER }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ver = '${{ needs.prepare.outputs.ver }}'
+          $bundle = 'app\build\windows\x64\runner\Release'
+          if (-not (Test-Path (Join-Path $bundle 'xvpn.exe'))) { throw "未找到 Windows 产物：$bundle" }
+
+          $publisher = if ([string]::IsNullOrWhiteSpace($env:MSIX_PUBLISHER)) { 'CN=LUSIDA' } else { $env:MSIX_PUBLISHER }
+
+          New-Item -ItemType Directory -Force dist | Out-Null
+          $msix = "dist\XVPN-$ver-windows-x64.msix"
+          $cer  = "dist\XVPN-$ver-windows-msix.cer"
+
+          $signArgs = @{ Publisher = $publisher; CertificateOut = $cer }
+          if (-not [string]::IsNullOrWhiteSpace($env:MSIX_PFX_BASE64)) {
+            # 正式证书：还原成 PFX，导入当前用户证书库，再用它的指纹签名。
+            $pfx = Join-Path $env:RUNNER_TEMP 'msix.pfx'
+            [System.IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:MSIX_PFX_BASE64))
+            $password = ConvertTo-SecureString -String $env:MSIX_PFX_PASSWORD -Force -AsPlainText
+            $imported = Import-PfxCertificate -FilePath $pfx -CertStoreLocation Cert:\CurrentUser\My -Password $password
+            Write-Host "使用正式签名证书：$($imported.Thumbprint)（$($imported.Subject)）"
+            if ($imported.Subject -ne $publisher) {
+              throw "证书 Subject「$($imported.Subject)」与 Publisher「$publisher」不一致；MSIX 要求逐字相同（可用仓库变量 MSIX_PUBLISHER 对齐）。"
+            }
+            $signArgs.CertificateThumbprint = $imported.Thumbprint
+            # 正式证书不需要把公钥随包发布，用户机器上本来就信任它。
+            $cer = ''
+            $signArgs.Remove('CertificateOut')
+          }
+          else {
+            Write-Warning '未配置 MSIX_PFX_BASE64，改用自签名证书：安装前用户必须先信任随包发布的 .cer（见 scripts/install-msix.ps1）。'
+          }
+
+          & scripts\package-msix.ps1 -BundleDir $bundle -Version $ver -OutFile $msix @signArgs
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path $msix)) { throw "MSIX 打包失败：$msix" }
+
+          # 断言包里真的带了清单声明的两项扩展与三份许可文本：少了任意一项，
+          # 包本身能装，但「随系统启动」或「随包分发的许可」会静默失效。
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $zip = [System.IO.Compression.ZipFile]::OpenRead((Resolve-Path $msix).Path)
+          try {
+            $names = @($zip.Entries | ForEach-Object { $_.FullName })
+            $manifestEntry = $zip.GetEntry('AppxManifest.xml')
+            if (-not $manifestEntry) { throw "$msix 缺少 AppxManifest.xml" }
+            $reader = New-Object System.IO.StreamReader($manifestEntry.Open())
+            try { $manifest = $reader.ReadToEnd() } finally { $reader.Dispose() }
+            foreach ($needle in @('windows.startupTask', 'windows.appExecutionAlias', 'runFullTrust')) {
+              if ($manifest -notmatch [regex]::Escape($needle)) { throw "AppxManifest.xml 缺少 $needle" }
+            }
+            foreach ($legal in @('LICENSE', 'NOTICE.md', 'THIRD-PARTY-NOTICES.md')) {
+              if ($names -notcontains $legal) { throw "$msix 缺少 $legal" }
+            }
+            Write-Host "$msix 含 startupTask / appExecutionAlias / runFullTrust 与三份许可文本"
+          } finally { $zip.Dispose() }
+
+          ls dist\XVPN-$ver-windows-x64.msix, dist\XVPN-$ver-windows-msix.cer -ErrorAction SilentlyContinue
+
+      - name: 上传产物（zip 与 msix）
         uses: actions/upload-artifact@v4
         with:
           name: windows
-          path: dist/XVPN-*-windows-x64.zip
+          path: |
+            dist/XVPN-*-windows-x64.zip
+            dist/XVPN-*-windows-x64.msix
           if-no-files-found: error
+
+      # .cer 单独上传：只在**自签名**场景下才存在（配了正式证书时 package-msix.ps1
+      # 不会导出它）。和上面合并成一条时，`if-no-files-found` 只能取一个值——
+      # 要么在没证书时误报失败，要么漏掉真正的缺失，两个都不能要。
+      # artifact 名不能与上面相同（同一次运行里重名会直接失败），因此另起一个；
+      # release 任务用 merge-multiple 把两个都摊进同一个 dist/，文件名不冲突。
+      - name: 上传产物（自签名证书，可选）
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-cert
+          path: dist/XVPN-*-windows-msix.cer
+          if-no-files-found: ignore
 
   # ---------------------------------------------------------------- Linux
   linux:
@@ -522,7 +617,13 @@ jobs:
           cd dist
           ls -la
           # 按文件名排序，保证多次重跑得到完全一致的校验和文件。
-          sha256sum XVPN-*.zip XVPN-*.apk | sort -k2 > SHA256SUMS.txt
+          # 用 * 通配而不是逐个列举：漏掉一种产物会让 SHA256SUMS 少一行，而
+          # 「校验和文件里没有它」比「校验失败」更难被察觉。空匹配交给 nullglob
+          # 之外的显式判断处理——见下面那行。
+          shopt -s nullglob
+          files=(XVPN-*.zip XVPN-*.apk XVPN-*.msix XVPN-*.cer)
+          if [ ${#files[@]} -eq 0 ]; then echo '::error::dist 里没有任何产物'; exit 1; fi
+          sha256sum "${files[@]}" | sort -k2 > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
       - name: 创建或更新 GitHub Release
@@ -579,6 +680,9 @@ jobs:
 
           下载对应平台的压缩包，解压后运行 xvpn：
           - Windows x64：XVPN-$VER-windows-x64.zip
+            另有 MSIX 安装包 XVPN-$VER-windows-x64.msix（含桌面快捷方式与
+            「随系统启动」开关；未配置发布证书时附 XVPN-$VER-windows-msix.cer，
+            安装前需先信任它，详见仓库 scripts/install-msix.ps1）
           - Linux x64：XVPN-$VER-linux-x64.zip
           - Android arm64：XVPN-$VER-android-arm64.apk（可直接安装）
             另附 XVPN-$VER-android-arm64.zip
@@ -595,4 +699,4 @@ jobs:
 
           应用内「检查更新」读取本 Release 的附件，因此请勿重命名。"
           fi
-          retry gh release upload "$TAG" dist/*.zip dist/*.apk dist/SHA256SUMS.txt --clobber --repo "$REPO"
+          retry gh release upload "$TAG" dist/*.zip dist/*.apk dist/*.msix dist/*.cer dist/SHA256SUMS.txt --clobber --repo "$REPO"

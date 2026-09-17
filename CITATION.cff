@@ -15,8 +15,8 @@ license: GPL-3.0-or-later
 license-url: https://github.com/LSD-Apps/XVPN/blob/main/LICENSE
 repository-code: https://github.com/LSD-Apps/XVPN
 url: https://lsd-apps.github.io/XVPN/
-version: 1.3.0
-date-released: 2026-09-15
+version: 1.4.0
+date-released: 2026-09-17
 keywords:
   - vpn
   - vpn-client
