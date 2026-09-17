@@ -77,7 +77,9 @@ class RulesScreen extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: <Widget>[
-        const MobileHeader(title: '分流规则'),
+        // 不能用 const：MobileHeader 读 XV 的主题色，const 实例在重建时会被
+        // 复用、build 不重跑，切主题后颜色不跟随。
+        MobileHeader(title: '分流规则'),
         Expanded(
           child: SingleChildScrollView(
             child: Column(

@@ -85,7 +85,15 @@ class SettingsScreen extends StatelessWidget {
           const SizedBox(height: 13),
           _buildLoggingCard(compact: false),
           const SizedBox(height: 13),
-          const UpdateCard(),
+          // **不能写成 `const UpdateCard()`**：`XV` 的颜色是读取可变调色板的
+          // 静态 getter（见 theme.dart 的 applyPalette），而 const 组件实例在
+          // 重建时被判定为同一个对象（identical），子树**不会重新构建**，
+          // 于是它一直显示创建时那套橙色/面板色——切到暗色主题后，同一页里只有
+          // 这一张卡片没有跟着变。
+          //
+          // 这一页其余卡片都是方法调用（`_buildXxxCard(...)`），每次重建都是新
+          // 实例，因此只有它是 const，也只有它出问题。
+          UpdateCard(),
           const SizedBox(height: 13),
           _buildAboutCard(context, compact: false),
         ],
@@ -412,7 +420,9 @@ class SettingsScreen extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: <Widget>[
-        const MobileHeader(title: '设置'),
+        // 不能用 const：它读 XV 的主题色（见 UpdateCard 那里的说明），
+        // const 实例在重建时会被复用、build 不重跑，切主题后颜色不跟随。
+        MobileHeader(title: '设置'),
         Expanded(
           child: SingleChildScrollView(
             child: Column(
@@ -431,7 +441,8 @@ class SettingsScreen extends StatelessWidget {
                 const SizedBox(height: 12),
                 ProfilesScreen(state: state, embedded: true),
                 const SizedBox(height: 12),
-                const UpdateCard(compact: true),
+                // 同桌面端：不能用 const，否则切主题时不重建（原因见那里的说明）。
+                UpdateCard(compact: true),
                 const SizedBox(height: 12),
                 _buildAboutCard(context, compact: true),
                 const SizedBox(height: 24),

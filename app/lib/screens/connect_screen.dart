@@ -1733,7 +1733,9 @@ class _EmptyStateState extends State<_EmptyState> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: <Widget>[
-        const MobileHeader(title: '连接', statusLabel: '未连接'),
+        // 不能用 const：MobileHeader 读 XV 的主题色，const 实例在重建时会被
+        // 复用、build 不重跑，切主题后颜色不跟随。
+        MobileHeader(title: '连接', statusLabel: '未连接'),
         Expanded(
           // 空间够时垂直居中，不够时（手机横屏、分屏、大字号）可以滚。
           // 直接放 Column 会在矮屏上抛 RenderFlex overflow。
