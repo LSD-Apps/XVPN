@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:xvpn/app_state.dart';
 import 'package:xvpn/core/core_monitor.dart';
+import 'package:xvpn/core/proxy_watchdog.dart';
 import 'package:xvpn/core/singbox_runner.dart';
 import 'package:xvpn/core/system_proxy.dart';
 import 'package:xvpn/core/vpn_core.dart';
@@ -177,6 +178,9 @@ class _RecordingProxy implements SystemProxyController {
     calls.add('recover');
     return false;
   }
+
+  @override
+  Future<bool> hasBackup() async => false;
 }
 
 void main() {
@@ -406,6 +410,14 @@ void main() {
         recorder,
         probesEnabled: false,
         proxy: proxy,
+        // 看门狗换成被动模式，理由同 proxy_cleanup_test.dart：真实周期会在本
+        // 用例断言「进程 / PID 文件 / 系统代理都收干净」时插进来一次 clear()。
+        watchdogFactory: (runner, p) => ProxyWatchdog(
+          proxy: p,
+          isEngaged: () => false,
+          port: () => 0,
+          interval: const Duration(days: 1),
+        ),
         // 节点不可达，取消若无效就会一直等到这个上限。
         readyGateTimeout: const Duration(seconds: 3),
         // 与本文件外的并发用例分段，避免争同一对端口（见 [_portBase]）。

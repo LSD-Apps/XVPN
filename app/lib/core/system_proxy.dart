@@ -27,6 +27,15 @@ abstract class SystemProxyController {
 
   /// 启动时调用：若上次异常退出留下了备份，先把系统代理恢复回去。
   Future<bool> recoverIfNeeded();
+
+  /// 是否存在「我们改过、但还没还原」的痕迹。
+  ///
+  /// 这是**唯一**能判断「上次没退干净」的依据：不能用「代理现在是不是开着」
+  /// 去猜——用户自己设的代理也是开着的，删掉它就是把人家设置改坏，而用户完全
+  /// 看不出是 VPN 干的。
+  ///
+  /// 看门狗（见 proxy_watchdog.dart）在「未接管状态」下靠它做对账。
+  Future<bool> hasBackup();
 }
 
 /// 执行外部命令。
@@ -102,7 +111,7 @@ class SystemProxy implements SystemProxyController {
     }
   }
 
-  /// 是否存在上次未还原的备份。
+  @override
   Future<bool> hasBackup() async {
     if (!supported) return false;
     try {
@@ -195,8 +204,11 @@ class LinuxSystemProxy implements SystemProxyController {
   File get backupFile =>
       File('${dataDir.path}${Platform.pathSeparator}$backupFileName');
 
-  /// 是否存在尚未还原的备份。
-  bool get hasBackup => backupFile.existsSync();
+  /// 是否存在尚未还原的备份（同步版，内部与测试用）。
+  bool get hasBackupFile => backupFile.existsSync();
+
+  @override
+  Future<bool> hasBackup() async => hasBackupFile;
 
   /// 识别桌面环境。识别不出时返回 null，调用方据此如实失败。
   LinuxDesktopKind? detectDesktop() {
@@ -254,7 +266,7 @@ class LinuxSystemProxy implements SystemProxyController {
   Future<bool> recoverIfNeeded() async {
     // 严格无备份即无操作：main.dart 每次启动都会调这里，不能在没备份的
     // 机器上碰 gsettings。
-    if (!hasBackup) return false;
+    if (!hasBackupFile) return false;
     return clear();
   }
 

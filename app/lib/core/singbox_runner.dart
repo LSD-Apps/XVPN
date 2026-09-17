@@ -11,6 +11,7 @@ import 'core_monitor.dart';
 import 'dns_client.dart';
 import 'platform_paths.dart';
 import 'port_allocator.dart';
+import 'proxy_watchdog.dart';
 import 'reconnect.dart';
 import 'route_rule_set_host.dart';
 import 'rulesets.dart';
@@ -84,10 +85,20 @@ class SingBoxRunner extends VpnCore {
     this.readyGateTimeout = tunnelReadyTimeout,
     this.portBase = mixedPort,
     SystemProxyController? proxy,
+    this.watchdogFactory,
   }) : proxy = proxy ?? SystemProxy.forPlatform(),
        _recovery = CrashRecovery(policy: reconnectPolicy),
        _mixedPort = portBase,
-       _clashApiPort = portBase + 1;
+       _clashApiPort = portBase + 1 {
+    // 看门狗在**构造函数体**里建：它的 `onRestored` 回调要读写本类的实例字段，
+    // 而字段初始化列表里不能引用实例成员。
+    //
+    // 抽成可注入的工厂，是为了让测试能换掉一个「不跑真实定时器、不做真实 TCP
+    // 探测」的替身。否则每个连过内核的用例都会多出一个 5 秒周期的后台探测，
+    // 它会**代替测试**去 clear() 代理，把用例记录的调用序列搅乱——而那条序列
+    // 正是那些用例要断言的东西。
+    watchdog = (watchdogFactory ?? _defaultWatchdog)(this, this.proxy);
+  }
 
   /// 系统代理的接管与还原。生产按平台选择（Windows 走原生通道、Linux 走
   /// gsettings/KDE 命令，见 [SystemProxy.forPlatform]）；测试可注入替身。
@@ -96,6 +107,52 @@ class SingBoxRunner extends VpnCore {
   /// 关掉应用之后上不了网」。而这条路径依赖进程外的系统状态，此前只能靠读
   /// 代码确认。
   final SystemProxyController proxy;
+
+  /// 系统代理的**完整性看门狗**（见 proxy_watchdog.dart）。
+  ///
+  /// 它独立于内核退出回调和启动兜底：运行期持续确认「接管中的代理确实还指向
+  /// 一个活着的端口」，一旦不是就立刻回正。
+  ///
+  /// 内核运行器只负责在设代理成功后 [ProxyWatchdog.start] 把它放出去，在正常
+  /// 还原后 [ProxyWatchdog.stop] 收回来；判定所需的事实（是否接管、端口是多少）
+  /// 都通过回调向本类现取。
+  ///
+  /// 看门狗的构造工厂（可注入，测试用；生产为 null）。
+  ///
+  /// 公开字段是为了能用 `this.watchdogFactory` 初始化形参，避免一条
+  /// `prefer_initializing_formals` 的 lint 噪音。语义上它仍是「构造期注入项」。
+  final ProxyWatchdog Function(SingBoxRunner runner, SystemProxyController proxy)?
+      watchdogFactory;
+
+  /// 生产用的看门狗：把两条事实接到运行器身上，并在它回正网络后同步运行器的旗标。
+  ///
+  /// 做成 static 是为了能在字段初始化列表里当 tear-off 用——那里没有 `this`。
+  static ProxyWatchdog _defaultWatchdog(
+    SingBoxRunner runner,
+    SystemProxyController proxy,
+  ) =>
+      ProxyWatchdog(
+        proxy: proxy,
+        // 两个回调都指向运行器持有的**唯一**那份事实：代理是不是我们设的、
+        // 当前端口是多少。看门狗自己不留副本，避免两边不一致。
+        isEngaged: () => runner._proxyTakenOver,
+        port: () => runner._mixedPort,
+        onRestored: () {
+          // 看门狗代替我们把网络回正了，运行器必须同步自己的旗标，否则它会以为
+          // 代理由自己管着，下次断开时再去还原一个已经还原过的代理。
+          runner._proxyTakenOver = false;
+          runner._proxyOwnerSeq = -1;
+        },
+      );
+
+  /// 系统代理的**完整性看门狗**（见 proxy_watchdog.dart）。
+  ///
+  /// 它独立于内核退出回调和启动兜底：运行期持续确认「接管中的代理确实还指向
+  /// 一个活着的端口」，一旦不是就立刻回正。
+  ///
+  /// 内核运行器只负责在设代理成功后 [ProxyWatchdog.start] 把它放出去，在正常
+  /// 还原后 [ProxyWatchdog.stop] 收回来。
+  late ProxyWatchdog watchdog;
 
   /// 运行时位置的覆盖项。生产环境为 null，由安装位置推导。
   final CoreRuntime? runtimeOverride;
@@ -475,6 +532,7 @@ class SingBoxRunner extends VpnCore {
             _proxyTakenOver = false;
             _proxyOwnerSeq = -1;
             await proxy.clear();
+            watchdog.stop();
           }
           _deletePidFile();
 
@@ -545,7 +603,12 @@ class SingBoxRunner extends VpnCore {
       // 不生效」的假象——那意味着界面上写着「接管全部程序」，实际只有认系统
       // 代理的程序走隧道，而用户完全看不出区别。
       _proxyTakenOver = await proxy.set(host: '127.0.0.1', port: _mixedPort);
-      if (_proxyTakenOver) _proxyOwnerSeq = seq;
+      if (_proxyTakenOver) {
+        _proxyOwnerSeq = seq;
+        // 看门狗从这一刻起守着这个代理：它每次对账现取 `_mixedPort` 并探测
+        // 端口是否还在监听，因此这里不需要把端口交给它。
+        watchdog.start();
+      }
       // 设代理是异步的，用户也可能正好在这一刻点了取消。不查这一步的后果
       // 比「晚一点取消」严重得多：系统代理会被**重新装上**，界面显示已连接，
       // 而用户以为隧道已经关了。
@@ -634,6 +697,7 @@ class SingBoxRunner extends VpnCore {
       _proxyTakenOver = false;
       _proxyOwnerSeq = -1;
       await proxy.clear();
+      watchdog.stop();
     }
   }
 
@@ -658,6 +722,10 @@ class SingBoxRunner extends VpnCore {
       final restored = await proxy.clear();
       _proxyTakenOver = false;
       _proxyOwnerSeq = -1;
+      // 正常还原完成，看门狗收工。**不停的话**它会继续按周期探测一个已经不该
+      // 存在的端口，并在「未接管 + 无备份」这一格上什么都不做——无害，但白跑。
+      // 真正的理由是：让它只在「代理确实被我们接管着」的时间段内工作，职责清楚。
+      watchdog.stop();
       if (!restored) {
         listener.onError(
           defaultTargetPlatform == TargetPlatform.linux

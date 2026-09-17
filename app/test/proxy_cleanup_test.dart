@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:xvpn/core/proxy_watchdog.dart';
 import 'package:xvpn/core/singbox_runner.dart';
 import 'package:xvpn/core/system_proxy.dart';
 import 'package:xvpn/models.dart';
@@ -71,6 +72,9 @@ class _FakeProxy implements SystemProxyController {
     calls.add('recover');
     return false;
   }
+
+  @override
+  Future<bool> hasBackup() async => false;
 }
 
 void main() {
@@ -104,6 +108,15 @@ void main() {
       recorder,
       probesEnabled: false,
       proxy: fake,
+      // 看门狗换成被动模式：真实周期是 5 秒、且会真的去探测本机端口并代替本
+      // 用例调用 clear()，而这条用例断言的正是「代理调用序列」。看门狗自身的
+      // 行为由 test/proxy_watchdog_test.dart 单独覆盖。
+      watchdogFactory: (runner, proxy) => ProxyWatchdog(
+        proxy: proxy,
+        isEngaged: () => false,
+        port: () => 0,
+        interval: const Duration(days: 1),
+      ),
       // 指向不可达节点 → 就绪门控必然走满超时。把上限压到 1 秒，否则每个
       // 用例都要白等 20 秒，而这条路径本身与门控无关。
       readyGateTimeout: const Duration(seconds: 1),

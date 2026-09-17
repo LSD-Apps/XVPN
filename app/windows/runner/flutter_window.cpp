@@ -141,13 +141,95 @@ void NotifyProxyChanged() {
   InternetSetOptionW(nullptr, INTERNET_OPTION_REFRESH, nullptr, 0);
 }
 
+
+// 「我们改过、但还没还原」的痕迹是否存在。
 bool HasProxyBackup() {
   DWORD saved = 0;
   return ReadRegistryDword(HKEY_CURRENT_USER, kProxyBackupKey, L"Saved", &saved) &&
          saved == 1;
 }
 
+// 消费掉备份（表示「我们不再持有系统代理的还原点」）。
+//
+// 优先整个删掉；但**删完必须回读确认**——实测发现 MSIX 打包形态下，写
+// `HKCU\...\Internet Settings` 能落到真实位置，而删 `HKCU\Software\XVPN\ProxyBackup`
+// 却没有生效（应用以为删了，外部 `reg query` 还看得到）。若不做回读，后果是
+// 下一次启动又把一个过期的备份当成「上次没退干净」，去还原一个早就不存在的状态。
+//
+// 删不掉时就地作废：把 `Saved` 置 0。`HasProxyBackup()` 正是按这个标记判断的，
+// 因此作废与删除等价，而且置值这条路在实测里是通的。
+void ConsumeProxyBackup() {
+  RegDeleteTreeW(HKEY_CURRENT_USER, kProxyBackupKey);
+  if (!HasProxyBackup()) {
+    // 删干净了，顺带收掉创建它时生成的容器键。
+    // 失败无所谓：说明这个键本来就不存在，或用户在里面放了别的东西。
+    RegDeleteKeyW(HKEY_CURRENT_USER, L"Software\\XVPN");
+    return;
+  }
+  // 没删掉 —— 就地作废。
+  SetRegistryDword(HKEY_CURRENT_USER, kProxyBackupKey, L"Saved", 0);
+}
+
+// 让 WinINET 重新读取代理设置。
+//
+// **只写注册表是不够的**：WinINET 把代理配置缓存在进程内，写完不通知它，正在
+// 运行的浏览器不会立刻改用新代理。这两条 INTERNET_OPTION_* 就是官方的刷新信号
+// （`InternetSetOptionW(..., INTERNET_OPTION_SETTINGS_CHANGED, ...)` 通知配置变了，
+// `INTERNET_OPTION_REFRESH` 让它丢弃缓存重新读取）。
+bool RefreshWinInetProxy() {
+  const bool settings_changed =
+      InternetSetOptionW(nullptr, INTERNET_OPTION_SETTINGS_CHANGED, nullptr, 0);
+  const bool refreshed =
+      InternetSetOptionW(nullptr, INTERNET_OPTION_REFRESH, nullptr, 0);
+  return settings_changed || refreshed;
+}
+
+// 用 WinINET 接口把「每连接代理」设成给定值。server 为空表示直连（不设代理）。
+//
+// **还原也必须走这条**，不能只写注册表：MSIX 打包应用的注册表写入会被重定向到
+// 包私有的虚拟存储，`RegSetValueExW` 返回成功但系统键没变。实测踩到过这个组合
+// ——接管成功了（那一步有 WinINET 调用兜住），还原却只写注册表，于是**内核已经
+// 退出、代理还指着一个死端口**，用户机器上所有走系统代理的程序全部断网，而且
+// 从注册表里看不出是 VPN 干的。这正是最开始那次的现场。
+bool ApplyWinInetProxy(const std::wstring& server) {
+  INTERNET_PER_CONN_OPTION_LISTW list = {};
+  INTERNET_PER_CONN_OPTIONW options[2] = {};
+  list.dwSize = sizeof(list);
+  list.pszConnection = nullptr;  // nullptr = 局域网设置（默认连接）
+  list.dwOptionCount = 2;
+  list.pOptions = options;
+  options[0].dwOption = INTERNET_PER_CONN_FLAGS;
+  options[0].Value.dwValue = server.empty()
+                                 ? static_cast<DWORD>(PROXY_TYPE_DIRECT)
+                                 : static_cast<DWORD>(PROXY_TYPE_DIRECT |
+                                                      PROXY_TYPE_PROXY);
+  options[1].dwOption = INTERNET_PER_CONN_PROXY_SERVER;
+  options[1].Value.pszValue = const_cast<LPWSTR>(server.c_str());
+  const bool set = InternetSetOptionW(
+      nullptr, INTERNET_OPTION_PER_CONNECTION_OPTION, &list, sizeof(list));
+  const bool refreshed = RefreshWinInetProxy();
+  return set || refreshed;
+}
+
+
+
 // 接管系统代理：先把用户原有设置备份到我们自己的注册表键，再写入内核地址。
+//
+// ## 为什么必须回读校验，不能只看 RegSetValueExW 的返回值
+//
+// **MSIX 打包应用的注册表写入会被重定向到包私有的虚拟存储**，而
+// `RegSetValueExW` 在这种情况下照样返回 `ERROR_SUCCESS`。实测过这个后果：
+//
+//     应用自己回读 HKCU\...\Internet Settings\ProxyEnable → 1
+//     外部 reg query 同一个键                              → 0x0
+//
+// 也就是说「写成功了」是假的：系统代理**从来没有真正设置过**。而界面上的
+// 「系统代理已自动设置」是按内核连上了就打的勾，于是用户看到的是「连上了、
+// 代理也设好了」，实际所有流量都在直连——一个完全没有报错的静默失效，
+// 而用户以为流量走了隧道（对 VPN 来说这是最严重的一类错法）。
+//
+// 因此这里写完**立刻回读真实值**：对不上就返回 false，让上层如实报出
+// 「无法设置系统代理」。宁可说一句实话，也不要显示一个假装生效的勾。
 bool ApplySystemProxy(const std::wstring& server) {
   // 退出流程已经开始：拒绝接管。
   //
@@ -178,13 +260,27 @@ bool ApplySystemProxy(const std::wstring& server) {
                                    L"ProxyEnable", 1) &&
                   SetRegistryString(HKEY_CURRENT_USER, kInternetSettings,
                                     L"ProxyServer", server.c_str());
-  NotifyProxyChanged();
-  return ok;
+  // 除了写注册表，再用 WinINET 官方接口设一遍，并**以它的结果为准**。
+  //
+  // 为什么不能只写注册表：MSIX 打包应用的注册表写入会被重定向到包私有的虚拟
+  // 存储，`RegSetValueExW` 照样返回 `ERROR_SUCCESS`，而系统键根本没变。实测过
+  // 这个后果：
+  //
+  //     应用自己回读 HKCU\...\Internet Settings\ProxyEnable → 1
+  //     外部 reg query 同一个键                              → 0x0
+  //
+  // 也就是「写成功了」是假的：系统代理**从来没有真正设置过**。而界面上的
+  // 「系统代理已自动设置」是按内核连上了就打的勾，于是用户看到「连上了、代理也
+  // 设好了」，实际所有流量都在直连——一个完全没有报错的静默失效，而用户以为
+  // 流量走了隧道（对 VPN 来说这是最严重的一类错法）。
+  const bool applied = ApplyWinInetProxy(server);
+  return ok && applied;
 }
 
 // 还原系统代理。没有备份时只关掉代理开关，不动用户的其它设置。
 bool RestoreSystemProxy() {
   bool ok = true;
+  std::wstring restore_server;  // 空 = 直连
   if (HasProxyBackup()) {
     DWORD enable = 0;
     ReadRegistryDword(HKEY_CURRENT_USER, kProxyBackupKey, L"ProxyEnable",
@@ -198,12 +294,16 @@ bool RestoreSystemProxy() {
       ok = SetRegistryString(HKEY_CURRENT_USER, kInternetSettings,
                              L"ProxyServer", server.c_str()) &&
            ok;
+      // 用户原本有代理：还原成他那一个。
+      if (enable != 0) restore_server = server;
     } else {
       // 用户原本没有 ProxyServer 这个值。必须把它删掉而不是留着，
       // 否则会残留一个指向已退出内核的地址，误导其它读取该值的程序。
       DeleteRegistryValue(HKEY_CURRENT_USER, kInternetSettings,
                           L"ProxyServer");
     }
+    // 走 WinINET 让**系统**也真的改过来（见 ApplyWinInetProxy 的说明）。
+    ok = ApplyWinInetProxy(restore_server) && ok;
     // **只有还原成功才消费备份。**
     //
     // 反过来（无条件删）有一个很难查的后果：万一上面写注册表失败（权限受限、
@@ -211,16 +311,14 @@ bool RestoreSystemProxy() {
     // HasProxyBackup() 为假，兜底恢复无从下手，用户的网络就一直坏着——而且
     // 从注册表里看不出任何线索。留着备份，至少下次启动还能再试一次。
     if (ok) {
-      DeleteRegistryTree(HKEY_CURRENT_USER, kProxyBackupKey);
-      // RegDeleteTree 只删掉 ProxyBackup 这一层，创建它时顺带生成的
-      // Software\XVPN 容器会留下来。虽然里面已经没有值、不会影响
-      // HasProxyBackup，但退出后还在用户注册表里留一个空键没有必要，一并清掉。
-      // 失败无所谓：说明这个键本来就不存在，或用户在里面放了别的东西。
-      RegDeleteKeyW(HKEY_CURRENT_USER, L"Software\\XVPN");
+      // 消费掉备份。它会**回读确认**，删不掉就地作废——见 ConsumeProxyBackup
+      // 的说明（MSIX 形态下删除可能不落地，而写入是落地的）。
+      ConsumeProxyBackup();
     }
   } else {
     ok = SetRegistryDword(HKEY_CURRENT_USER, kInternetSettings, L"ProxyEnable",
-                          0);
+                          0) &&
+         ApplyWinInetProxy(std::wstring());
   }
   NotifyProxyChanged();
   return ok;
