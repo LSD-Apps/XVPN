@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:xvpn/core/sha256.dart';
 import 'package:xvpn/core/updater.dart';
+import 'package:xvpn/core/zip.dart';
 
 /// 自动更新引擎的纯逻辑测试。
 ///
@@ -99,8 +100,8 @@ Map<String, Object?> _releaseJson({
       assets ??
       <Map<String, Object?>>[
         <String, Object?>{
-          'name': 'XVPN-1.1.0-windows-x64.zip',
-          'browser_download_url': 'https://example.net/win.zip',
+          'name': 'XVPN-1.1.0-windows-x64.msix',
+          'browser_download_url': 'https://example.net/win.msix',
           'size': 1024,
         },
         <String, Object?>{
@@ -109,8 +110,8 @@ Map<String, Object?> _releaseJson({
           'size': 2048,
         },
         <String, Object?>{
-          'name': 'XVPN-1.1.0-android-arm64.apk',
-          'browser_download_url': 'https://example.net/app.apk',
+          'name': 'XVPN-1.1.0-android-arm64.zip',
+          'browser_download_url': 'https://example.net/app.zip',
           'size': 4096,
         },
         <String, Object?>{
@@ -245,9 +246,11 @@ void main() {
 
   group('附件选择', () {
     test('精确匹配契约里的附件名', () {
+      // 三端一律只发压缩包：Windows 是 MSIX、Linux 是 bundle 的 zip、安卓是
+      // **装着 APK 的 zip**，发布页上不再有裸文件。
       expect(
         expectedAssetName(UpdatePlatform.windows, '1.1.0'),
-        'XVPN-1.1.0-windows-x64.zip',
+        'XVPN-1.1.0-windows-x64.msix',
       );
       expect(
         expectedAssetName(UpdatePlatform.linux, '1.1.0'),
@@ -255,55 +258,102 @@ void main() {
       );
       expect(
         expectedAssetName(UpdatePlatform.android, '1.1.0'),
-        'XVPN-1.1.0-android-arm64.apk',
-      );
-    });
-
-    test('安卓优先裸 APK，且不会退回 zip', () {
-      final release = ReleaseInfo.tryParse(
-        _releaseJson(
-          assets: <Map<String, Object?>>[
-            <String, Object?>{
-              'name': 'XVPN-1.1.0-android-arm64.apk',
-              'browser_download_url': 'https://example.net/app.apk',
-            },
-            <String, Object?>{
-              'name': 'XVPN-1.1.0-android-arm64.zip',
-              'browser_download_url': 'https://example.net/app.zip',
-            },
-          ],
-        ),
-      )!;
-      final apk = selectAsset(
-        release.assets,
-        UpdatePlatform.android,
-        release.version,
-      );
-      expect(apk!.name, 'XVPN-1.1.0-android-arm64.apk');
-
-      // 只有 zip 时不能退回：系统安装器只接受 APK 文件。
-      final onlyZip = <ReleaseAsset>[
-        ReleaseAsset(
-          name: 'XVPN-1.1.0-android-arm64.zip',
-          downloadUrl: Uri.parse('https://example.net/app.zip'),
-        ),
-      ];
-      expect(
-        selectAsset(onlyZip, UpdatePlatform.android, '1.1.0'),
-        isNull,
+        'XVPN-1.1.0-android-arm64.zip',
       );
     });
 
     test('找不到精确名字时按后缀近似匹配', () {
       final assets = <ReleaseAsset>[
         ReleaseAsset(
-          name: 'XVPN-1.2.0-windows-x64.zip',
-          downloadUrl: Uri.parse('https://example.net/custom.zip'),
+          name: 'XVPN-1.2.0-windows-x64.msix',
+          downloadUrl: Uri.parse('https://example.net/win.msix'),
+        ),
+        ReleaseAsset(
+          name: 'XVPN-1.2.0-android-arm64.zip',
+          downloadUrl: Uri.parse('https://example.net/app.zip'),
+        ),
+        ReleaseAsset(
+          name: 'XVPN-1.2.0-linux-x64.zip',
+          downloadUrl: Uri.parse('https://example.net/linux.zip'),
         ),
       ];
       expect(
         selectAsset(assets, UpdatePlatform.windows, '1.1.0')!.name,
-        'XVPN-1.2.0-windows-x64.zip',
+        'XVPN-1.2.0-windows-x64.msix',
+      );
+      // 安卓的 zip 与 Linux 的 zip 结尾相同，只按 `.zip` 松散匹配会串台。
+      expect(
+        selectAsset(assets, UpdatePlatform.android, '1.1.0')!.name,
+        'XVPN-1.2.0-android-arm64.zip',
+      );
+      expect(
+        selectAsset(assets, UpdatePlatform.linux, '1.1.0')!.name,
+        'XVPN-1.2.0-linux-x64.zip',
+      );
+    });
+
+    test('近似匹配与精确匹配一样不区分大小写', () {
+      final assets = <ReleaseAsset>[
+        ReleaseAsset(
+          name: 'XVPN-1.2.0-Windows-X64.MSIX',
+          downloadUrl: Uri.parse('https://example.net/win.msix'),
+        ),
+      ];
+      expect(
+        selectAsset(assets, UpdatePlatform.windows, '1.1.0')!.name,
+        'XVPN-1.2.0-Windows-X64.MSIX',
+      );
+    });
+
+    test('绝不把签名证书当成 Windows 安装包', () {
+      // 自签名公钥 `.cer` 与 `.msix` 一起发布，两者只差扩展名。把证书下下来当
+      // 安装包用，用户拿到的是一个装不上的文件。
+      final onlyCertificate = <ReleaseAsset>[
+        ReleaseAsset(
+          name: 'XVPN-1.1.0-windows-x64.cer',
+          downloadUrl: Uri.parse('https://example.net/sign.cer'),
+        ),
+      ];
+      expect(
+        selectAsset(onlyCertificate, UpdatePlatform.windows, '1.1.0'),
+        isNull,
+      );
+
+      final both = <ReleaseAsset>[
+        ...onlyCertificate,
+        ReleaseAsset(
+          name: 'XVPN-1.1.0-windows-x64.msix',
+          downloadUrl: Uri.parse('https://example.net/win.msix'),
+        ),
+      ];
+      expect(
+        selectAsset(both, UpdatePlatform.windows, '1.1.0')!.name,
+        'XVPN-1.1.0-windows-x64.msix',
+      );
+    });
+
+    test('安卓只认装着 APK 的 zip，裸 APK 不再算数', () {
+      // 旧契约发的是裸 APK，新契约统一成压缩包。发布页上出现裸 `.apk` 只可能是
+      // 上游没跟上契约——那时如实报「没有本平台的包」，好过下载一个来历不明的
+      // 文件去交给系统安装器。
+      final onlyApk = <ReleaseAsset>[
+        ReleaseAsset(
+          name: 'XVPN-1.1.0-android-arm64.apk',
+          downloadUrl: Uri.parse('https://example.net/app.apk'),
+        ),
+      ];
+      expect(selectAsset(onlyApk, UpdatePlatform.android, '1.1.0'), isNull);
+
+      final withZip = <ReleaseAsset>[
+        ...onlyApk,
+        ReleaseAsset(
+          name: 'XVPN-1.1.0-android-arm64.zip',
+          downloadUrl: Uri.parse('https://example.net/app.zip'),
+        ),
+      ];
+      expect(
+        selectAsset(withZip, UpdatePlatform.android, '1.1.0')!.name,
+        'XVPN-1.1.0-android-arm64.zip',
       );
     });
 
@@ -316,6 +366,7 @@ void main() {
       ];
       expect(selectAsset(assets, UpdatePlatform.windows, '1.1.0'), isNull);
       expect(selectAsset(assets, UpdatePlatform.linux, '1.1.0'), isNull);
+      expect(selectAsset(assets, UpdatePlatform.android, '1.1.0'), isNull);
     });
 
     test('SHA256SUMS.txt 大小写不敏感地匹配', () {
@@ -337,12 +388,12 @@ void main() {
 
     test('接受 sha256sum 的两种分隔与 CRLF 行尾', () {
       final sums = parseChecksums(
-        '$hashA  XVPN-1.1.0-windows-x64.zip\r\n'
+        '$hashA  XVPN-1.1.0-windows-x64.msix\r\n'
         '$hashB *XVPN-1.1.0-linux-x64.zip\n'
         '# 注释行\n'
         '\n',
       );
-      expect(sums['XVPN-1.1.0-windows-x64.zip'], hashA);
+      expect(sums['XVPN-1.1.0-windows-x64.msix'], hashA);
       expect(sums['XVPN-1.1.0-linux-x64.zip'], hashB);
       expect(sums.length, 2);
     });
@@ -434,7 +485,7 @@ void main() {
             <String, Object?>{'name': 'no-url.zip'},
             <String, Object?>{'browser_download_url': 'https://example.net/x'},
             <String, Object?>{
-              'name': 'XVPN-1.1.0-windows-x64.zip',
+              'name': 'XVPN-1.1.0-windows-x64.msix',
               'browser_download_url': 'https://example.net/win.zip',
             },
           ],
@@ -495,8 +546,8 @@ void main() {
       expect(result, isA<UpdateAvailable>());
       final info = (result as UpdateAvailable).info;
       expect(info.version, '1.1.0');
-      expect(info.assetName, 'XVPN-1.1.0-windows-x64.zip');
-      expect(info.assetUri.toString(), 'https://example.net/win.zip');
+      expect(info.assetName, 'XVPN-1.1.0-windows-x64.msix');
+      expect(info.assetUri.toString(), 'https://example.net/win.msix');
       expect(info.checksumsUri.toString(), _checksumsUrl);
       expect(info.platform, UpdatePlatform.windows);
     });
@@ -515,7 +566,7 @@ void main() {
       ).checkForUpdate();
       expect(
         (android as UpdateAvailable).info.assetName,
-        contains('android-arm64.apk'),
+        contains('android-arm64.zip'),
       );
     });
 
@@ -540,7 +591,7 @@ void main() {
         _releaseJson(
           assets: <Map<String, Object?>>[
             <String, Object?>{
-              'name': 'XVPN-1.1.0-windows-x64.zip',
+              'name': 'XVPN-1.1.0-windows-x64.msix',
               'browser_download_url': 'https://example.net/win.zip',
             },
             <String, Object?>{
@@ -563,7 +614,7 @@ void main() {
         _releaseJson(
           assets: <Map<String, Object?>>[
             <String, Object?>{
-              'name': 'XVPN-1.1.0-windows-x64.zip',
+              'name': 'XVPN-1.1.0-windows-x64.msix',
               'browser_download_url': 'https://example.net/win.zip',
             },
           ],
@@ -662,7 +713,7 @@ void main() {
 
     test('校验通过时落盘并回报最终摘要', () async {
       final bytes = <int>[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
-      final name = 'XVPN-1.1.0-windows-x64.zip';
+      final name = 'XVPN-1.1.0-windows-x64.msix';
       final sums = '${sha256Hex(bytes)}  $name\n';
       final http = _FakeHttpClient((Uri url) {
         if (url.toString() == _checksumsUrl) return _text(200, sums);
@@ -689,7 +740,7 @@ void main() {
 
     test('摘要不匹配时拒绝安装并删掉半成品', () async {
       final bytes = <int>[9, 9, 9];
-      final name = 'XVPN-1.1.0-windows-x64.zip';
+      final name = 'XVPN-1.1.0-windows-x64.msix';
       final sums = '${_zeros64()}  $name\n';
       final http = _FakeHttpClient((Uri url) {
         if (url.toString() == _checksumsUrl) return _text(200, sums);
@@ -707,7 +758,7 @@ void main() {
 
     test('校验文件里没有该附件时拒绝', () async {
       final bytes = <int>[1, 2, 3];
-      final name = 'XVPN-1.1.0-windows-x64.zip';
+      final name = 'XVPN-1.1.0-windows-x64.msix';
       final sums = '${sha256Hex(bytes)}  some-other.zip\n';
       final http = _FakeHttpClient((Uri url) {
         if (url.toString() == _checksumsUrl) return _text(200, sums);
@@ -725,7 +776,7 @@ void main() {
     test('校验文件本身无法解析时连大文件都不下', () async {
       final http = _FakeHttpClient((_) => _text(200, '<html>oops</html>'));
       final result = await updater(http).download(
-        _infoFor('XVPN-1.1.0-windows-x64.zip', 'https://example.net/win.zip'),
+        _infoFor('XVPN-1.1.0-windows-x64.msix', 'https://example.net/win.zip'),
       );
       expect(result, isA<UpdateDownloadFailure>());
       expect((result as UpdateDownloadFailure).message, contains('无法解析'));
@@ -734,7 +785,7 @@ void main() {
     });
 
     test('下载失败时不留半成品', () async {
-      final name = 'XVPN-1.1.0-windows-x64.zip';
+      final name = 'XVPN-1.1.0-windows-x64.msix';
       final sums = '${sha256Hex(<int>[1])}  $name\n';
       final http = _FakeHttpClient((Uri url) {
         if (url.toString() == _checksumsUrl) return _text(200, sums);
@@ -750,7 +801,7 @@ void main() {
 
     test('取消时停止下载并删掉半成品', () async {
       final bytes = <int>[1, 2, 3, 4];
-      final name = 'XVPN-1.1.0-windows-x64.zip';
+      final name = 'XVPN-1.1.0-windows-x64.msix';
       final sums = '${sha256Hex(bytes)}  $name\n';
       final http = _FakeHttpClient((Uri url) {
         if (url.toString() == _checksumsUrl) return _text(200, sums);
@@ -774,7 +825,7 @@ void main() {
       final cancellation = UpdateCancellation()..cancel();
       final http = _FakeHttpClient((_) => _text(200, ''));
       final result = await updater(http).download(
-        _infoFor('XVPN-1.1.0-windows-x64.zip', 'https://example.net/win.zip'),
+        _infoFor('XVPN-1.1.0-windows-x64.msix', 'https://example.net/win.zip'),
         cancellation: cancellation,
       );
       expect(result, isA<UpdateDownloadCancelled>());
@@ -785,128 +836,146 @@ void main() {
   // -------------------------------------------------------------- 脚本生成
 
   group('安装脚本生成', () {
-    test('Windows：等待退出 → 解压 → 覆盖 → 重启，且路径被单引号包裹', () {
-      const archive =
-          r"C:\Program Files\XVPN\Bob's updates\XVPN-1.1.0-windows-x64.zip";
+    test('Windows：等待退出 → 交给系统部署服务装 MSIX → 重启，路径被单引号包裹', () {
+      const msix =
+          r"C:\Program Files\XVPN\Bob's updates\XVPN-1.1.0-windows-x64.msix";
       const staging = r"C:\Users\me\AppData\Local\Temp\XVPN's update";
-      const install = r'C:\Program Files\XVPN';
-      const launch = r'C:\Program Files\XVPN\xvpn.exe';
+      const launch = r"C:\Program Files\XVPN\xvpn.exe";
 
-      final script = buildWindowsRelaunchScript(
+      final script = buildWindowsMsixRelaunchScript(
         pid: 4321,
-        archivePath: archive,
+        msixPath: msix,
         stagingDir: staging,
-        installDir: install,
-        launchPath: launch,
+        fallbackLaunchPath: launch,
       );
 
       // 带空格的路径必须整体被引号包住；路径里的单引号按 PowerShell 规则翻倍。
       expect(
         script,
         contains(
-          r"'C:\Program Files\XVPN\Bob''s updates\XVPN-1.1.0-windows-x64.zip'",
+          r"'C:\Program Files\XVPN\Bob''s updates\XVPN-1.1.0-windows-x64.msix'",
         ),
       );
-      expect(script, contains(r"'C:\Program Files\XVPN'"));
-      expect(script, contains('Wait-Process -Id 4321'));
-      expect(script, contains('Expand-Archive -LiteralPath'));
-      expect(script, contains('Copy-Item -Path'));
-      expect(script, contains('Start-Process -FilePath'));
 
+      // 顺序是硬要求：MSIX 的部署服务不允许在包正在运行时替换它（会以
+      // 0x80073D02 一类错误失败），因此必须先等当前进程退出再安装。
       final waitIndex = script.indexOf('Wait-Process -Id 4321');
-      final extractIndex = script.indexOf('Expand-Archive -LiteralPath');
-      final copyIndex = script.indexOf('Copy-Item -Path');
+      final installIndex = script.indexOf('Add-AppxPackage -Path');
       final startIndex = script.indexOf('Start-Process -FilePath');
-      expect(waitIndex, lessThan(extractIndex));
-      expect(extractIndex, lessThan(copyIndex));
-      expect(copyIndex, lessThan(startIndex));
+      expect(waitIndex, greaterThanOrEqualTo(0));
+      expect(installIndex, greaterThanOrEqualTo(0));
+      expect(startIndex, greaterThanOrEqualTo(0));
+      expect(waitIndex, lessThan(installIndex));
+      expect(installIndex, lessThan(startIndex));
+
+      // 升级不再碰安装目录：不成立的前提是「把文件复制进去」，而现在由系统部署
+      // 服务写 %ProgramFiles%\WindowsApps\，因此不存在「替换到一半」的失败形态。
+      expect(script, isNot(contains('Expand-Archive')));
+      expect(script, isNot(contains('Copy-Item')));
     });
 
-    test('Windows：不提权时不出现任何 UAC 痕迹', () {
-      final script = buildWindowsRelaunchScript(
+    test('Windows：重启走执行别名，且别名在脚本里算', () {
+      final script = buildWindowsMsixRelaunchScript(
         pid: 7,
-        archivePath: r'C:\a b\x.zip',
+        msixPath: r'C:\a b\x.msix',
         stagingDir: r'C:\a b\stage',
-        installDir: r'C:\Program Files\XVPN',
-        launchPath: r'C:\Program Files\XVPN\xvpn.exe',
+        fallbackLaunchPath: r'C:\Program Files\XVPN\xvpn.exe',
       );
 
-      expect(script, isNot(contains('RunAs')));
+      // 包目录名里带着版本号（...\WindowsApps\XVPN_1.4.0.0_x64__<哈希>\），升级
+      // 之后旧路径就没了；清单声明的执行别名升级前后都指向当前版本。
       expect(
         script,
-        contains('Copy-Item -Path'),
-        reason: '不需要提权时，复制仍由助手自己完成',
+        contains(
+          r"Join-Path $env:LOCALAPPDATA 'Microsoft\WindowsApps\xvpn.exe'",
+        ),
+      );
+      expect(script, contains(r'Start-Process -FilePath $alias'));
+      // 别名必须在**脚本里**算：MSIX 打包应用的 %LOCALAPPDATA% 被重定向到包私有
+      // 目录，从应用里读出来是假路径；助手是未打包的普通进程，读到的才是真值。
+      expect(script, contains(r'$env:LOCALAPPDATA'));
+      expect(
+        script,
+        isNot(contains(r"Start-Process -FilePath 'C:\a b\x.msix'")),
+        reason: '重启不能拿安装包路径顶替——它是 MSIX 包，不是可执行文件',
       );
     });
 
-    test('Windows：提权时只把复制交给管理员，重启仍是普通权限', () {
-      const staging = r'C:\Users\Zhang San\AppData\Local\Temp\xvpn-update';
-      const install = r'C:\Program Files\XVPN';
+    test('Windows：装不上也要把旧版本拉起来，并把原因写进日志', () {
       const launch = r'C:\Program Files\XVPN\xvpn.exe';
-      const copyScript =
-          r'C:\Users\Zhang San\AppData\Local\Temp\xvpn-update\xvpn-elevate-copy.ps1';
-
-      final script = buildWindowsRelaunchScript(
+      final script = buildWindowsMsixRelaunchScript(
         pid: 99,
-        archivePath: r'C:\Users\Zhang San\AppData\Local\Temp\xvpn-update\pkg.zip',
-        stagingDir: staging,
-        installDir: install,
-        launchPath: launch,
-        elevatedCopyScriptPath: copyScript,
+        msixPath: r'C:\stage\pkg.msix',
+        stagingDir: r'C:\stage',
+        fallbackLaunchPath: launch,
       );
 
-      expect(script, contains('-Verb RunAs'));
-      // -Wait 才能等到复制结束并拿到退出码；-PassThru 才能读到它。
-      expect(script, contains('-Wait -PassThru'));
-      // 提权复制脚本的路径带空格，必须被双引号保护，否则会被拆成两个参数。
-      expect(script, contains('"$copyScript"'));
-      expect(
-        script,
-        isNot(contains('Copy-Item -Path')),
-        reason: '复制已经交给管理员进程，助手自己不做',
+      final catchBlock = script.substring(
+        script.indexOf('} catch {'),
+        script.indexOf('} finally {'),
       );
-
-      // 最关键的一条：**重启那一步不能带 RunAs**。带了的话用户拿到的 XVPN 是
-      // 管理员身份；若 UAC 是由另一个管理员账户确认的，读到的就是那个账户的
-      // 配置目录，看起来像「所有配置都不见了」。
-      final restartBlock = script.substring(
-        script.indexOf("Write-Log '重新启动'"),
-      );
-      expect(restartBlock, isNot(contains('RunAs')));
-      expect(restartBlock, contains("Start-Process -FilePath '$launch'"));
-      expect(restartBlock, contains("'$install'"));
+      // 失败不能让用户手里没有程序可用：用回退路径把旧版本拉起来。
+      expect(catchBlock, contains("Start-Process -FilePath '$launch'"));
+      // 最常见的失败原因是签名没被信任与系统策略禁止侧载——不写出来，用户只能
+      // 对着一个一闪而过的窗口猜。
+      expect(catchBlock, contains('签名'));
+      expect(catchBlock, contains('侧载'));
+      expect(catchBlock, isNot(contains('RunAs')));
     });
 
-    test('Windows：提权复制脚本只复制、不重启', () {
-      final script = buildWindowsElevatedCopyScript(
-        stagingDir: r'C:\a b\stage',
-        installDir: r'C:\Program Files\XVPN',
+    test('Windows：成功才删安装包与助手脚本，失败必须留着它们', () {
+      const msix = r'C:\stage\pkg.msix';
+      final script = buildWindowsMsixRelaunchScript(
+        pid: 5,
+        msixPath: msix,
+        stagingDir: r'C:\stage',
+        fallbackLaunchPath: r'C:\Program Files\XVPN\xvpn.exe',
       );
 
-      expect(script, contains('Copy-Item -Path'));
-      expect(script, contains(r"'C:\Program Files\XVPN'"));
-      // 失败必须以非零退出码收场：助手据此判定「没成功」，不装作更新好了。
-      expect(script, contains('exit 0'));
-      expect(script, contains('exit 1'));
+      // 只有走到「重新启动」之后才把 ok 置真；清理逻辑据此分流。
+      final relaunchIndex = script.indexOf(r'Start-Process -FilePath $alias');
+      final okIndex = script.indexOf(r'$ok = $true');
+      expect(relaunchIndex, lessThan(okIndex), reason: '成功标志必须在重启之后才置位');
+
+      final finallyBlock = script.substring(script.indexOf('} finally {'));
+      expect(finallyBlock, contains(r'if ($ok) {'));
+      // 失败分支要保留安装包与日志：包已下载并校验过，用户还能重试或按发布页
+      // 说明自行安装；日志是事后唯一能查到原因的入口。
+      final failureBranch = finallyBlock.substring(
+        finallyBlock.indexOf('} else {'),
+      );
+      expect(failureBranch, isNot(contains('Remove-Item')));
+      expect(failureBranch, contains('已保留安装包：'));
+      expect(failureBranch, contains('日志：'));
+
+      final successBranch = finallyBlock.substring(
+        0,
+        finallyBlock.indexOf('} else {'),
+      );
       expect(
-        script,
-        isNot(contains('Start-Process')),
-        reason: '它必须只做复制：重启由非提权的助手负责，否则 XVPN 会以管理员身份运行',
+        successBranch,
+        contains(r"Remove-Item -LiteralPath 'C:\stage\pkg.msix'"),
+      );
+      // 脚本自己也一并删掉：它已经没用了，留在暂存目录里只会让人以为还有一次
+      // 没跑完的更新。
+      expect(
+        successBranch,
+        contains(r'Remove-Item -LiteralPath $PSCommandPath'),
       );
     });
 
-    test('Windows：解压结果里没有 xvpn.exe 时不动原安装', () {      final script = buildWindowsRelaunchScript(
+    test('Windows：脚本里不再有任何提权痕迹', () {
+      final script = buildWindowsMsixRelaunchScript(
         pid: 1,
-        archivePath: r'C:\a b\x.zip',
+        msixPath: r'C:\a b\x.msix',
         stagingDir: r'C:\a b\stage',
-        installDir: r'C:\a b\install',
-        launchPath: r'C:\a b\install\xvpn.exe',
+        fallbackLaunchPath: r'C:\a b\install\xvpn.exe',
       );
-      // 覆盖动作必须在「确认存在 xvpn.exe」之后。
-      final guardIndex = script.indexOf("Join-Path");
-      final copyIndex = script.indexOf('Copy-Item -Path');
-      expect(guardIndex, lessThan(copyIndex));
-      expect(script, contains("throw '解压结果里没有 xvpn.exe，已取消替换'"));
+
+      // 同一发布者的包做用户级升级是常规操作，不需要管理员：弹一次 UAC 既没有
+      // 必要，还会让用户以为更新要动系统。
+      expect(script, isNot(contains('RunAs')));
+      expect(script, isNot(contains('Verb')));
     });
 
     test('Linux：等待退出 → unzip → 覆盖 → 重启，路径被正确转义', () {
@@ -964,34 +1033,6 @@ void main() {
       expect(successTail, contains('rm -f "\$ARCHIVE"'));
     });
 
-    test('Windows：成功才删安装包，失败必须留着它', () {
-      const archive = r'C:\stage\pkg.zip';
-      const staging = r'C:\stage';
-      final script = buildWindowsRelaunchScript(
-        pid: 5,
-        archivePath: archive,
-        stagingDir: staging,
-        installDir: r'C:\Program Files\XVPN',
-        launchPath: r'C:\Program Files\XVPN\xvpn.exe',
-      );
-
-      // 只有走到「重新启动」之后才把 ok 置真；清理逻辑据此分流。
-      final relaunchIndex = script.indexOf("Write-Log '重新启动'");
-      final okIndex = script.indexOf(r'$ok = $true');
-      expect(relaunchIndex, lessThan(okIndex), reason: '成功标志必须在重启之后才置位');
-
-      final finallyBlock = script.substring(script.indexOf('} finally {'));
-      expect(
-        finallyBlock,
-        contains(r'if ($ok) {'),
-        reason: '清理必须按成功/失败分流',
-      );
-      // 失败分支要保留安装包并记下它，让用户还能重试或自行解压覆盖。
-      expect(finallyBlock, contains('已保留安装包：'));
-      // 提权路径上用户点「否」时，日志是事后唯一能查到原因的入口。
-      expect(finallyBlock, contains('日志：'));
-    });
-
     test('Linux：没有 unzip 时给出可操作提示而不是静默失败', () {
       final script = buildLinuxRelaunchScript(
         pid: 1,
@@ -1044,7 +1085,7 @@ void main() {
         ..createSync(recursive: true);
       final staging = Directory('${root.path}${separator}staging')
         ..createSync(recursive: true);
-      final archive = File('${root.path}${separator}XVPN-1.1.0-windows-x64.zip')
+      final archive = File('${root.path}${separator}XVPN-1.1.0-windows-x64.msix')
         ..writeAsBytesSync(<int>[1, 2, 3]);
       final starter = _RecordingStarter();
 
@@ -1058,7 +1099,7 @@ void main() {
 
       final result = await installer.install(
         info: _infoFor(
-          'XVPN-1.1.0-windows-x64.zip',
+          'XVPN-1.1.0-windows-x64.msix',
           'https://example.net/win.zip',
         ),
         archive: archive,
@@ -1080,6 +1121,10 @@ void main() {
         <int>[0xEF, 0xBB, 0xBF],
       );
       expect(script.readAsStringSync(), contains('Wait-Process -Id 4242'));
+      // 助手这一版只做一件事：把 MSIX 交给系统部署服务。安装目录在这里已经不
+      // 参与升级，因此脚本里不该再有解压/覆盖的痕迹。
+      expect(script.readAsStringSync(), contains('Add-AppxPackage -Path'));
+      expect(script.readAsStringSync(), isNot(contains('Copy-Item')));
     });
 
     test('Linux：写出 sh 脚本并交给 /bin/sh', () async {
@@ -1134,57 +1179,49 @@ void main() {
       // 参数要再套一层双引号）。
       final staging = "${dir.path}${separator}Bob's update scripts";
       final install = '$staging${separator}Program Files';
-      final copy = File('$staging$separator$elevatedCopyScriptName.ps1');
+      final msix =
+          "$staging${separator}Bob's package"
+          '${separator}XVPN-1.1.0-windows-x64.msix';
       Directory(staging).createSync(recursive: true);
 
-      final relaunch = File('$staging$separator$relaunchScriptName.ps1')
+      final script = File('$staging$separator$relaunchScriptName.ps1')
         ..writeAsStringSync(
-          '\uFEFF${buildWindowsRelaunchScript(
+          '\uFEFF${buildWindowsMsixRelaunchScript(
             pid: 1234,
-            archivePath: "$staging${separator}pkg.zip",
+            msixPath: msix,
             stagingDir: staging,
-            installDir: install,
-            launchPath: '$install${separator}xvpn.exe',
-            elevatedCopyScriptPath: copy.path,
+            fallbackLaunchPath: '$install${separator}xvpn.exe',
           )}',
           flush: true,
         );
-      copy.writeAsStringSync(
-        '\uFEFF${buildWindowsElevatedCopyScript(stagingDir: staging, installDir: install)}',
-        flush: true,
+
+      final result = await Process.run(
+        'powershell.exe',
+        <String>[
+          '-NoProfile',
+          '-NonInteractive',
+          '-Command',
+          // 只用解析器，不执行任何东西。
+          r'$errors = $null;'
+          r'[System.Management.Automation.Language.Parser]::ParseFile('
+          r'$env:XVPN_PARSE_PATH, [ref]$null, [ref]$errors) | Out-Null;'
+          r'if ($errors.Count -gt 0) { $errors | ForEach-Object { $_.Message }; exit 1 }',
+        ],
+        // 路径经环境变量传进去，而不是拼进命令串：路径里可能有单引号
+        // （`Bob's`），拼进去会先把这个检查自己写坏——第一次就是这么错的。
+        environment: <String, String>{'XVPN_PARSE_PATH': script.path},
+      );
+      expect(
+        result.exitCode,
+        0,
+        reason: '${script.path} 解析失败：${result.stdout}${result.stderr}',
       );
 
-      for (final script in <File>[relaunch, copy]) {
-        final result = await Process.run(
-          'powershell.exe',
-          <String>[
-            '-NoProfile',
-            '-NonInteractive',
-            '-Command',
-            // 只用解析器，不执行任何东西。
-            r'$errors = $null;'
-            r'[System.Management.Automation.Language.Parser]::ParseFile('
-            r'$env:XVPN_PARSE_PATH, [ref]$null, [ref]$errors) | Out-Null;'
-            r'if ($errors.Count -gt 0) { $errors | ForEach-Object { $_.Message }; exit 1 }',
-          ],
-          // 路径经环境变量传进去，而不是拼进命令串：路径里可能有单引号
-          // （`Bob's`），拼进去会先把这个检查自己写坏——第一次就是这么错的。
-          environment: <String, String>{'XVPN_PARSE_PATH': script.path},
-        );
-        expect(
-          result.exitCode,
-          0,
-          reason: '${script.path} 解析失败：${result.stdout}${result.stderr}',
-        );
-      }
-
-      // 顺带确认「提权复制脚本被真的指向了」，并把引号规则写清楚：
-      // 单引号内的单引号按 PowerShell 规则翻倍，整体再套一层双引号保护空格。
-      // 少任何一层，Start-Process 都会收到一个截断的路径。
-      final quotedCopyPath = '"${copy.path.replaceAll("'", "''")}"';
+      // 顺带把引号规则写清楚：单引号内的单引号按 PowerShell 规则翻倍。少这一层，
+      // Add-AppxPackage 会收到一个截断的路径，而报错要到用户机器上才出现。
       expect(
-        relaunch.readAsStringSync(),
-        contains("-File','$quotedCopyPath'"),
+        script.readAsStringSync(),
+        contains("Add-AppxPackage -Path '${msix.replaceAll("'", "''")}'"),
       );
     });
 
@@ -1232,7 +1269,7 @@ void main() {
       );
       final result = await installer.install(
         info: _infoFor(
-          'XVPN-1.1.0-windows-x64.zip',
+          'XVPN-1.1.0-windows-x64.msix',
           'https://example.net/win.zip',
         ),
         archive: File('${root.path}${separator}nope.zip'),
@@ -1242,25 +1279,50 @@ void main() {
       expect((result as UpdateInstallFailure).message, contains('更新包不存在'));
     });
 
-    test('安装目录不存在时拒绝而不是破坏安装', () async {
+    test('Linux：安装目录不存在时拒绝而不是破坏安装', () async {
       final separator = Platform.pathSeparator;
       final installer = DesktopUpdateInstaller(
-        platform: TargetPlatform.windows,
+        platform: TargetPlatform.linux,
         installDir: Directory('${root.path}${separator}not-here'),
-        launchPath: r'C:\nope\xvpn.exe',
+        launchPath: '/nope/xvpn',
         processStarter: _RecordingStarter(),
         hostPid: 1,
       );
       final result = await installer.install(
         info: _infoFor(
-          'XVPN-1.1.0-windows-x64.zip',
-          'https://example.net/win.zip',
+          'XVPN-1.1.0-linux-x64.zip',
+          'https://example.net/linux.zip',
+          platform: UpdatePlatform.linux,
         ),
         archive: File('${root.path}${separator}a.zip')..writeAsBytesSync(<int>[1]),
         stagingDir: root,
       );
       expect(result, isA<UpdateInstallFailure>());
       expect((result as UpdateInstallFailure).message, contains('找不到安装目录'));
+    });
+
+    test('Windows：安装目录不存在也照样升级——MSIX 不写安装目录', () async {
+      // MSIX 的升级由系统部署服务写 %ProgramFiles%\WindowsApps\，与应用自己的
+      // 目录无关。绿色解压版被搬到别处、目录已被删掉，都不该拦住一次升级。
+      final separator = Platform.pathSeparator;
+      final starter = _RecordingStarter();
+      final installer = DesktopUpdateInstaller(
+        platform: TargetPlatform.windows,
+        installDir: Directory('${root.path}${separator}not-here'),
+        launchPath: r'C:\nope\xvpn.exe',
+        processStarter: starter,
+        hostPid: 1,
+      );
+      final result = await installer.install(
+        info: _infoFor(
+          'XVPN-1.1.0-windows-x64.msix',
+          'https://example.net/win.msix',
+        ),
+        archive: File('${root.path}${separator}a.msix')..writeAsBytesSync(<int>[1]),
+        stagingDir: root,
+      );
+      expect(result, isA<UpdateInstallStarted>());
+      expect(starter.calls, hasLength(1));
     });
 
     test('无法启动助手时告诉用户如何手动更新', () async {
@@ -1277,112 +1339,45 @@ void main() {
       );
       final result = await installer.install(
         info: _infoFor(
-          'XVPN-1.1.0-windows-x64.zip',
-          'https://example.net/win.zip',
+          'XVPN-1.1.0-windows-x64.msix',
+          'https://example.net/win.msix',
         ),
-        archive: File('${root.path}${separator}a.zip')..writeAsBytesSync(<int>[1]),
+        archive: File('${root.path}${separator}a.msix')..writeAsBytesSync(<int>[1]),
         stagingDir: root,
       );
       expect(result, isA<UpdateInstallFailure>());
-      expect((result as UpdateInstallFailure).message, contains('手动解压'));
+      // Windows 的产物是 MSIX，手动那条路是「双击安装」而不是「解压覆盖」，
+      // 提示必须指对方向。
+      expect((result as UpdateInstallFailure).message, contains('手动安装'));
     });
 
     // ---------------------------------------------------------- 受保护安装目录
     //
-    // 「装在 C:\Program Files」是自动更新唯一需要提权的场景。真实的受保护目录
-    // 在测试里造不出来（Windows 上要管理员才能改 ACL），因此用探测替身表达。
+    // 「装在只读目录」如今只剩 Linux 一种形态：Windows 走 MSIX，由系统部署服务
+    // 写包目录，既不看也不写安装目录。真实的只读目录在测试里造不出来（Windows
+    // 上要管理员才能改 ACL，CI 的 Linux runner 也不是以 root 跑的），因此用探测
+    // 替身表达。
 
     /// 造一个「安装目录写不进去」的安装器。
     DesktopUpdateInstaller protectedInstaller({
       required Directory installDir,
       required _RecordingStarter starter,
-      TargetPlatform platform = TargetPlatform.windows,
     }) => DesktopUpdateInstaller(
-      platform: platform,
+      platform: TargetPlatform.linux,
       installDir: installDir,
-      launchPath: '${installDir.path}${Platform.pathSeparator}xvpn.exe',
+      launchPath: '${installDir.path}${Platform.pathSeparator}xvpn',
       processStarter: starter,
       hostPid: 1,
       writabilityProbe: (Directory _) => false,
     );
 
-    File archiveIn(String separator) =>
-        File('${root.path}${separator}a.zip')..writeAsBytesSync(<int>[1]);
+    File archiveIn(String separator, {String name = 'a.zip'}) =>
+        File('${root.path}$separator$name')..writeAsBytesSync(<int>[1]);
 
-    test('Windows：受保护目录先征求同意，未经同意不启动任何东西', () async {
-      final separator = Platform.pathSeparator;
-      final installDir = Directory('${root.path}${separator}install')
-        ..createSync(recursive: true);
-      final starter = _RecordingStarter();
-      final installer = protectedInstaller(
-        installDir: installDir,
-        starter: starter,
-      );
-
-      final result = await installer.install(
-        info: _infoFor('XVPN-1.1.0-windows-x64.zip', 'https://example.net/win.zip'),
-        archive: archiveIn(separator),
-        stagingDir: root,
-      );
-
-      expect(result, isA<UpdateInstallElevationRequired>());
-      final required = result as UpdateInstallElevationRequired;
-      expect(required.message, contains('管理员权限'));
-      expect(
-        required.suggestedDir,
-        isNotNull,
-        reason: '要给出一条「以后不必再授权」的出路，而不是每次都弹 UAC',
-      );
-      expect(
-        starter.calls,
-        isEmpty,
-        reason: '用户还没同意，一个进程都不该启动（UAC 更不能自己弹）',
-      );
-      expect(
-        File('${root.path}${separator}xvpn-relaunch.ps1').existsSync(),
-        isFalse,
-      );
-    });
-
-    test('Windows：同意后写出两个脚本，助手带上提权复制', () async {
-      final separator = Platform.pathSeparator;
-      final installDir = Directory('${root.path}${separator}install')
-        ..createSync(recursive: true);
-      final starter = _RecordingStarter();
-      final installer = protectedInstaller(
-        installDir: installDir,
-        starter: starter,
-      );
-
-      final result = await installer.install(
-        info: _infoFor('XVPN-1.1.0-windows-x64.zip', 'https://example.net/win.zip'),
-        archive: archiveIn(separator),
-        stagingDir: root,
-        elevate: true,
-      );
-
-      expect(result, isA<UpdateInstallStarted>());
-      expect(
-        (result as UpdateInstallStarted).message,
-        contains('管理员授权'),
-        reason: '文案必须说清楚「授权后才会动手」，否则用户以为更新已经在跑',
-      );
-
-      final relaunch = File('${root.path}${separator}xvpn-relaunch.ps1');
-      final copy = File('${root.path}${separator}xvpn-elevate-copy.ps1');
-      expect(relaunch.existsSync(), isTrue);
-      expect(copy.existsSync(), isTrue);
-      expect(relaunch.readAsStringSync(), contains('-Verb RunAs'));
-      // 提权复制脚本同样要带 BOM：PowerShell 5.1 没有它会按 ANSI 读，中文日志
-      // 会变成乱码——而用户要读的正是那些中文。
-      expect(copy.readAsBytesSync().sublist(0, 3), <int>[0xEF, 0xBB, 0xBF]);
-      expect(starter.calls.single, contains('-File'));
-      expect(starter.calls.single.last, contains('xvpn-relaunch.ps1'));
-    });
-
-    test('Windows：目录其实可写时，用户点过同意也不弹 UAC', () async {
-      // 场景：上一次点了「以管理员身份更新」，之后把安装目录搬到了用户目录。
-      // 此时仍然提权就是纯粹的打扰——探测说可写就走普通路径。
+    test('Windows：不再探测安装目录是否可写，也不再有提权这一步', () async {
+      // 这里刻意让探测回答「写不进去」：Windows 这条路根本不该问它。
+      // 以前升级要往安装目录里复制文件，于是「目录只读」是唯一需要管理员授权的
+      // 场景；现在升级交给 MSIX 部署服务，那条分支连同它的结果类型一起没了。
       final separator = Platform.pathSeparator;
       final installDir = Directory('${root.path}${separator}install')
         ..createSync(recursive: true);
@@ -1393,24 +1388,20 @@ void main() {
         launchPath: '${installDir.path}${separator}xvpn.exe',
         processStarter: starter,
         hostPid: 1,
-        writabilityProbe: (Directory _) => true,
+        writabilityProbe: (Directory _) => false,
       );
 
       final result = await installer.install(
-        info: _infoFor('XVPN-1.1.0-windows-x64.zip', 'https://example.net/win.zip'),
-        archive: archiveIn(separator),
+        info: _infoFor('XVPN-1.1.0-windows-x64.msix', 'https://example.net/win.msix'),
+        archive: archiveIn(separator, name: 'a.msix'),
         stagingDir: root,
-        elevate: true,
       );
 
       expect(result, isA<UpdateInstallStarted>());
-      final relaunch = File('${root.path}${separator}xvpn-relaunch.ps1');
-      expect(relaunch.readAsStringSync(), isNot(contains('RunAs')));
-      expect(
-        File('${root.path}${separator}xvpn-elevate-copy.ps1').existsSync(),
-        isFalse,
-        reason: '一个用不上的提权脚本会让人以为提权路径被走过了',
-      );
+      expect(starter.calls, hasLength(1));
+      final script = File('${root.path}${separator}xvpn-relaunch.ps1');
+      expect(script.existsSync(), isTrue);
+      expect(script.readAsStringSync(), isNot(contains('RunAs')));
     });
 
     test('Linux：只读安装拒绝自动更新，并给出用户目录这条出路', () async {
@@ -1423,21 +1414,19 @@ void main() {
       final installer = protectedInstaller(
         installDir: installDir,
         starter: starter,
-        platform: TargetPlatform.linux,
       );
 
       final result = await installer.install(
-        info: _infoFor('XVPN-1.1.0-linux-x64.zip', 'https://example.net/lin.zip'),
+        info: _infoFor(
+          'XVPN-1.1.0-linux-x64.zip',
+          'https://example.net/lin.zip',
+          platform: UpdatePlatform.linux,
+        ),
         archive: archiveIn(separator),
         stagingDir: root,
-        elevate: true,
       );
 
-      expect(
-        result,
-        isA<UpdateInstallFailure>(),
-        reason: 'Linux 上即便用户要求提权也不做——那是包管理器的地盘',
-      );
+      expect(result, isA<UpdateInstallFailure>());
       final message = (result as UpdateInstallFailure).message;
       expect(message, contains('只读'));
       expect(
@@ -1497,40 +1486,201 @@ void main() {
     });
   });
 
+  // -------------------------------------------------------------- MSIX 与绿色版
+
+  group('MSIX 版与绿色解压版', () {
+    test('按可执行文件所在位置判断是不是 MSIX 安装', () {
+      // MSIX 的应用装在 %ProgramFiles%\WindowsApps\<包名>_<版本>_<架构>__<哈希>\
+      // 下，绿色解压版是用户自己挑的目录——只需要一个路径判断，不必再加一条
+      // 要与原生同步维护的平台通道。
+      expect(
+        isMsixInstall(
+          r'C:\Program Files\WindowsApps\XVPN_1.4.0.0_x64__abc123\xvpn.exe',
+        ),
+        isTrue,
+      );
+      expect(isMsixInstall(r'C:\Users\me\Downloads\XVPN\xvpn.exe'), isFalse);
+      // 路径由系统给出，大小写与分隔符都不该影响结论。
+      expect(
+        isMsixInstall(r'c:/program files/windowsapps/XVPN/xvpn.exe'),
+        isTrue,
+      );
+    });
+
+    test('只有 Windows 的绿色版才需要提前说清配置目录会变', () {
+      final note = preInstallNoteFor(
+        TargetPlatform.windows,
+        r'C:\Users\me\Downloads\XVPN\xvpn.exe',
+      );
+      expect(note, isNotNull);
+      // 这句话的全部意义：事后再说，用户看到的是一个配置空空的新版本，只会以为
+      // 更新把他的数据弄丢了。
+      expect(note, contains('MSIX'));
+      expect(note, contains('配置目录'));
+      expect(note, contains('重新导入'));
+
+      // MSIX 版升级到 MSIX 版：包身份相同，配置目录不变，没什么要提前说的。
+      expect(
+        preInstallNoteFor(
+          TargetPlatform.windows,
+          r'C:\Program Files\WindowsApps\XVPN_1.0.0.0_x64__a\xvpn.exe',
+        ),
+        isNull,
+      );
+      // 其它平台没有这条形态切换。
+      expect(preInstallNoteFor(TargetPlatform.linux, '/opt/xvpn/xvpn'), isNull);
+      expect(
+        preInstallNoteFor(TargetPlatform.android, '/data/app/xvpn'),
+        isNull,
+      );
+    });
+
+    test('Updater 用注入的可执行文件路径算出这句提示', () {
+      Updater withExecutable(String path) => Updater(
+        platform: TargetPlatform.windows,
+        currentVersion: '1.0.0',
+        http: _FakeHttpClient((_) => _text(200, '{}')),
+        resolvedExecutable: path,
+      );
+
+      expect(
+        withExecutable(r'C:\Users\me\Downloads\XVPN\xvpn.exe').preInstallNote,
+        isNotNull,
+      );
+      expect(
+        withExecutable(
+          r'C:\Program Files\WindowsApps\XVPN_1.0.0.0_x64__a\xvpn.exe',
+        ).preInstallNote,
+        isNull,
+      );
+    });
+  });
+
   // -------------------------------------------------------------- 安卓安装策略
 
   group('安卓安装策略', () {
     late Directory root;
-    late File apk;
 
     setUp(() {
       root = Directory.systemTemp.createTempSync('xvpn-android-test');
-      apk = File('${root.path}${Platform.pathSeparator}XVPN-1.1.0-android-arm64.apk')
-        ..writeAsBytesSync(<int>[1, 2, 3]);
     });
 
     tearDown(() {
       if (root.existsSync()) root.deleteSync(recursive: true);
     });
 
-    Future<UpdateInstallResult> installWith(_FakeApkChannel channel) {
+    /// 把 `test/fixtures/` 里的**真实压缩包**按发布资产的名字放进暂存目录。
+    ///
+    /// 刻意用真包而不是自己拼字节：这一段的全部意义就是「从别人写出来的 zip 里
+    /// 把 APK 取出来」，自己写一份 zip 再自己读证明不了这件事。
+    File releaseZip({
+      String from = 'android-update-deflate.zip',
+      String name = 'XVPN-0.0.0-android-arm64.zip',
+    }) => File('${root.path}${Platform.pathSeparator}$name')
+      ..writeAsBytesSync(File('test/fixtures/$from').readAsBytesSync());
+
+    Future<UpdateInstallResult> installWith(
+      _FakeApkChannel channel, {
+      File? archive,
+      String version = '0.0.0',
+    }) {
       final installer = AndroidUpdateInstaller(channel: channel);
       return installer.install(
         info: _infoFor(
-          'XVPN-1.1.0-android-arm64.apk',
-          'https://example.net/app.apk',
+          'XVPN-$version-android-arm64.zip',
+          'https://example.net/app.zip',
           platform: UpdatePlatform.android,
+          version: version,
         ),
-        archive: apk,
+        archive: archive ?? releaseZip(),
         stagingDir: root,
       );
     }
 
-    test('交给系统安装器', () async {
+    test('先从 zip 里取出 APK，再交给系统安装器', () async {
       final channel = _FakeApkChannel('launched');
       final result = await installWith(channel);
       expect(result, isA<UpdateInstallStarted>());
-      expect(channel.paths.single, apk.path);
+
+      // 交给系统安装器的必须是**取出来的 APK**，而不是下载下来的 zip：
+      // 安装器只认 APK 文件。
+      final String installed = channel.paths.single;
+      expect(installed, endsWith('XVPN-0.0.0-android-arm64.apk'));
+      expect(
+        File(installed).readAsBytesSync(),
+        utf8.encode('XVPN-ANDROID-UPDATE-FIXTURE ' * 120),
+      );
+      // 落在压缩包**旁边**：两个路径分头去拼迟早会分叉，而系统安装器拿到的 URI
+      // 必须落在 FileProvider 声明的 cache-path 之内。
+      expect(File(installed).parent.path, root.path);
+    });
+
+    test('包内名字与契约不符时退回唯一的那一个 .apk', () async {
+      // 上游哪天改了压缩包内部的取名方式，更新不该立刻失效。落盘的文件名取自
+      // 包内条目名——系统安装器只在乎它是不是一个 APK。
+      final channel = _FakeApkChannel('launched');
+      final result = await installWith(
+        channel,
+        archive: releaseZip(from: 'android-update-renamed.zip'),
+      );
+      expect(result, isA<UpdateInstallStarted>());
+      expect(channel.paths.single, endsWith('payload.apk'));
+    });
+
+    test('包内同时有契约名与别的 APK 时优先契约名', () async {
+      final channel = _FakeApkChannel('launched');
+      final result = await installWith(
+        channel,
+        archive: releaseZip(from: 'android-update-two-apks.zip'),
+      );
+      expect(result, isA<UpdateInstallStarted>());
+      expect(channel.paths.single, endsWith('XVPN-0.0.0-android-arm64.apk'));
+    });
+
+    test('包里没有 APK 时如实失败，而不是交给安装器一个空文件', () async {
+      final channel = _FakeApkChannel('launched');
+      final result = await installWith(
+        channel,
+        archive: releaseZip(from: 'android-update-no-apk.zip'),
+      );
+      expect(result, isA<UpdateInstallFailure>());
+      final message = (result as UpdateInstallFailure).message;
+      expect(message, contains('APK'));
+      // 失败也要给一条真实可走的路：发布页还能手动下载。
+      expect(message, contains('发布页'));
+      expect(channel.paths, isEmpty, reason: '没有 APK 就没有什么可交给系统安装器');
+    });
+
+    test('包里有两个 APK 又对不上契约名时明确失败，而不是随便挑一个', () async {
+      final channel = _FakeApkChannel('launched');
+      final result = await installWith(
+        channel,
+        archive: releaseZip(from: 'android-update-two-apks.zip'),
+        // 版本号对不上，契约名也就不匹配：两个 `.apk` 条目都不是它。
+        version: '9.9.9',
+      );
+      expect(result, isA<UpdateInstallFailure>());
+      final message = (result as UpdateInstallFailure).message;
+      expect(message, contains('2 个APK'));
+      // 报错要把两个候选名都写出来，用户才知道包里被塞了什么。
+      expect(message, contains('XVPN-0.0.0-android-arm64.apk'));
+      expect(message, contains('payload.apk'));
+      expect(channel.paths, isEmpty);
+    });
+
+    test('下载到的不是 zip 时给一句用户看得懂的话', () async {
+      final channel = _FakeApkChannel('launched');
+      final bad = File('${root.path}${Platform.pathSeparator}bad.zip')
+        ..writeAsStringSync('<html>404</html>');
+      final result = await installWith(channel, archive: bad);
+
+      expect(result, isA<UpdateInstallFailure>());
+      final message = (result as UpdateInstallFailure).message;
+      expect(message, contains('无法解出安装文件'));
+      expect(message, contains('发布页'));
+      // 不能把 Dart 的异常字符串直接甩给用户。
+      expect(message, isNot(contains('Exception')));
+      expect(channel.paths, isEmpty);
     });
 
     test('缺少「安装未知应用」权限时引导去设置并如实报告', () async {
@@ -1553,21 +1703,80 @@ void main() {
       expect((error as UpdateInstallFailure).message, contains('安装器'));
     });
 
-    test('APK 不存在时直接失败', () async {
+    test('更新包不存在时直接失败', () async {
       final installer = AndroidUpdateInstaller(
         channel: _FakeApkChannel('launched'),
       );
       final result = await installer.install(
         info: _infoFor(
-          'XVPN-1.1.0-android-arm64.apk',
-          'https://example.net/app.apk',
+          'XVPN-0.0.0-android-arm64.zip',
+          'https://example.net/app.zip',
           platform: UpdatePlatform.android,
+          version: '0.0.0',
         ),
-        archive: File('${root.path}${Platform.pathSeparator}nope.apk'),
+        archive: File('${root.path}${Platform.pathSeparator}nope.zip'),
         stagingDir: root,
       );
       expect(result, isA<UpdateInstallFailure>());
       expect((result as UpdateInstallFailure).message, contains('不存在'));
+    });
+  });
+
+  // -------------------------------------------------------------- 取出 APK
+
+  group('extractAndroidApk', () {
+    late Directory root;
+
+    setUp(() {
+      root = Directory.systemTemp.createTempSync('xvpn-extract-apk-test');
+    });
+
+    tearDown(() {
+      if (root.existsSync()) root.deleteSync(recursive: true);
+    });
+
+    File asset({String from = 'android-update-deflate.zip'}) => File(
+      '${root.path}${Platform.pathSeparator}XVPN-0.0.0-android-arm64.zip',
+    )..writeAsBytesSync(File('test/fixtures/$from').readAsBytesSync());
+
+    test('APK 落在压缩包旁边，文件名就是契约里的名字', () async {
+      final File archive = asset();
+      final File apk = await extractAndroidApk(
+        archive: archive,
+        version: '0.0.0',
+      );
+      expect(
+        apk.path,
+        '${root.path}${Platform.pathSeparator}XVPN-0.0.0-android-arm64.apk',
+      );
+      expect(
+        apk.readAsBytesSync(),
+        utf8.encode('XVPN-ANDROID-UPDATE-FIXTURE ' * 120),
+      );
+    });
+
+    test('包内名字对不上时返回包内那一个 .apk', () async {
+      final File apk = await extractAndroidApk(
+        archive: asset(from: 'android-update-renamed.zip'),
+        version: '0.0.0',
+      );
+      expect(apk.path, '${root.path}${Platform.pathSeparator}payload.apk');
+    });
+
+    test('既没有契约名也没有别的 APK 时抛出可展示的异常', () async {
+      await expectLater(
+        extractAndroidApk(
+          archive: asset(from: 'android-update-no-apk.zip'),
+          version: '0.0.0',
+        ),
+        throwsA(
+          isA<ZipFormatException>().having(
+            (ZipFormatException e) => e.message,
+            'message',
+            contains('没有APK'),
+          ),
+        ),
+      );
     });
   });
 

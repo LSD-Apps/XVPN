@@ -173,9 +173,7 @@ class UpdateSession extends ChangeNotifier {
   }
 
   /// 用户已经在确认步骤里点了「安装更新」——这是唯一的安装入口。
-  ///
-  /// [elevate] 为 true 表示用户已在上一步同意用管理员权限完成写入（Windows）。
-  Future<void> install({bool elevate = false}) async {
+  Future<void> install() async {
     final info = _info;
     final file = _downloadedFile;
     if (info == null || file == null || busy) return;
@@ -183,7 +181,7 @@ class UpdateSession extends ChangeNotifier {
     _installResult = null;
     _notify();
 
-    final result = await updater.install(info, file, elevate: elevate);
+    final result = await updater.install(info, file);
     if (_disposed) return;
     _installing = false;
     _installResult = result;

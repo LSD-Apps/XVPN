@@ -116,9 +116,9 @@ Apple 对 VPN 应用依 Guideline 5.4 审核，需要 `NEVPNManager` 与相应 e
 - [x] **GitHub Releases**：已发布首个 tag，并已接上 **GitHub Actions 自动构建三端产物**（见下文「五、构建与发布流水线」）
 - [x] **分发物随附许可与声明**：`.github/workflows/release.yml` 与
       `scripts/build-release.ps1` 把 `LICENSE`、`NOTICE.md` 与
-      `THIRD-PARTY-NOTICES.md` 放进 Windows / Linux 压缩包根；Android APK 内含
-      `assets/licenses/` 下的同名文件。CI 在打包后**断言**这些条目确实存在，
-      避免「复制了但没进包」。
+      `THIRD-PARTY-NOTICES.md` 放进 MSIX 包内与 Linux 压缩包根；Android 的
+      `assets/licenses/` 同名文件打进 APK（APK 又在 zip 里）。CI 在打包后
+      **断言**这些条目确实存在，避免「复制了但没进包」。
 - [x] **应用内「开源许可」入口只做跳转**：设置页「关于」卡片的入口用系统浏览器
       打开项目主页的许可章节（`app/lib/core/links.dart` 的 `kLicenseUrl`）。
       应用**不再**列举依赖许可，也**不再**把 `LICENSE` / `NOTICE.md` /
@@ -155,14 +155,20 @@ Apple 对 VPN 应用依 Guideline 5.4 审核，需要 `NEVPNManager` 与相应 e
       debug 密钥），因此正式分发前必须由维护者按「五、构建与发布流水线」
       创建 secrets。密钥本身无法提交进仓库。
 - [x] **Release 附件**：已由 `.github/workflows/release.yml` 自动附上
-      Windows 压缩包与 MSIX 安装包、Linux 压缩包、Android APK 与 `SHA256SUMS.txt`
+      **Windows MSIX**、Linux 压缩包、**Android 内含 APK 的 zip** 与
+      `SHA256SUMS.txt`（发布页不直接分发裸 APK，见 5.2）
 - [x] **发布脚本**：构建一律带 `--dart-define=XVPN_VERSION=<ver>`，
       CI 与本地脚本都会先把 tag/输入与 `pubspec.yaml` 校验一致后再构建
+- [ ] **MSIX 发行证书（发布前必须完成）**：Windows 只发 MSIX，因此
+      `MSIX_PFX_BASE64` / `MSIX_PFX_PASSWORD` 是**必填** secret，缺失时发布
+      直接失败。本机生成：`pwsh scripts/new-msix-cert.ps1`（见 5.3），
+      生成后把 `.pfx` 与口令一起备份
 - [x] **Windows MSIX 安装包**：清单（`app/packaging/AppxManifest.xml`）、打包
       （`scripts/package-msix.ps1`）与安装/桌面快捷方式（`scripts/install-msix.ps1`）
       均已就位并接进 CI，见「5.2.1 Windows MSIX」。**仍需真机验证**：装包、
       桌面快捷方式、托盘与设置页里的「随系统启动」四项只能在有桌面的 Windows 上
-      实测，单元测试只守住了清单与原生代码之间的文本契约
+      实测，单元测试只守住了清单与原生代码之间的文本契约；应用内
+      `Add-AppxPackage` 升级同样只能真机验证（证书受信任时才成功）
 
 ### 建议的发布顺序
 
@@ -198,32 +204,36 @@ pubspec 写成 `1.2.0+<build>`。
 
 ### 5.2 附件命名契约（exact）
 
+**三端一律只发压缩包/安装包，发布页上没有裸文件**（尤其是**不直接分发 APK**）：
+
 | 附件 | 内容 |
 | --- | --- |
-| `XVPN-<ver>-windows-x64.zip` | Windows release bundle 目录的**内容**（`xvpn.exe`、`sing-box.exe`、`data/` 等位于压缩包根），另含 `LICENSE`、`NOTICE.md` 与 `THIRD-PARTY-NOTICES.md` |
-| `XVPN-<ver>-windows-x64.msix` | Windows MSIX 安装包（含 `windows.startupTask` 与 `windows.appExecutionAlias` 两项扩展），另含三份许可文本 |
-| `XVPN-<ver>-windows-msix.cer` | 未配置发布证书时附上的自签名证书公钥；安装前需先信任它 |
+| `XVPN-<ver>-windows-x64.msix` | **Windows 唯一产物**：MSIX 安装包（含 `windows.startupTask` 与 `windows.appExecutionAlias` 两项扩展），另含三份许可文本 |
+| `XVPN-<ver>-windows-msix.cer` | 签名证书是自签名时附上的公钥；安装前需先信任它（用正式证书签名时不存在这个附件） |
 | `XVPN-<ver>-linux-x64.zip` | Linux release bundle 目录的内容（`xvpn`、`sing-box`、`data/` 等），另含 `LICENSE`、`NOTICE.md` 与 `THIRD-PARTY-NOTICES.md` |
-| `XVPN-<ver>-android-arm64.apk` | **裸 APK**——更新器需要它才能调起系统安装器；内含 `assets/licenses/` 下的 `LICENSE`、`NOTICE.md` 与 `THIRD-PARTY-NOTICES.md` |
-| `XVPN-<ver>-android-arm64.zip` | 装着上面那份 APK 的 zip，让三端都有一个 zip 入口 |
+| `XVPN-<ver>-android-arm64.zip` | **内含 APK 的 zip**（zip 里只有 `XVPN-<ver>-android-arm64.apk` 一个条目）。更新器下载它就是下载安装包：系统安装器只接受 APK 文件，APK 由应用自己从 zip 里取出来（`app/lib/core/zip.dart`，纯 Dart，不引入第三方依赖） |
 | `SHA256SUMS.txt` | 上面全部产物的 SHA-256（`sha256sum -c` 可直接校验） |
 
 `<ver>` 是 tag 去掉前导 `v`，例如 tag `v1.0.0` → `<ver>` = `1.0.0`。
+清单的唯一事实来源是 `app/lib/core/updater.dart` 的 `expectedAssetName`，
+`app/test/release_assets_test.dart` 断言本表、CI 与更新器三者一致。
 
-两个 zip 都采用「bundle 目录内容在压缩包根」的布局，解压即可就地覆盖安装目录。
-不要改成「外面再套一层目录名」——这是更新器的解压约定。
+> **为什么不再直接发 APK**：发布页上的裸 APK 会被各种「下载站 / 镜像 / 直链」
+> 原样搬运，用户很难判断拿到的是不是官方包；统一成压缩包后，每个平台的产物都是
+> 一个「下载即得」的归档，校验和也只需覆盖这一层。代价是安卓的自动更新多一步
+> 解压——那一步由应用自己做，用户看不到。
 
-> **`.msix` 与 `.cer` 不参与应用内自动更新**：更新器读的是
-> `windows-x64.zip`，而 MSIX 版本由包管理器（`Add-AppxPackage` / 应用安装程序）
-> 自行升级。因此 `windows-x64.zip` 的**附件名不能改**——已经装好的旧版本靠它
-> 找到升级包。
+> **Windows 为什么只有 MSIX**：绿色解压版（zip）此前是主路径，但它的升级依赖
+> 「解压覆盖安装目录」，那条路要么需要管理员（装在 `Program Files` 时），要么
+> 留下半新半旧的目录。MSIX 把升级交给系统部署服务：同一个发布者的包做用户级
+> 覆盖升级是常规操作，不需要提权，也不存在替换到一半的中间态。代价有两个，
+> 都写在下文：**必须有稳定的签名证书**（5.3），以及**绿色版用户升级后配置目录
+> 会变**（应用内会在动手之前提示）。
 
 ### 5.2.1 Windows MSIX
 
-两种 Windows 分发形态（zip 绿色版 / MSIX 安装版）**必须来自同一次
-`flutter build windows`**：`scripts/build-release.ps1 -Msix` 与发布流水线都是拿
-同一个 bundle 分别打包的，各构建一次迟早会出现「zip 里有新内核、msix 里还是旧的」
-这种谁也想不到的差异。
+Windows **只有 MSIX 一种分发形态**（绿色解压版的 zip 自 1.4.0 起不再发布），
+因此**签名证书是发布的硬要求**：没有它整条流水线直接失败，见 5.3。
 
 构建与安装：
 
@@ -247,9 +257,10 @@ pwsh scripts/install-msix.ps1 -Uninstall
 
 - **签名**。MSIX 必须签名才能安装，且清单 `Identity/Publisher` 必须与证书
   `Subject` **逐字相同**，否则 `Add-AppxPackage` 会以 `0x800B0109` / `0x80073CF0`
-  之类拒绝。`package-msix.ps1` 在找不到可用证书时**生成一张自签名证书并复用**
-  （每次构建新造一张会让已装旧版的用户升级时签名不一致，只能卸载重装，而卸载会
-  清掉配置）。
+  之类拒绝。正式发布用的证书由 `scripts/new-msix-cert.ps1` 生成一次、之后一直
+  复用（生成方式与 secret 配置见 5.3）；`package-msix.ps1` 在本机找不到证书时
+  仍会现造一张自签名证书，那只适合自测——**每次构建新造一张会让已装旧版的用户
+  升级时签名链对不上，只能卸载重装，而卸载会清掉配置**。
 
   > **自签名包的安装需要一次管理员提权**，这一点实测确认过，而且它的表现很有
   > 误导性：
@@ -271,9 +282,11 @@ pwsh scripts/install-msix.ps1 -Uninstall
   > `Add-AppxPackage -Register <解包目录>\AppxManifest.xml` 直接注册松散文件，
   > 签名与证书都不参与（包会标记为 `IsDevelopmentMode`）。它适合验证包身份相关
   > 的行为（执行别名、开始菜单入口、扩展声明），但不能替代真实安装。
-- **发布证书**。配了 `MSIX_PFX_BASE64` / `MSIX_PFX_PASSWORD` secret 时用正式证书
-  签，不再发布 `.cer`。发布者 DN 用仓库变量 `MSIX_PUBLISHER` 对齐（默认
-  `CN=LUSIDA`，与清单模板一致）。
+- **发布证书**。`MSIX_PFX_BASE64` / `MSIX_PFX_PASSWORD` **必填**（Windows 只发
+  MSIX，缺证书时流水线直接失败）。发布者 DN 用仓库变量 `MSIX_PUBLISHER` 对齐
+  （默认 `CN=LUSIDA`，与清单模板一致）。用**自签名**证书签时（`Subject == Issuer`），
+  流水线会把公钥导出成 `XVPN-<ver>-windows-msix.cer` 一并发布——用户必须先信任
+  它才装得上。用**正式代码签名证书**签时不会产生 `.cer`，用户双击即装。
 - **桌面快捷方式**。MSIX **没有**「安装完成后运行脚本」的标准钩子，而打包进程写
   `%USERPROFILE%\Desktop` 会被文件系统虚拟化到包私有目录、写不到真实桌面。因此
   快捷方式由未打包的 `install-msix.ps1` 创建，目标指向清单声明的执行别名
@@ -286,7 +299,13 @@ pwsh scripts/install-msix.ps1 -Uninstall
   `kStartupTaskId` 一致，`app/test/msix_packaging_test.dart` 守着这条契约。
 - **用户配置位置会变**。未打包时是 `%LOCALAPPDATA%\XVPN\`；打包后 `LOCALAPPDATA`
   被重定向到 `%LOCALAPPDATA%\Packages\<包家族>\LocalCache\Local\XVPN\`。从绿色版
-  迁到 MSIX 版等于全新安装，需要重新导入配置。
+  迁到 MSIX 版等于全新安装，需要重新导入配置——因此**应用内更新在动手之前**就会
+  提示这一点（`updater.dart` 的 `preInstallNote`，判定依据是可执行文件是否位于
+  `\WindowsApps\`）。
+- **应用内更新走 `Add-AppxPackage`**。助手脚本等主进程退出后调用它覆盖升级，
+  再用执行别名重启新版本（包目录名里有版本号，旧路径升级后就没了）。
+  失败时（最常见的原因是签名证书没被信任）保留安装包与日志并重新拉起**旧**版本，
+  日志路径就在更新界面上。
 
 ### 5.3 需要的 Actions Secrets
 
@@ -298,8 +317,8 @@ pwsh scripts/install-msix.ps1 -Uninstall
 | `ANDROID_KEYSTORE_PASSWORD` | keystore 口令 |
 | `ANDROID_KEY_ALIAS` | 密钥别名 |
 | `ANDROID_KEY_PASSWORD` | 该别名对应的口令 |
-| `MSIX_PFX_BASE64` | （可选）Windows MSIX 发布证书的 PFX base64；留空则用自签名并附 `.cer` |
-| `MSIX_PFX_PASSWORD` | （可选）该 PFX 的口令 |
+| `MSIX_PFX_BASE64` | **必填**：Windows MSIX 发布证书的 PFX base64 |
+| `MSIX_PFX_PASSWORD` | **必填**：该 PFX 的口令 |
 
 仓库变量（`Settings → Secrets and variables → Actions → Variables`）：
 
@@ -307,10 +326,32 @@ pwsh scripts/install-msix.ps1 -Uninstall
 | --- | --- |
 | `MSIX_PUBLISHER` | MSIX 发布者 DN，必须与证书 `Subject` 逐字相同（默认 `CN=LUSIDA`） |
 
-`MSIX_PFX_*` 与 Android 的 keystore 不同，**缺失不会让发布失败**：MSIX 目前是
-额外的分发形态（zip 仍是主路径，应用内自动更新走 zip），让它因为没证书就挡掉整个
-发布，代价远大于收益；缺证书时退回自签名并在 Release 里附上 `.cer`。一旦 MSIX
-成为主推形态，这里应当改成与 Android 一样的硬失败。
+`MSIX_PFX_*` 与 Android 的 keystore 一样**缺失即失败**：Windows 只发 MSIX，
+而「缺证书就现造一张自签名证书」会让每个版本由不同证书签名，已装旧版的用户升级
+时签名链对不上、只能卸载重装（卸载会清掉配置）。这条守卫在
+`.github/workflows/release.yml` 的 Windows 任务里，与 Android 的 keystore 守卫
+是同一条纪律。
+
+生成本机证书（**只需做一次**，之后一直复用）：
+
+```powershell
+pwsh scripts/new-msix-cert.ps1                 # 生成到 <仓库>\.secrets\（已 gitignore）
+pwsh scripts/new-msix-cert.ps1 -Publisher 'CN=你的发布者' -Years 10
+```
+
+脚本会打印 `MSIX_PFX_BASE64`（单行 base64）与口令，把它们分别填进两个 secret，
+并把 `.pfx` + 口令**一起**备份到密码管理器：
+
+- **丢了私钥或口令** → 再也签不出能被已有用户覆盖安装的包，只能让所有人卸载重装；
+- **私钥泄到公开仓库** → 任何人都能签出一个 Windows 信任的「XVPN 升级包」。
+  因此 `.secrets/` 已在 `.gitignore` 里，**公钥 `.cer` 可以入库**
+  （`app/packaging/xvpn-msix-LUSIDA.cer` 是当前发布者 `CN=LUSIDA` 的公钥，
+  随 Release 一起分发；换成正式证书后应当删掉或替换它）。
+
+> **自签名只适合自用与小范围分发**：它要求每个用户先以管理员信任 `.cer`。
+> 要公开分发，应当用 CA 签发的代码签名证书，或面向开源项目的签名服务
+> （SignPath Foundation、Azure Trusted Signing）——用法完全相同：把那边的 PFX
+> 转成 base64 填进 `MSIX_PFX_BASE64` 即可，流水线不会生成 `.cer`。
 
 生成 keystore（只需做一次，**务必备份**——丢了就再也无法覆盖安装旧版本）。
 本仓库已生成一份 4096 位、有效期约 30 年的发行密钥库，口令由持有者单独保存：
@@ -361,14 +402,18 @@ with_gvisor / with_clash_api / with_naive_outbound` 等构建标签，缺标签�
 ### 5.5 本地打包（Windows 开发机）
 
 ```powershell
-pwsh scripts/build-release.ps1            # 只构建 Windows
-pwsh scripts/build-release.ps1 -Android   # Windows + Android APK
-pwsh scripts/build-release.ps1 -Msix      # Windows + MSIX 安装包
+pwsh scripts/build-release.ps1            # Windows：MSIX 安装包（需要 Windows SDK）
+pwsh scripts/build-release.ps1 -Android   # Windows + Android（zip，内含 APK）
 ```
 
-产物写入 `dist/` 并生成 `SHA256SUMS.txt`。脚本在
-`app/assets/bin/sing-box.exe` 缺失时**直接报错**（不会打出一个连不上的包）。
-Linux 只能在 Linux 上编译，因此本地脚本**不含** Linux（见 `scripts/build-release.ps1`
-顶部注释）；Linux 一律交给 CI。
+产物写入 `dist/` 并生成 `SHA256SUMS.txt`，附件命名与 CI 完全一致
+（`app/test/release_assets_test.dart` 断言这一点）；**裸 APK 不进 `dist/`**，
+安卓只产出内含 APK 的 zip。脚本在 `app/assets/bin/sing-box.exe` 缺失时**直接
+报错**（不会打出一个连不上的包）。Linux 只能在 Linux 上编译，因此本地脚本
+**不含** Linux（见 `scripts/build-release.ps1` 顶部注释）；Linux 一律交给 CI。
+
+不指定证书时 MSIX 会用本机现造的自签名证书签名——**只适合自测**。要得到与发布
+一致的签名，先跑一次 `scripts/new-msix-cert.ps1`，再把打印出来的指纹传给
+`scripts/package-msix.ps1 -CertificateThumbprint <指纹>`。
 
 ---

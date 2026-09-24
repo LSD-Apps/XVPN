@@ -1,12 +1,12 @@
 ﻿# 本机构建并打包 Windows / Android 发布产物，写入 dist/ 并生成 SHA256SUMS.txt。
 #
-#   pwsh scripts/build-release.ps1            # 只构建 Windows
-#   pwsh scripts/build-release.ps1 -Android   # Windows + Android APK
-#   pwsh scripts/build-release.ps1 -Msix      # Windows + MSIX 安装包
+#   pwsh scripts/build-release.ps1            # Windows：MSIX 安装包
+#   pwsh scripts/build-release.ps1 -Android   # Windows + Android（zip，内含 APK）
 #
 # 这是「本机能跑的那一半」的便捷脚本；正式的发布由
 # .github/workflows/release.yml 在 GitHub runner 上完成（Windows/Linux/Android
-# 三端）。两者的版本约定与附件命名必须一致，见 docs/RELEASE.md。
+# 三端）。两者的版本约定与附件命名必须一致，见 docs/RELEASE.md，并由
+# app/test/release_assets_test.dart 断言。
 #
 # 为什么不在这里构建 Linux：Linux 桌面端只能在 Linux 上编译（需要 clang/GTK），
 # 本机是 Windows，无法产出 Linux 二进制。Linux 一律交给 CI。
@@ -17,16 +17,13 @@
 #     （见 app/lib/version.dart 顶部注释）。
 #
 # 附件命名（exact，改动必须同步 CI 与更新器）：
-#   XVPN-<ver>-windows-x64.zip
-#   XVPN-<ver>-windows-x64.msix          （-Msix 时，见 scripts/package-msix.ps1）
-#   XVPN-<ver>-windows-msix.cer          （-Msix 且用自签名证书时）
-#   XVPN-<ver>-android-arm64.apk
-#   XVPN-<ver>-android-arm64.zip
+#   XVPN-<ver>-windows-x64.msix          （Windows 唯一产物，见 package-msix.ps1）
+#   XVPN-<ver>-windows-msix.cer          （签名证书是自签名时导出的公钥）
+#   XVPN-<ver>-android-arm64.zip         （zip 里装着 APK，**不产出裸 APK**）
 #   SHA256SUMS.txt
 #
-# .msix 与 .cer **不在** in-app 更新器消费的附件集合里：更新器读的是
-# windows-x64.zip，MSIX 版本由包管理器（Add-AppxPackage / 应用安装程序）自行
-# 升级。附件名保持不变，旧版本才找得到升级包。
+# 三端一律只发压缩包/安装包：安卓的 APK 打包进 zip（系统安装器只接受 APK，更新器
+# 自己从 zip 里取，见 app/lib/core/zip.dart），Windows 只发 MSIX。
 
 [CmdletBinding()]
 param(
@@ -42,15 +39,8 @@ param(
     # 不一致是曾经真实踩过的坑，这里用失败把它挡住。
     [string]$Version = '',
 
-    # 同时构建 Android arm64 APK。
+    # 同时构建 Android arm64 的 zip（内含 APK）。
     [switch]$Android,
-
-    # 同时构建 Windows MSIX 安装包。
-    #
-    # 需要 Windows SDK 的 makeappx / signtool（见 scripts/package-msix.ps1）。
-    # 默认**不**构建：CI 上另有一步专门处理它，而本机快速构建时多花一分钟签名
-    # 没有意义。要用就显式传 -Msix。
-    [switch]$Msix,
 
     # MSIX 的发布者 DN。必须与签名证书 Subject 逐字相同。
     [string]$MsixPublisher = 'CN=LUSIDA'
@@ -115,15 +105,6 @@ New-Item -ItemType Directory -Force -Path $distDir | Out-Null
 
 # 打一个「解压即就地覆盖」的 zip：bundle 目录的**内容**位于压缩包根，
 # 不要在外面再套一层目录名——这是更新器的解压约定。
-function New-BundleZip {
-    param(
-        [Parameter(Mandatory = $true)][string]$SourceDir,
-        [Parameter(Mandatory = $true)][string]$OutputZip
-    )
-    if (Test-Path -LiteralPath $OutputZip) { Remove-Item -LiteralPath $OutputZip -Force }
-    Compress-Archive -Path (Join-Path $SourceDir '*') -DestinationPath $OutputZip -CompressionLevel Optimal
-}
-
 # GPL-3.0 §4/§6（以及 BSD-3-Clause / Apache-2.0 的二进制再分发条款）要求接收
 # 二进制的人同时拿到许可证与第三方声明。仓库根的 LICENSE / NOTICE.md /
 # THIRD-PARTY-NOTICES.md 是唯一来源，打包前复制进 bundle，缺一个就拒绝打包
@@ -235,42 +216,36 @@ try {
     if (-not (Test-Path -LiteralPath (Join-Path $winBundle 'sing-box.exe'))) {
         throw "bundle 中缺少 sing-box.exe（app/windows/CMakeLists.txt 未安装内核？）"
     }
-    # 许可与第三方声明随包分发；zip 根多了这两个文件，但附件命名不变。
+    # 许可与第三方声明随包分发。MakeAppx 会把 bundle 目录下的**所有**文件收进包，
+    # 因此先复制进 bundle，再由下面的断言确认它们真的在包里。
     Copy-LegalFiles -DestDir $winBundle
-    $winZip = Join-Path $distDir "XVPN-$ver-windows-x64.zip"
-    New-BundleZip -SourceDir $winBundle -OutputZip $winZip
-    Assert-ZipContains -ZipPath $winZip -Entries @('LICENSE', 'NOTICE.md', 'THIRD-PARTY-NOTICES.md')
-    Write-Host "已生成：$winZip（含 LICENSE、NOTICE.md 与 THIRD-PARTY-NOTICES.md）" -ForegroundColor Green
 
     # ------------------------------------------------------------ Windows MSIX
     #
-    # 与 zip 共用同一个 bundle：两种分发形态的**内容**必须一致，各构建一次迟早
-    # 会出现「zip 里有新内核、msix 里还是旧的」这种谁也想不到的差异。
+    # Windows **只发 MSIX**（绿色解压版 zip 不再发布），因此这里不再产出 zip：
+    # 与 CI 保持同一种分发形态，本地测出来的包就是用户装到的包。
     #
-    # 注意 Copy-LegalFiles 已经往 bundle 里放了三份许可文本，而 MakeAppx 会把
-    # 包目录下的**所有**文件都收进去——因此许可也会随 MSIX 分发，与
-    # package-msix.ps1 自己那一步是同一个目的（那里是给「单独跑该脚本」用的）。
-    if ($Msix) {
-        Write-Host '=== 打包 MSIX ===' -ForegroundColor Cyan
-        $msixPath = Join-Path $distDir "XVPN-$ver-windows-x64.msix"
-        $cerPath = Join-Path $distDir "XVPN-$ver-windows-msix.cer"
-        & (Join-Path $PSScriptRoot 'package-msix.ps1') `
-            -BundleDir $winBundle `
-            -Version $ver `
-            -OutFile $msixPath `
-            -Publisher $MsixPublisher `
-            -CertificateOut $cerPath
-        if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $msixPath)) {
-            throw "MSIX 打包失败：$msixPath"
-        }
-        Write-Host "已生成：$msixPath" -ForegroundColor Green
-        if (Test-Path -LiteralPath $cerPath) {
-            Write-Host "已生成：$cerPath（安装前需先信任，见 scripts/install-msix.ps1）" -ForegroundColor Yellow
-        }
+    # 升级由系统部署服务完成（升级时应用内走 Add-AppxPackage，用户手动则双击
+    # 安装包），不需要安装目录可写，也不会出现「替换到一半」的中间态。
+    Write-Host '=== 打包 MSIX ===' -ForegroundColor Cyan
+    $msixPath = Join-Path $distDir "XVPN-$ver-windows-x64.msix"
+    $cerPath = Join-Path $distDir "XVPN-$ver-windows-msix.cer"
+    & (Join-Path $PSScriptRoot 'package-msix.ps1') `
+        -BundleDir $winBundle `
+        -Version $ver `
+        -OutFile $msixPath `
+        -Publisher $MsixPublisher `
+        -CertificateOut $cerPath
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $msixPath)) {
+        throw "MSIX 打包失败：$msixPath"
     }
-    else {
-        Write-Host '（未传 -Msix，跳过 MSIX 打包）' -ForegroundColor Yellow
+    Write-Host "已生成：$msixPath" -ForegroundColor Green
+    if (Test-Path -LiteralPath $cerPath) {
+        Write-Host "已生成：$cerPath（安装前需先信任，见 scripts/install-msix.ps1）" -ForegroundColor Yellow
     }
+    Write-Host '提醒：正式发布必须用稳定证书签名（MSIX_PFX_BASE64）。本机不指定证书时' -ForegroundColor Yellow
+    Write-Host '      package-msix.ps1 会现造一张自签名证书，只适合自测：每次新建一张会' -ForegroundColor Yellow
+    Write-Host '      让已装旧版的用户无法覆盖升级。见 scripts/new-msix-cert.ps1。' -ForegroundColor Yellow
 
     # ------------------------------------------------------------ Android
     if ($Android) {
@@ -290,16 +265,28 @@ try {
             $apk = Join-Path $appDir 'build/app/outputs/flutter-apk/app-release.apk'
             if (-not (Test-Path -LiteralPath $apk)) { throw "未找到 APK：$apk" }
 
-            # 更新器需要裸 APK 才能调用系统安装；再附带一份 zip，让三端都有 zip。
-            $apkOut = Join-Path $distDir "XVPN-$ver-android-arm64.apk"
-            Copy-Item -LiteralPath $apk -Destination $apkOut -Force
-            Assert-ZipContains -ZipPath $apkOut -Entries @('assets/licenses/LICENSE', 'assets/licenses/NOTICE.md', 'assets/licenses/THIRD-PARTY-NOTICES.md')
-            Write-Host "已生成：$apkOut（含 assets/licenses/ 下的 LICENSE、NOTICE.md 与 THIRD-PARTY-NOTICES.md）" -ForegroundColor Green
+            # 先校验许可确实进了 APK（此时它还是构建产物里的本地文件，报错更直白），
+            # 再打进 zip。**裸 APK 不进 dist**：与 CI 一样，发布页只挂 zip。
+            Assert-ZipContains -ZipPath $apk -Entries @('assets/licenses/LICENSE', 'assets/licenses/NOTICE.md', 'assets/licenses/THIRD-PARTY-NOTICES.md')
+            Write-Host "APK 含 assets/licenses/ 下的 LICENSE、NOTICE.md 与 THIRD-PARTY-NOTICES.md" -ForegroundColor Green
 
-            $apkZip = Join-Path $distDir "XVPN-$ver-android-arm64.zip"
-            if (Test-Path -LiteralPath $apkZip) { Remove-Item -LiteralPath $apkZip -Force }
-            Compress-Archive -LiteralPath $apkOut -DestinationPath $apkZip -CompressionLevel Optimal
-            Write-Host "已生成：$apkZip" -ForegroundColor Green
+            $stageDir = Join-Path $distDir 'stage'
+            New-Item -ItemType Directory -Force -Path $stageDir | Out-Null
+            try {
+                $stagedApk = Join-Path $stageDir "XVPN-$ver-android-arm64.apk"
+                Copy-Item -LiteralPath $apk -Destination $stagedApk -Force
+                $apkZip = Join-Path $distDir "XVPN-$ver-android-arm64.zip"
+                if (Test-Path -LiteralPath $apkZip) { Remove-Item -LiteralPath $apkZip -Force }
+                # zip 内部不带目录层级：解压出来就是那一个 APK，与 CI 的
+                # `zip -q` 布局一致（更新器按条目名取 APK，见 core/zip.dart）。
+                Compress-Archive -LiteralPath $stagedApk -DestinationPath $apkZip -CompressionLevel Optimal
+            }
+            finally {
+                if (Test-Path -LiteralPath $stageDir) {
+                    Remove-Item -LiteralPath $stageDir -Recurse -Force
+                }
+            }
+            Write-Host "已生成：$apkZip（内含 XVPN-$ver-android-arm64.apk）" -ForegroundColor Green
         }
         finally {
             if (Test-Path -LiteralPath $androidLegalDir) {
@@ -316,6 +303,14 @@ finally {
 }
 
 # ---------------------------------------------------------------- 校验和
+
+# 与 CI 同一条守卫：**裸 APK 不进 dist**。安卓只发内含 APK 的 zip，而 dist 里
+# 若有上一次运行遗留的 .apk（旧版本的本脚本会产出它），它会被算进 SHA256SUMS、
+# 并被当成「本次的产物」——这里直接失败，让人先去清 dist。
+$bareApk = @(Get-ChildItem -LiteralPath $distDir -File -Filter '*.apk' -ErrorAction SilentlyContinue)
+if ($bareApk.Count -gt 0) {
+    throw "dist 里存在裸 APK（$($bareApk.Name -join '、')）：安卓只发内含 APK 的 zip，发布页不直接分发 APK。请先清空 dist 再重跑。"
+}
 
 # SHA256SUMS.txt 采用 sha256sum 的格式（小写十六进制 + 两个空格 + 文件名），
 # 这样 Linux 端可直接 `sha256sum -c SHA256SUMS.txt`。

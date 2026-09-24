@@ -148,16 +148,22 @@ Org-issued files: skip server install; go to Step 3.
 ### Step 3 — Install XVPN
 
 Download from [Releases](https://github.com/LSD-Apps/XVPN/releases/latest), install, launch. No account.
+Windows ships a `.msix` installer (double-click it); Linux and Android ship archives
+(Android's zip contains the APK — extract and install it).
 The first launch asks you to acknowledge that this is a client (no nodes) and
 that lawful use is your responsibility; Settings can reopen the full notice.
 
-**Unzip it into a per-user directory** — for example
-`%LOCALAPPDATA%\Programs\XVPN` on Windows, `~/.local/opt/xvpn` on Linux.
-The app updates itself in place; if it lives under a protected directory such as
-`C:\Program Files`, every update has to go through a UAC prompt (the updater
-will ask for it, and you can also move the folder to a per-user location to stop
-needing it). On Linux an install owned by the package manager is never
-auto-updated — in that case update through the package manager.
+**Windows (MSIX):** installation is a double-click. If the release also carries
+`XVPN-<version>-windows-msix.cer`, that build is signed with a self-signed
+certificate — trust it first as described in
+[`scripts/install-msix.ps1`](../scripts/install-msix.ps1), otherwise the install
+fails with `0x800B0109`. Updates afterwards go through `Add-AppxPackage` and need
+no administrator prompt.
+
+**Linux (zip):** unzip it into a per-user directory — for example
+`~/.local/opt/xvpn` — and run it. The app updates itself in place; an install
+owned by the package manager is never auto-updated, so update through the
+package manager in that case.
 
 ### Step 4 — Import
 
@@ -269,7 +275,7 @@ A: Official WireGuard / OpenVPN / Hysteria2 / Shadowsocks / VMess / VLESS / Troj
 A: Many domain pins hot-reload within ~10s while connected; **mode** changes often need a reconnect. Check Split records for the rule that actually matched.
 
 **Q: The in-app update failed, or I would rather install it myself?**  
-A: The confirmation step shows the **path of the downloaded package**, with **Copy path** and **Open containing folder**. Auto-replace can fail on permissions, antivirus or a read-only directory — the package is already downloaded and checksum-verified, so unzipping it over the install folder is enough (or copy it to another machine). The same path is shown when an install attempt fails.
+A: The confirmation step shows the **path of the downloaded package**, with **Copy path** and **Open containing folder**. Auto-install can fail when the signature is not trusted, or on antivirus / read-only directories — the package is already downloaded and checksum-verified: on Windows double-click that `.msix`, on Linux unzip it over the install folder (or copy it to another machine). The same path is shown when an install attempt fails.
 
 **Q: Relation to sing-box?**  
 A: Independent project; no affiliation. See [`NOTICE.md`](../NOTICE.md).

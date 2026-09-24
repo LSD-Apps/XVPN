@@ -18,17 +18,17 @@
 # 会回落到 fallbackVersion，发布包若漏传就会显示错误版本。
 #
 # 附件命名（exact）：
-#   XVPN-<ver>-windows-x64.zip
-#   XVPN-<ver>-windows-x64.msix          （MSIX 安装包，另附 .cer 供自签名场景）
+#   XVPN-<ver>-windows-x64.msix          （Windows 唯一产物；未用受信任证书时另附 .cer）
 #   XVPN-<ver>-windows-msix.cer
 #   XVPN-<ver>-linux-x64.zip
-#   XVPN-<ver>-android-arm64.apk
-#   XVPN-<ver>-android-arm64.zip
+#   XVPN-<ver>-android-arm64.zip         （zip 里装着 APK，**不直接发裸 APK**）
 #   SHA256SUMS.txt
 #
-# .msix / .cer **不在** in-app 更新器消费的附件集合里（更新器读
-# windows-x64.zip）。MSIX 版本由 Add-AppxPackage / 应用安装程序自行升级，
-# 因此 zip 的附件名不能改——旧版本靠它找到升级包。
+# 三端一律只发压缩包：Android 的 APK 打包进 zip（系统安装器只吃 APK，更新器
+# 自己从 zip 里取，见 app/lib/core/zip.dart）；Windows 只发 MSIX，不再发绿色
+# 版 zip；Linux 一直是 zip。附件名是更新器的契约，改动必须三处同步：
+# 本文件、scripts/build-release.ps1、app/lib/core/updater.dart
+# （`app/test/release_assets_test.dart` 会断言这三处一致）。
 
 name: Release
 
@@ -194,57 +194,21 @@ jobs:
           flutter build windows --release "--dart-define=XVPN_VERSION=${{ needs.prepare.outputs.ver }}"
           if ($LASTEXITCODE -ne 0) { throw 'flutter build windows 失败' }
 
-      - name: 打包为 XVPN-<ver>-windows-x64.zip
-        shell: pwsh
-        run: |
-          $ver = '${{ needs.prepare.outputs.ver }}'
-          $bundle = 'app\build\windows\x64\runner\Release'
-          if (-not (Test-Path (Join-Path $bundle 'xvpn.exe'))) { throw "未找到 Windows 产物：$bundle" }
-          # CMake 会把 sing-box.exe 装到可执行文件旁；缺了说明内核没进 bundle，
-          # 这种包发出去用户只会看到「缺少内核文件」，因此在这里就失败。
-          if (-not (Test-Path (Join-Path $bundle 'sing-box.exe'))) { throw 'bundle 中缺少 sing-box.exe' }
-
-          # GPL-3.0 §4/§6（以及 BSD-3-Clause / Apache-2.0 的二进制再分发条款）要求
-          # 接收者随二进制拿到许可证与第三方声明，并能据此获取对应源码。
-          # 因此把仓库根的 LICENSE / NOTICE.md / THIRD-PARTY-NOTICES.md 放进压缩包
-          # 根——缺任何一个就拒绝打包。
-          # 只新增**文件内容**，不新增/改名附件，压缩包命名契约不受影响。
-          foreach ($legal in @('LICENSE', 'NOTICE.md', 'THIRD-PARTY-NOTICES.md')) {
-            $src = Join-Path $env:GITHUB_WORKSPACE $legal
-            if (-not (Test-Path $src)) { throw "缺少 $legal，拒绝打包：分发物必须附带许可与第三方声明" }
-            Copy-Item -LiteralPath $src -Destination (Join-Path $bundle $legal) -Force
-          }
-
-          New-Item -ItemType Directory -Force dist | Out-Null
-          $out = "dist\XVPN-$ver-windows-x64.zip"
-          if (Test-Path $out) { Remove-Item $out -Force }
-          # 把 bundle 目录的**内容**放在压缩包根，解压即可就地覆盖安装目录——
-          # 这是更新器的解压约定，不要改成「外面再套一层目录名」。
-          Compress-Archive -Path (Join-Path $bundle '*') -DestinationPath $out -CompressionLevel Optimal
-
-          # 校验：压缩包根必须真的含三份许可/声明文件，否则前面的复制等于没生效。
-          Add-Type -AssemblyName System.IO.Compression.FileSystem
-          $zip = [System.IO.Compression.ZipFile]::OpenRead((Resolve-Path $out).Path)
-          try {
-            $entryNames = @($zip.Entries | ForEach-Object { $_.FullName })
-            foreach ($legal in @('LICENSE', 'NOTICE.md', 'THIRD-PARTY-NOTICES.md')) {
-              if ($entryNames -notcontains $legal) { throw "$out 缺少 $legal" }
-            }
-            Write-Host "$out 含 LICENSE、NOTICE.md 与 THIRD-PARTY-NOTICES.md"
-          } finally { $zip.Dispose() }
-          Write-Host "已生成 $out"
-
-      # MSIX 安装包。与 zip 共用同一个 bundle（见 scripts/package-msix.ps1），
-      # 保证两种分发形态的内容完全一致。
+      # MSIX 安装包——**Windows 的唯一产物**。绿色版 zip 已不再发布（三端统一为
+      # 「下载即得压缩包/安装包」），因此这里不再生成 zip，包必须一次做对。
       #
-      # 签名：windows-latest runner 上有 Windows SDK（makeappx / signtool），
-      # 但没有发布证书。这里的行为与 Android 的签名守卫**不同**，是有意的：
-      #   * 配了 MSIX_PFX_BASE64 secret → 用正式证书签，用户装得上且升级平滑；
-      #   * 没配 → 退回自签名，并把公钥 .cer 一并发布，用户按
-      #     scripts/install-msix.ps1 的说明先信任它再安装。
-      # 之所以不在这里直接失败：MSIX 目前是**额外的**分发形态（zip 仍是主路径，
-      # 自动更新走 zip），让它因为没有证书就挡掉整个发布，代价远大于收益。
-      # 一旦 MSIX 成为主推形态，这里应当改成与 Android 一样的硬失败。
+      # 签名：windows-latest runner 上有 Windows SDK（makeappx / signtool），但
+      # 没有发布证书，而 **Windows 只发 MSIX 时证书是硬要求**：
+      #
+      #   * 缺证书时退回「每次构建新造一张自签名证书」会让每个版本由不同证书签名，
+      #     已装旧版的用户升级时签名链对不上（只能卸载重装，而卸载会清掉配置），
+      #     而这条流水线每次都是全新的 runner，不存在「上一张证书」可复用；
+      #   * 因此缺 MSIX_PFX_BASE64 时**直接失败**，与 Android 的 keystore 守卫
+      #     同一条纪律（见 docs/RELEASE.md 与 scripts/new-msix-cert.ps1）。
+      #
+      # 用自签名证书签（PFX 里那张证书 Subject == Issuer）时，仍会把公钥 .cer
+      # 一并发布：用户必须先信任它才装得上。这一点无法自动绕过，只能用正式代码
+      # 签名证书解决。
       - name: 打包为 XVPN-<ver>-windows-x64.msix
         shell: pwsh
         env:
@@ -258,6 +222,29 @@ jobs:
           $ver = '${{ needs.prepare.outputs.ver }}'
           $bundle = 'app\build\windows\x64\runner\Release'
           if (-not (Test-Path (Join-Path $bundle 'xvpn.exe'))) { throw "未找到 Windows 产物：$bundle" }
+          # CMake 会把 sing-box.exe 装到可执行文件旁；缺了说明内核没进 bundle，
+          # 这种包发出去用户只会看到「缺少内核文件」，因此在这里就失败。
+          if (-not (Test-Path (Join-Path $bundle 'sing-box.exe'))) { throw 'bundle 中缺少 sing-box.exe' }
+
+          # GPL-3.0 §4/§6（以及 BSD-3-Clause / Apache-2.0 的二进制再分发条款）要求
+          # 接收者随二进制拿到许可证与第三方声明，并能据此获取对应源码。
+          # 仓库根的这三份文件是唯一来源；MakeAppx 会把包目录下的**所有**文件收进
+          # 包，因此先复制进 bundle、打包后再断言它们真的在包里。
+          foreach ($legal in @('LICENSE', 'NOTICE.md', 'THIRD-PARTY-NOTICES.md')) {
+            $src = Join-Path $env:GITHUB_WORKSPACE $legal
+            if (-not (Test-Path $src)) { throw "缺少 $legal，拒绝打包：分发物必须附带许可与第三方声明" }
+            Copy-Item -LiteralPath $src -Destination (Join-Path $bundle $legal) -Force
+          }
+
+          if ([string]::IsNullOrWhiteSpace($env:MSIX_PFX_BASE64) -or
+              [string]::IsNullOrWhiteSpace($env:MSIX_PFX_PASSWORD)) {
+            # Windows 只发 MSIX，发行证书是必需的，不再回退到「每次构建现造一张
+            # 自签名证书」——那样每个版本由不同证书签名，已装旧版的用户升级时
+            # 签名链对不上，只能卸载重装（卸载会清掉配置）。
+            Write-Host '::error::未配置 MSIX_PFX_BASE64 / MSIX_PFX_PASSWORD：Windows 只发 MSIX，发行证书是必需的。'
+            Write-Host '生成本机证书并配好 secret：pwsh scripts/new-msix-cert.ps1（见 docs/RELEASE.md 5.3）。'
+            throw '缺少 MSIX 发行签名证书（MSIX_PFX_BASE64 / MSIX_PFX_PASSWORD），已中止：Windows 不再发布 zip，也不回退自签名。'
+          }
 
           $publisher = if ([string]::IsNullOrWhiteSpace($env:MSIX_PUBLISHER)) { 'CN=LUSIDA' } else { $env:MSIX_PUBLISHER }
 
@@ -265,24 +252,26 @@ jobs:
           $msix = "dist\XVPN-$ver-windows-x64.msix"
           $cer  = "dist\XVPN-$ver-windows-msix.cer"
 
-          $signArgs = @{ Publisher = $publisher; CertificateOut = $cer }
-          if (-not [string]::IsNullOrWhiteSpace($env:MSIX_PFX_BASE64)) {
-            # 正式证书：还原成 PFX，导入当前用户证书库，再用它的指纹签名。
-            $pfx = Join-Path $env:RUNNER_TEMP 'msix.pfx'
-            [System.IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:MSIX_PFX_BASE64))
-            $password = ConvertTo-SecureString -String $env:MSIX_PFX_PASSWORD -Force -AsPlainText
-            $imported = Import-PfxCertificate -FilePath $pfx -CertStoreLocation Cert:\CurrentUser\My -Password $password
-            Write-Host "使用正式签名证书：$($imported.Thumbprint)（$($imported.Subject)）"
-            if ($imported.Subject -ne $publisher) {
-              throw "证书 Subject「$($imported.Subject)」与 Publisher「$publisher」不一致；MSIX 要求逐字相同（可用仓库变量 MSIX_PUBLISHER 对齐）。"
-            }
-            $signArgs.CertificateThumbprint = $imported.Thumbprint
-            # 正式证书不需要把公钥随包发布，用户机器上本来就信任它。
-            $cer = ''
-            $signArgs.Remove('CertificateOut')
+          # 还原 PFX、导入当前用户证书库，用它的指纹签名。
+          $pfx = Join-Path $env:RUNNER_TEMP 'msix.pfx'
+          [System.IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:MSIX_PFX_BASE64))
+          $password = ConvertTo-SecureString -String $env:MSIX_PFX_PASSWORD -Force -AsPlainText
+          $imported = Import-PfxCertificate -FilePath $pfx -CertStoreLocation Cert:\CurrentUser\My -Password $password
+          Write-Host "使用签名证书：$($imported.Thumbprint)（$($imported.Subject)）"
+          if ($imported.Subject -ne $publisher) {
+            throw "证书 Subject「$($imported.Subject)」与 Publisher「$publisher」不一致；MSIX 要求逐字相同（可用仓库变量 MSIX_PUBLISHER 对齐）。"
           }
-          else {
-            Write-Warning '未配置 MSIX_PFX_BASE64，改用自签名证书：安装前用户必须先信任随包发布的 .cer（见 scripts/install-msix.ps1）。'
+
+          $signArgs = @{ Publisher = $publisher; CertificateThumbprint = $imported.Thumbprint }
+          if ($imported.Subject -eq $imported.Issuer) {
+            # 自签名：证书不在任何用户机器的受信任根里，必须把公钥随包发布，
+            # 用户按发布说明先信任它才装得上。用正式代码签名证书时不会走到这里
+            # （CA 签发的证书 Subject ≠ Issuer）。
+            Write-Warning '这张签名证书是自签名的：用户安装前必须先信任随包发布的 .cer，否则会以 0x800B0109 失败。'
+            [System.IO.File]::WriteAllBytes(
+              (Join-Path (Resolve-Path dist).Path "XVPN-$ver-windows-msix.cer"),
+              $imported.Export('Cert')
+            )
           }
 
           & scripts\package-msix.ps1 -BundleDir $bundle -Version $ver -OutFile $msix @signArgs
@@ -309,18 +298,16 @@ jobs:
 
           ls dist\XVPN-$ver-windows-x64.msix, dist\XVPN-$ver-windows-msix.cer -ErrorAction SilentlyContinue
 
-      - name: 上传产物（zip 与 msix）
+      - name: 上传产物（msix）
         uses: actions/upload-artifact@v4
         with:
           name: windows
-          path: |
-            dist/XVPN-*-windows-x64.zip
-            dist/XVPN-*-windows-x64.msix
+          path: dist/XVPN-*-windows-x64.msix
           if-no-files-found: error
 
-      # .cer 单独上传：只在**自签名**场景下才存在（配了正式证书时 package-msix.ps1
-      # 不会导出它）。和上面合并成一条时，`if-no-files-found` 只能取一个值——
-      # 要么在没证书时误报失败，要么漏掉真正的缺失，两个都不能要。
+      # .cer 单独上传：只在**自签名**证书下才存在（CA 签发的证书不需要它）。
+      # 和上面合并成一条时，`if-no-files-found` 只能取一个值——要么在使用正式
+      # 证书时误报失败，要么漏掉真正的缺失，两个都不能要。
       # artifact 名不能与上面相同（同一次运行里重名会直接失败），因此另起一个；
       # release 任务用 merge-multiple 把两个都摊进同一个 dist/，文件名不冲突。
       - name: 上传产物（自签名证书，可选）
@@ -562,21 +549,23 @@ jobs:
           flutter build apk --release --target-platform android-arm64 \
             --dart-define=XVPN_VERSION=${{ needs.prepare.outputs.ver }}
 
-      - name: 打包 APK 与 zip
+      - name: 打包为 XVPN-<ver>-android-arm64.zip
         run: |
           set -euo pipefail
           ver='${{ needs.prepare.outputs.ver }}'
           apk='app/build/app/outputs/flutter-apk/app-release.apk'
           test -f "$apk" || { echo "::error::未找到 APK：$apk"; exit 1; }
 
-          mkdir -p dist
-          # 更新器需要**裸 APK** 才能调用系统安装器；再附一份 zip，
-          # 让三端都有一个「下载即得压缩包」的入口。
-          cp "$apk" "dist/XVPN-$ver-android-arm64.apk"
-          ( cd dist && zip -q "XVPN-$ver-android-arm64.zip" "XVPN-$ver-android-arm64.apk" )
+          # 发布页**不直接挂裸 APK**：三端统一为「下载即得压缩包」。因此这里把
+          # APK 以契约里的名字放进 zip 内部（`XVPN-<ver>-android-arm64.apk`），
+          # 只把 zip 作为附件。应用内更新器下载这个 zip 后自己把 APK 取出来再交给
+          # 系统安装器（见 app/lib/core/zip.dart）——系统安装器只接受 APK 文件。
+          mkdir -p dist/stage
+          cp "$apk" "dist/stage/XVPN-$ver-android-arm64.apk"
 
           # 校验许可确实进了 APK：这条断言让「复制进 assets」不会静默失效。
-          python3 - "dist/XVPN-$ver-android-arm64.apk" <<'PY'
+          # 在**打进 zip 之前**做：此时路径就是本地文件，报错信息也更直白。
+          python3 - "dist/stage/XVPN-$ver-android-arm64.apk" <<'PY'
           import sys, zipfile
           names = set(zipfile.ZipFile(sys.argv[1]).namelist())
           want = ("assets/licenses/LICENSE", "assets/licenses/NOTICE.md", "assets/licenses/THIRD-PARTY-NOTICES.md")
@@ -585,15 +574,29 @@ jobs:
               sys.exit("APK 缺少：" + "、".join(missing))
           print("APK 含 assets/licenses/ 下的 LICENSE、NOTICE.md 与 THIRD-PARTY-NOTICES.md")
           PY
+
+          # zip 内部不带目录层级：解压出来的就是那一个 APK。
+          ( cd dist/stage && zip -q "../XVPN-$ver-android-arm64.zip" "XVPN-$ver-android-arm64.apk" )
+          rm -rf dist/stage
+
+          # 校验 zip 里的条目名与契约一致，且**没有**把裸 APK 留在 dist 里。
+          python3 - "dist/XVPN-$ver-android-arm64.zip" "$ver" <<'PY'
+          import sys, zipfile
+          ver = sys.argv[2]
+          names = [n for n in zipfile.ZipFile(sys.argv[1]).namelist() if not n.endswith("/")]
+          want = f"XVPN-{ver}-android-arm64.apk"
+          if names != [want]:
+              sys.exit(f"zip 内容与契约不符：期望只有 {want}，实际 {names}")
+          print(f"zip 内只有 {want}")
+          PY
+          test ! -e "dist/XVPN-$ver-android-arm64.apk" || { echo "::error::dist 里仍有裸 APK，发布页不直接分发 APK"; exit 1; }
           ls -la dist
 
       - name: 上传产物
         uses: actions/upload-artifact@v4
         with:
           name: android
-          path: |
-            dist/XVPN-*-android-arm64.apk
-            dist/XVPN-*-android-arm64.zip
+          path: dist/XVPN-*-android-arm64.zip
           if-no-files-found: error
 
   # ---------------------------------------------------------------- Release
@@ -621,8 +624,15 @@ jobs:
           # 「校验和文件里没有它」比「校验失败」更难被察觉。空匹配交给 nullglob
           # 之外的显式判断处理——见下面那行。
           shopt -s nullglob
-          files=(XVPN-*.zip XVPN-*.apk XVPN-*.msix XVPN-*.cer)
+          # **不含 *.apk**：发布页不直接分发裸 APK，安卓的 APK 在 zip 内部。
+          files=(XVPN-*.zip XVPN-*.msix XVPN-*.cer)
           if [ ${#files[@]} -eq 0 ]; then echo '::error::dist 里没有任何产物'; exit 1; fi
+          # 万一哪个任务又产出裸 APK，这里直接失败，而不是把它悄悄挂上发布页。
+          bare=(XVPN-*.apk)
+          if [ ${#bare[@]} -ne 0 ]; then
+            echo "::error::dist 里出现了裸 APK（${bare[*]}）：安卓只发内含 APK 的 zip，发布页不直接分发 APK。"
+            exit 1
+          fi
           sha256sum "${files[@]}" | sort -k2 > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
@@ -678,14 +688,13 @@ jobs:
           安装后显示的名字是「幽门」——启动器、窗口标题、托盘与系统 VPN 通知都用它；
           仓库名、可执行文件名与附件名仍是 XVPN（附件不改名，旧版本才找得到升级包）。
 
-          下载对应平台的压缩包，解压后运行 xvpn：
-          - Windows x64：XVPN-$VER-windows-x64.zip
-            另有 MSIX 安装包 XVPN-$VER-windows-x64.msix（含桌面快捷方式与
-            「随系统启动」开关；未配置发布证书时附 XVPN-$VER-windows-msix.cer，
-            安装前需先信任它，详见仓库 scripts/install-msix.ps1）
-          - Linux x64：XVPN-$VER-linux-x64.zip
-          - Android arm64：XVPN-$VER-android-arm64.apk（可直接安装）
-            另附 XVPN-$VER-android-arm64.zip
+          三端都只提供压缩包/安装包（不直接分发裸 APK）：
+          - Windows x64：XVPN-$VER-windows-x64.msix（双击安装；含桌面快捷方式与
+            「随系统启动」开关。若附带 XVPN-$VER-windows-msix.cer，则说明这一版
+            用的是自签名证书——需先按仓库 scripts/install-msix.ps1 的说明信任它，
+            否则安装会以 0x800B0109 失败）
+          - Linux x64：XVPN-$VER-linux-x64.zip（解压后运行 xvpn）
+          - Android arm64：XVPN-$VER-android-arm64.zip（解压得到 APK，安装即可）
 
           校验方式：sha256sum -c SHA256SUMS.txt
 
@@ -699,4 +708,4 @@ jobs:
 
           应用内「检查更新」读取本 Release 的附件，因此请勿重命名。"
           fi
-          retry gh release upload "$TAG" dist/*.zip dist/*.apk dist/*.msix dist/*.cer dist/SHA256SUMS.txt --clobber --repo "$REPO"
+          retry gh release upload "$TAG" dist/*.zip dist/*.msix dist/*.cer dist/SHA256SUMS.txt --clobber --repo "$REPO"

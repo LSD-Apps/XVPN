@@ -8,7 +8,7 @@
 > （去掉 `+build` 后缀）。发布 tag 必须与它一致，否则发布流水线会直接失败——
 > 见 [`.github/workflows/release.yml`](.github/workflows/release.yml)。
 
-## [1.4.0] - 2026-09-17
+## [1.4.0] - 2026-09-24
 
 ### 新增
 
@@ -39,7 +39,9 @@
 - **Windows MSIX 安装包**（`XVPN-<ver>-windows-x64.msix`）。打包脚本
   [`scripts/package-msix.ps1`](scripts/package-msix.ps1)，安装与桌面快捷方式由
   [`scripts/install-msix.ps1`](scripts/install-msix.ps1) 完成，两者都接进了
-  [`scripts/build-release.ps1`](scripts/build-release.ps1)（`-Msix`）与发布流水线。
+  [`scripts/build-release.ps1`](scripts/build-release.ps1) 与发布流水线。
+  **自本版起它是 Windows 唯一的产物**——绿色解压版（zip）不再发布，原因见下面
+  「变更」里的分发形态那一条。
 
   安装后**自动创建桌面快捷方式**。MSIX 没有「安装完成后运行脚本」的标准钩子，而
   打包进程写 `%USERPROFILE%\Desktop` 会被文件系统虚拟化到包私有目录、写不到真实
@@ -67,6 +69,62 @@
   **悄悄消失**，用户看到的是「这个版本没有开机自启」，而不是任何错误。
 
 ### 变更
+
+- **三端的分发形态统一为压缩包／安装包，发布页不再直接挂裸 APK。**
+  `XVPN-<ver>-android-arm64.zip` 里装着那份 APK，Windows 只发
+  `XVPN-<ver>-windows-x64.msix`，Linux 仍是 `XVPN-<ver>-linux-x64.zip`。
+  发布页上的裸文件会被各种「下载站 / 镜像 / 直链」原样搬运，用户很难判断拿到
+  的是不是官方包；统一之后每个平台都是一个「下载即得」的归档，校验和只需覆盖
+  这一层。发布流水线里加了三条硬断言：`dist` 里出现裸 APK 就直接失败、
+  `SHA256SUMS.txt` 不把 APK 算作产物、`gh release upload` 不带 `*.apk`。
+
+  代价是**两侧的自动更新都得跟着改**，否则用户手里的旧版本会找不到升级包：
+
+  - **Windows 走 `Add-AppxPackage` 覆盖升级。** 助手脚本等主进程退出后调用它，
+    再用清单声明的执行别名（`%LOCALAPPDATA%\Microsoft\WindowsApps\xvpn.exe`）
+    重启——包目录名里带着版本号（`WindowsApps\XVPN_1.4.0.0_x64__<哈希>\`），
+    升级之后旧路径就没了，指过去就是死链接。别名路径在**脚本里**计算而不是由
+    应用传进去：MSIX 打包应用的 `LOCALAPPDATA` 被重定向到包私有目录，从应用里
+    读出来的是那个假路径。
+  - **随之删掉了「以管理员身份更新」那条路。** 升级改由系统部署服务写
+    `%ProgramFiles%\WindowsApps\`，既不需要安装目录可写，也不需要提权——原先
+    那套「探测安装目录是否可写 → 弹出一次 UAC 只提权复制那一步」连同
+    `UpdateInstallElevationRequired`、提权复制脚本一起删除。这也顺带消掉了它
+    唯一能留下的坏形态：把安装目录覆盖到一半。
+  - **安卓下载 zip 之后自己把 APK 取出来**，再交给系统安装器（系统安装器只
+    接受 APK 文件）。解压是纯 Dart 实现
+    （[`app/lib/core/zip.dart`](app/lib/core/zip.dart)，用 `dart:io` 的
+    `ZLibDecoder(raw: true)` 解裸 deflate），**没有为此新增任何依赖**——与
+    `core/sha256.dart` 同一条纪律。原生侧（`MainActivity.installApk`）仍然只收
+    APK 路径，契约没变。解完会校验解出的字节数与 **CRC-32**：整体 SHA-256 只
+    证明下载没被改坏，CRC 才证明**我们解对了**。
+  - **绿色解压版用户会被提示一次。** 他们点「安装更新」装出来的是一个**并行**
+    的 MSIX 版：包身份与配置目录都不同（打包后 `%LOCALAPPDATA%` 被重定向到
+    `Packages\<包家族>\LocalCache\`），等于全新安装。这件事在**动手之前**就说
+    清楚（`updater.dart` 的 `preInstallNote`，依据是可执行文件是否位于
+    `\WindowsApps\`），而不是事后让用户对着一个空配置发愣。
+
+  为这条契约补了 `app/test/release_assets_test.dart`：以
+  `expectedAssetName` 为唯一事实来源，断言 CI、
+  [`scripts/build-release.ps1`](scripts/build-release.ps1) 与
+  [`docs/RELEASE.md`](docs/RELEASE.md) 的附件清单三者一致，且流水线真的产出并
+  上传那三个包。此前「附件名是契约，改动必须三处同步」只写在注释里，没有任何
+  东西拦着它漂移——而漂移的表现是用户看到「最新版本没有适用于本平台的安装包」，
+  看起来像上游没发布。
+
+- **MSIX 的发行签名证书成为发布的硬要求**（Windows 只发 MSIX，缺证书就没有
+  可用的 Windows 产物）。此前缺 `MSIX_PFX_BASE64` 时会退回「现造一张自签名
+  证书」，而那在 CI 上是**每次构建一张新证书**：每个版本的签名链都不一样，已装
+  旧版的用户覆盖升级会失败，只能卸载重装——而卸载会清掉配置。现在缺证书直接
+  失败，与 Android 的 keystore 守卫同一条纪律。
+
+  新增 [`scripts/new-msix-cert.ps1`](scripts/new-msix-cert.ps1)：生成一次代码
+  签名证书（4096 位 RSA、`Code Signing` EKU），打印 `MSIX_PFX_BASE64` 与口令，
+  并默认拒绝覆盖已存在的私钥（换证书的代价同上）。私钥写进已 gitignore 的
+  `.secrets/`，**公钥** `app/packaging/xvpn-msix-LUSIDA.cer` 入库并随 Release
+  分发——自签名场景下用户必须先信任它才装得上。这也意味着自签名只适合自用；
+  公开分发应当用 CA 证书或面向开源项目的签名服务，用法完全相同（换成那把 PFX
+  即可，此时流水线不会再产出 `.cer`）。
 
 - 设置页「启动」卡片由桌面端与移动端各自的写法合并成一个 `_buildStartupCard`，
   两端展示同一组选项；「随系统启动」只在后端可用时出现。

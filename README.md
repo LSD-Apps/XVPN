@@ -41,15 +41,15 @@ addresses, and no accounts. It does **not** implement cryptography (that is sing
 1. Prepare a lawful endpoint (your server, or an org-issued client profile).
 2. Export a client config (`.conf` / `.ovpn` / YAML or a share link such as `ss://` / `vless://`).
 3. Install from [Releases](https://github.com/LSD-Apps/XVPN/releases/latest) —
-   unzip into a per-user directory (`%LOCALAPPDATA%\Programs\XVPN`,
-   `~/.local/opt/xvpn`) so in-app updates need no admin rights.
+   Windows: run the `.msix` installer; Linux: unzip into a per-user directory
+   (`~/.local/opt/xvpn`); Android: unzip and install the APK inside. In-app
+   updates then need no admin rights on Windows.
 4. Import → connect → confirm rates / status (see the user guide for UI map & troubleshooting).
 
 Desktop uses the **system proxy** (no admin); Android uses **VpnService**.  
 Quit via tray **Quit XVPN** so the proxy is restored. Linux notes and package
 dependencies: [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md) (Day-to-day / Linux).
-Auto-update details and the UAC prompt when it is installed in a protected
-directory: [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md) (Install).
+Auto-update details: [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md) (Install).
 
 **Protocols** (detected by content): WireGuard, OpenVPN, Shadowsocks, VMess, VLESS, Trojan, Hysteria2 — details in
 [`docs/PROTOCOLS.md`](docs/PROTOCOLS.md).
