@@ -3,18 +3,18 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:xvpn/core/updater.dart';
 
-/// 发布附件名的**三处同步**（CI、本机打包脚本、更新器）必须真的同步。
+/// 发布附件名的**三处同步**（CI、本机打包脚本、更新器）必须真的同步，而且
+/// **三端只发压缩包**（不直接分发裸 APK，也早已没有 MSIX）。
 ///
-/// 这条契约在仓库里被反复写进注释——「附件名是契约，改动必须三处同步」——但此前
-/// 没有任何东西**断言**它。这类漂移的代价很高，而且不会在构建期暴露：
+/// 这条契约在仓库里被反复写进注释——「附件名是契约，改动必须三处同步」——因此这里
+/// 断言的是**文档化的清单**与**真的产出**两件事：只查注释会漏掉「文档写了、步骤里
+/// 没做」，只查步骤又会漏掉「更新器期望的名字没人产出」。
+///
+/// 这类漂移的代价很高，而且不会在构建期暴露：
 ///
 ///   * 更新器按契约名找不到附件时，用户看到的是「最新版本没有适用于本平台的
 ///     安装包」——一个看起来像「上游没发布」的提示，而不是「代码写错了」；
-///   * CI 少挂一个附件时，发布是**绿的**，只是新版本没人能自动升级；
-///   * 两侧都改了但改得不一样时，只有真机点一次「检查更新」才会发现。
-///
-/// 因此这里断言的是**文档化的清单与真的产出**两件事：只查注释会漏掉「文档写了、
-/// 步骤里没做」，只查步骤又会漏掉「更新器期望的名字没人产出」。
+///   * CI 少挂一个附件时，发布是**绿的**，只是新版本没人能自动升级。
 void main() {
   final File workflow = File('../.github/workflows/release.yml');
   final File localScript = File('../scripts/build-release.ps1');
@@ -42,11 +42,11 @@ void main() {
       expectedAssetName(platform, '<ver>').replaceFirst('XVPN-<ver>-', ''),
   };
 
-  test('CI 文档化的附件清单与更新器的期望一致（外加自签名证书）', () {
+  test('CI 文档化的附件清单与更新器的期望完全一致', () {
     final String header = workflow.readAsLinesSync().take(40).join('\n');
     expect(
       documentedSuffixes(workflow, lines: 40),
-      updaterSuffixes().union(<String>{'windows-msix.cer'}),
+      updaterSuffixes(),
       reason:
           'release.yml 头部注释里的附件清单与 updater.dart 的 expectedAssetName 不一致。'
           '更新器是按精确文件名找附件的，名字对不上时用户只会看到「没有适用于本平台的安装包」。',
@@ -63,7 +63,7 @@ void main() {
     // 清单是「Windows + Android」，不要求与 CI 完全相同。
     expect(
       documentedSuffixes(localScript, lines: 45),
-      <String>{'windows-x64.msix', 'windows-msix.cer', 'android-arm64.zip'},
+      <String>{'windows-x64.zip', 'android-arm64.zip'},
       reason: 'scripts/build-release.ps1 头部注释的附件清单已过期：本机脚本必须与 CI 产出同一组附件。',
     );
     expect(
@@ -85,7 +85,7 @@ void main() {
     };
     expect(
       table,
-      updaterSuffixes().union(<String>{'windows-msix.cer'}),
+      updaterSuffixes(),
       reason: 'docs/RELEASE.md 的「附件命名契约」表已经与代码不符。',
     );
     expect(
@@ -95,12 +95,10 @@ void main() {
     );
   });
 
-  test('CI 真的产出并上传这些附件', () {
+  test('CI 真的产出并上传这三个压缩包', () {
     final String text = workflow.readAsStringSync();
     for (final String path in <String>[
-      // Windows 只有 MSIX 一种形态。
-      'dist/XVPN-*-windows-x64.msix',
-      // Android 只有 zip（APK 在 zip 内部）。
+      'dist/XVPN-*-windows-x64.zip',
       'dist/XVPN-*-android-arm64.zip',
       'dist/XVPN-*-linux-x64.zip',
     ]) {
@@ -111,10 +109,12 @@ void main() {
             '发布仍然是绿的，只是没人能自动升级。',
       );
     }
+    // Windows 的 zip 必须是「bundle 内容在压缩包根」的布局：更新器解压后就地
+    // 覆盖安装目录，多套一层目录名会让它把文件复制到错地方。
     expect(
       text,
-      isNot(contains('dist/XVPN-*-windows-x64.zip')),
-      reason: 'Windows 不再发布绿色版 zip：它一旦被上传，更新器就可能选到过期的包。',
+      contains(r"Compress-Archive -Path (Join-Path $bundle '*')"),
+      reason: 'Windows 压缩包的布局是更新器的解压约定，不要改成外面再套一层目录名。',
     );
   });
 
@@ -132,8 +132,7 @@ void main() {
     );
     // SHA256SUMS 的通配列表里同样不能有 *.apk，否则「校验和文件里有它」会被
     // 当成「这个包该发」。
-    final RegExpMatch? match =
-        RegExp(r'files=\(([^)]*)\)').firstMatch(text);
+    final RegExpMatch? match = RegExp(r'files=\(([^)]*)\)').firstMatch(text);
     expect(match, isNotNull, reason: 'release.yml 里找不到 SHA256SUMS 的文件列表');
     expect(
       match!.group(1),
@@ -142,32 +141,42 @@ void main() {
     );
   });
 
-  test('CI 的 Windows 任务要求发行签名证书（Windows 只发 MSIX）', () {
-    final String text = workflow.readAsStringSync();
-    expect(
-      text,
-      contains('MSIX_PFX_BASE64'),
-      reason: '证书缺失时必须直接失败，而不是回退到「每次构建现造一张自签名证书」'
-          '——那样每个版本由不同证书签名，已装旧版的用户只能卸载重装。',
-    );
-    expect(
-      text,
-      contains('缺少 MSIX 发行签名证书'),
-      reason: '守卫必须在缺证书时真的抛错，而不是打一条警告继续发。',
-    );
+  test('MSIX 已经彻底移除：文件不在，流水线与脚本也不再提及', () {
+    for (final String gone in <String>[
+      '../scripts/package-msix.ps1',
+      '../scripts/install-msix.ps1',
+      '../app/packaging/AppxManifest.xml',
+      '../app/test/msix_packaging_test.dart',
+    ]) {
+      expect(
+        File(gone).existsSync(),
+        isFalse,
+        reason: '$gone 是 MSIX 专有的东西，已随 MSIX 一起废弃；留着会让人以为还能打出这种包。',
+      );
+    }
+    for (final File file in <File>[workflow, localScript]) {
+      final String text = file.readAsStringSync().toLowerCase();
+      for (final String banned in <String>[
+        'msix',
+        'makeappx',
+        'add-appxpackage',
+        'appxmanifest',
+      ]) {
+        expect(
+          text,
+          isNot(contains(banned)),
+          reason: '${file.path} 里还有 $banned：MSIX 已放弃，流水线不该再引用它。',
+        );
+      }
+    }
   });
 
-  test('本机脚本不产出裸 APK，也不产出 Windows 绿色版 zip', () {
+  test('本机脚本不产出裸 APK，Windows 产物是 zip', () {
     final String text = localScript.readAsStringSync();
     expect(
       text,
-      isNot(contains(r'XVPN-$ver-windows-x64.zip')),
-      reason: '本机脚本与 CI 必须产出同一组附件。',
-    );
-    expect(
-      text,
-      contains(r'XVPN-$ver-windows-x64.msix'),
-      reason: 'Windows 只发 MSIX。',
+      contains(r'XVPN-$ver-windows-x64.zip'),
+      reason: 'Windows 恢复为绿色解压版 zip。',
     );
     expect(
       text,

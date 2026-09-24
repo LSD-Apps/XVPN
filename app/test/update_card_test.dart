@@ -42,14 +42,10 @@ class _FakeUpdater extends Updater {
   _FakeUpdater({
     required TargetPlatform platform,
     String currentVersion = '1.0.0',
-    String? resolvedExecutable,
   }) : super(
          platform: platform,
          currentVersion: currentVersion,
          http: const _NoopHttpClient(),
-         // 可执行文件路径决定确认步骤里那句「会装成 MSIX 版」的提示怎么写，
-         // 因此必须能注入：真实运行时它是当前进程，测试里两种形态都要能摆出来。
-         resolvedExecutable: resolvedExecutable,
        );
 
   UpdateCheckResult checkResult = const UpdateCheckFailure('未设置检查结果');
@@ -90,9 +86,18 @@ class _FakeUpdater extends Updater {
     );
   }
 
+  /// 最近一次安装是否带提权请求，用来断言「以管理员身份更新」真的把 elevate
+  /// 传下去了——只测到「按钮点了会发起安装」不够，那条路径的意义全在这个参数。
+  bool lastElevate = false;
+
   @override
-  Future<UpdateInstallResult> install(UpdateInfo info, File artifact) {
+  Future<UpdateInstallResult> install(
+    UpdateInfo info,
+    File artifact, {
+    bool elevate = false,
+  }) {
     installCalls++;
+    lastElevate = elevate;
     return Future<UpdateInstallResult>.value(installResult);
   }
 
@@ -124,8 +129,8 @@ UpdateInfo _info({
   tag: 'v$version',
   version: version,
   platform: UpdatePlatform.windows,
-  assetName: 'XVPN-$version-windows-x64.msix',
-  assetUri: Uri.parse('https://example.net/win.msix'),
+  assetName: 'XVPN-$version-windows-x64.zip',
+  assetUri: Uri.parse('https://example.net/win.zip'),
   checksumsName: 'SHA256SUMS.txt',
   checksumsUri: Uri.parse('https://example.net/SHA256SUMS.txt'),
   assetSize: assetSize,
@@ -431,57 +436,54 @@ void main() {
     );
   });
 
-  testWidgets('绿色解压版：确认步骤里先说清会装成 MSIX 版、配置目录会变', (
+  testWidgets('目录受保护时给出提权入口，且授权请求真的传下去', (
     WidgetTester tester,
   ) async {
-    // 1.3.0 及更早的 Windows 用户装的是绿色解压版，而新版本只有 MSIX 一种形态。
-    // 点下去装出来的是**并行**的一份新安装：配置目录不同，导入的配置与凭据要
-    // 重新导入。这句话必须在动手**之前**说——事后再说，用户看到的是一个配置
-    // 空空的新版本，只会以为更新把他的数据弄丢了。
     final separator = Platform.pathSeparator;
-    final file = File('${Directory.systemTemp.path}${separator}xvpn.msix');
-    // 绿色解压版：可执行文件在用户自己挑的目录里，不在 WindowsApps 之下。
-    final String greenPath =
-        '${Directory.systemTemp.path}${separator}XVPN${separator}xvpn.exe';
-    final updater = _FakeUpdater(
-      platform: TargetPlatform.windows,
-      resolvedExecutable: greenPath,
-    )
+    final file = File('${Directory.systemTemp.path}${separator}xvpn-test.zip');
+    final updater = _FakeUpdater(platform: TargetPlatform.windows)
       ..checkResult = UpdateAvailable(_info())
-      ..onDownload = ((_) => UpdateDownloaded(file, 'a' * 64));
-    await _pumpCard(tester, updater);
+      ..onDownload = ((_) => UpdateDownloaded(file, 'a' * 64))
+      ..installResult = const UpdateInstallElevationRequired(
+        '当前安装在受保护目录（C:\\Program Files\\XVPN），写入它需要管理员权限。',
+        suggestedDir: r'C:\Users\me\AppData\Local\Programs\XVPN',
+      );
+    final exits = <int>[];
+    await _pumpCard(tester, updater, exits: exits);
 
-    await _downloadToConfirmStep(tester, updater);
+    await tester.tap(find.text('检查更新'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('下载更新'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('安装更新'));
+    await tester.pump();
+    await tester.pump();
 
-    final note = preInstallNoteFor(TargetPlatform.windows, greenPath);
-    expect(note, isNotNull, reason: '前置条件：这一份是绿色解压版');
-    expect(find.text(note!), findsOneWidget);
-    expect(
-      find.textContaining('配置目录'),
-      findsOneWidget,
-      reason: '「配置目录会变」是这句话里唯一必须让用户看懂的信息',
+    // 第一次尝试不带提权：应用绝不自己弹 UAC，必须先问过用户。
+    expect(updater.installCalls, 1);
+    expect(updater.lastElevate, isFalse);
+    expect(exits, isEmpty, reason: '还没拿到授权，应用不能退出');
+
+    expect(find.text('需要管理员授权'), findsOneWidget);
+    final hint = tester.widget<Text>(
+      find.textContaining('取消则不会改动任何文件'),
     );
-  });
+    expect(
+      hint.data,
+      contains('Programs\\XVPN'),
+      reason: '要顺带给出「以后不必再授权」的出路',
+    );
 
-  testWidgets('MSIX 安装：确认步骤里不多这一句', (WidgetTester tester) async {
-    final separator = Platform.pathSeparator;
-    final file = File('${Directory.systemTemp.path}${separator}xvpn.msix');
-    final updater = _FakeUpdater(
-      platform: TargetPlatform.windows,
-      // 已经是 MSIX 包装里跑起来的：包身份相同，配置目录不变。
-      resolvedExecutable:
-          r'C:\Program Files\WindowsApps\XVPN_1.0.0.0_x64__abc\xvpn.exe',
-    )
-      ..checkResult = UpdateAvailable(_info())
-      ..onDownload = ((_) => UpdateDownloaded(file, 'a' * 64));
-    await _pumpCard(tester, updater);
+    await tester.tap(find.text('以管理员身份更新'));
+    await tester.pump();
+    await tester.pump();
 
-    await _downloadToConfirmStep(tester, updater);
-
-    expect(updater.preInstallNote, isNull);
-    expect(find.textContaining('配置目录'), findsNothing);
-    // 确认步骤本身照旧：不多说一句，也不该少一个按钮。
-    expect(find.text('安装更新'), findsOneWidget);
+    expect(updater.installCalls, 2);
+    expect(
+      updater.lastElevate,
+      isTrue,
+      reason: '这个按钮的全部意义就是把 elevate 传下去',
+    );
   });
 
   testWidgets('下载完成后给出安装包路径，并能复制它', (WidgetTester tester) async {
@@ -501,34 +503,13 @@ void main() {
     // 路径必须是**可选中的明文**：即便剪贴板不可用，用户也能自己抄走。
     final shown = tester.widget<SelectableText>(find.byType(SelectableText));
     expect(shown.data, file.path);
-    // 「自己动手」的方式两端完全不同：Windows 的产物是 MSIX（双击安装），
-    // Linux 是解压覆盖安装目录的 zip。写成同一句话必然把一半用户指错方向。
-    expect(
-      find.textContaining('也可以自行安装：双击上面的安装包即可'),
-      findsOneWidget,
-    );
+    expect(find.text('也可以自行安装：解压覆盖安装目录，或拷贝到另一台机器上使用。'), findsOneWidget);
 
     await tester.tap(find.text('复制路径'));
     await tester.pumpAndSettle();
 
     expect(clipboard, <String>[file.path], reason: '复制的必须是完整路径');
     expect(find.text('已复制安装包路径。'), findsOneWidget, reason: '要给一个明确的反馈');
-  });
-
-  testWidgets('Linux：自行安装的说明是「解压覆盖」而不是「双击安装包」', (
-    WidgetTester tester,
-  ) async {
-    final separator = Platform.pathSeparator;
-    final file = File('${Directory.systemTemp.path}${separator}xvpn.zip');
-    final updater = _FakeUpdater(platform: TargetPlatform.linux)
-      ..checkResult = UpdateAvailable(_info())
-      ..onDownload = ((_) => UpdateDownloaded(file, 'a' * 64));
-    await _pumpCard(tester, updater);
-
-    await _downloadToConfirmStep(tester, updater);
-
-    expect(find.textContaining('解压覆盖安装目录'), findsOneWidget);
-    expect(find.textContaining('双击上面的安装包'), findsNothing);
   });
 
   testWidgets('可以打开安装包所在文件夹；打不开时给出退路而不是静默', (

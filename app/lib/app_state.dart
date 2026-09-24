@@ -1542,8 +1542,8 @@ class AppState extends ChangeNotifier implements VpnCoreListener {
         'legalNoticeAcknowledged': _legalNoticeAcknowledged,
         'settings': <String, Object?>{
           'autoConnectOnImport': _settings.autoConnectOnImport,
-          // 只是界面用的镜像；事实在系统里（注册表 Run 键或 MSIX 的
-          // StartupTask），启动时会被回读结果校准。
+          // 只是界面用的镜像；事实在系统里（Windows 上是注册表 Run 键），
+          // 启动时会被回读结果校准。
           'autoRunAtStartup': _settings.autoRunAtStartup,
           'splitMode': _settings.splitMode.index,
           'logSplits': _settings.logSplits,

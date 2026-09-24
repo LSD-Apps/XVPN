@@ -165,14 +165,14 @@ class SettingsScreen extends StatelessWidget {
   /// 「导入后自动连接」是真的：`AppState.importConf` 在导入成功且当前未连接时
   /// 会立刻拨号。
   ///
-  /// 「随系统启动」也是真的，而且**这次是真的落地了**：Windows 上由原生写注册表
-  /// Run 键（绿色解压版），或走 MSIX 包内的 StartupTask（打包版）——见
-  /// windows/runner/auto_start.cc。此前这一项只是把一个布尔值存进设置文件，
-  /// 从来没有任何代码把它落到系统的启动项里，于是被去掉了；现在后端存在，
-  /// 因此加了回来，并且同样出现在托盘菜单上（用户可以不开设置页就切换）。
+  /// 「随系统启动」也是真的，而且**这次是真的落地了**：Windows 上由原生写
+  /// `HKCU\...\CurrentVersion\Run`——见 windows/runner/auto_start.cc。此前这一项
+  /// 只是把一个布尔值存进设置文件，从来没有任何代码把它落到系统的启动项里，
+  /// 于是被去掉了；现在后端存在，因此加了回来，并且同样出现在托盘菜单上
+  /// （用户可以不开设置页就切换）。
   ///
-  /// 后端在当前形态下用不了时（Linux 尚未实现、MSIX 包没声明 startupTask
-  /// 扩展），这一行**整个不渲染**——见 [autoStart] 的说明。
+  /// 后端在当前形态下用不了时（Linux 尚未实现），这一行**整个不渲染**——见
+  /// [autoStart] 的说明。
   Widget _buildStartupCard({required bool compact}) {
     final controller = autoStart;
     // 系统启动项那一行只有在后端可用时才出现，而「谁在最后」决定谁不画分隔线：

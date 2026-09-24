@@ -151,13 +151,12 @@ bool HasProxyBackup() {
 
 // 消费掉备份（表示「我们不再持有系统代理的还原点」）。
 //
-// 优先整个删掉；但**删完必须回读确认**——实测发现 MSIX 打包形态下，写
-// `HKCU\...\Internet Settings` 能落到真实位置，而删 `HKCU\Software\XVPN\ProxyBackup`
-// 却没有生效（应用以为删了，外部 `reg query` 还看得到）。若不做回读，后果是
-// 下一次启动又把一个过期的备份当成「上次没退干净」，去还原一个早就不存在的状态。
+// 优先整个删掉；但**删完必须回读确认**——`RegDeleteTreeW` 返回成功不等于值真的
+// 没了（注册表写入可能被重定向或延迟落地）。若不做回读，后果是下一次启动又把一个
+// 过期的备份当成「上次没退干净」，去还原一个早就不存在的状态。
 //
 // 删不掉时就地作废：把 `Saved` 置 0。`HasProxyBackup()` 正是按这个标记判断的，
-// 因此作废与删除等价，而且置值这条路在实测里是通的。
+// 因此作废与删除等价。
 void ConsumeProxyBackup() {
   RegDeleteTreeW(HKEY_CURRENT_USER, kProxyBackupKey);
   if (!HasProxyBackup()) {
@@ -186,11 +185,10 @@ bool RefreshWinInetProxy() {
 
 // 用 WinINET 接口把「每连接代理」设成给定值。server 为空表示直连（不设代理）。
 //
-// **还原也必须走这条**，不能只写注册表：MSIX 打包应用的注册表写入会被重定向到
-// 包私有的虚拟存储，`RegSetValueExW` 返回成功但系统键没变。实测踩到过这个组合
-// ——接管成功了（那一步有 WinINET 调用兜住），还原却只写注册表，于是**内核已经
-// 退出、代理还指着一个死端口**，用户机器上所有走系统代理的程序全部断网，而且
-// 从注册表里看不出是 VPN 干的。这正是最开始那次的现场。
+// **还原也必须走这条**，不能只写注册表：只写注册表不会让正在运行的程序立刻改用
+// 直连（它们的代理配置缓存在自己进程里），而还原失败留下的状态最坏——**内核已经
+// 退出、代理还指着一个死端口**，机器上所有走系统代理的程序全部断网，而且从注册表
+// 里看不出是 VPN 干的。
 bool ApplyWinInetProxy(const std::wstring& server) {
   INTERNET_PER_CONN_OPTION_LISTW list = {};
   INTERNET_PER_CONN_OPTIONW options[2] = {};
@@ -215,10 +213,10 @@ bool ApplyWinInetProxy(const std::wstring& server) {
 
 // 接管系统代理：先把用户原有设置备份到我们自己的注册表键，再写入内核地址。
 //
-// ## 为什么必须回读校验，不能只看 RegSetValueExW 的返回值
+// ## 为什么必须以「回读到的系统真实状态」为准，而不是写入调用的返回值
 //
-// **MSIX 打包应用的注册表写入会被重定向到包私有的虚拟存储**，而
-// `RegSetValueExW` 在这种情况下照样返回 `ERROR_SUCCESS`。实测过这个后果：
+// `RegSetValueExW` 返回 `ERROR_SUCCESS` 只说明这次调用被受理了，不说明系统里
+// 的值真的变成了我们写的那样（写入可能落到别处、或延迟落地）。实测过这个后果：
 //
 //     应用自己回读 HKCU\...\Internet Settings\ProxyEnable → 1
 //     外部 reg query 同一个键                              → 0x0
@@ -228,8 +226,9 @@ bool ApplyWinInetProxy(const std::wstring& server) {
 // 代理也设好了」，实际所有流量都在直连——一个完全没有报错的静默失效，
 // 而用户以为流量走了隧道（对 VPN 来说这是最严重的一类错法）。
 //
-// 因此这里写完**立刻回读真实值**：对不上就返回 false，让上层如实报出
-// 「无法设置系统代理」。宁可说一句实话，也不要显示一个假装生效的勾。
+// 因此这里除了写注册表，还走 WinINET 官方接口，并**以它的结果为准**；对不上就
+// 返回 false，让上层如实报出「无法设置系统代理」。宁可说一句实话，也不要显示
+// 一个假装生效的勾。
 bool ApplySystemProxy(const std::wstring& server) {
   // 退出流程已经开始：拒绝接管。
   //
@@ -262,17 +261,14 @@ bool ApplySystemProxy(const std::wstring& server) {
                                     L"ProxyServer", server.c_str());
   // 除了写注册表，再用 WinINET 官方接口设一遍，并**以它的结果为准**。
   //
-  // 为什么不能只写注册表：MSIX 打包应用的注册表写入会被重定向到包私有的虚拟
-  // 存储，`RegSetValueExW` 照样返回 `ERROR_SUCCESS`，而系统键根本没变。实测过
-  // 这个后果：
+  // 为什么不能只写注册表：`RegSetValueExW` 返回 `ERROR_SUCCESS` 只说明这次调用
+  // 被受理了，不说明系统里的值真的变了（实测见过「应用自己回读是 1、外部
+  // reg query 是 0」），而正在运行的程序也不会因此立刻改用新代理——WinINET 把
+  // 代理配置缓存在进程内，得靠 INTERNET_OPTION_SETTINGS_CHANGED / REFRESH 通知
+  // 它重新读取。
   //
-  //     应用自己回读 HKCU\...\Internet Settings\ProxyEnable → 1
-  //     外部 reg query 同一个键                              → 0x0
-  //
-  // 也就是「写成功了」是假的：系统代理**从来没有真正设置过**。而界面上的
-  // 「系统代理已自动设置」是按内核连上了就打的勾，于是用户看到「连上了、代理也
-  // 设好了」，实际所有流量都在直连——一个完全没有报错的静默失效，而用户以为
-  // 流量走了隧道（对 VPN 来说这是最严重的一类错法）。
+  // 后果就是最坏的一类错法：界面打勾说「系统代理已自动设置」，实际所有流量都在
+  // 直连——没有报错、看不出异常，而用户以为流量走了隧道。
   const bool applied = ApplyWinInetProxy(server);
   return ok && applied;
 }
@@ -312,7 +308,7 @@ bool RestoreSystemProxy() {
     // 从注册表里看不出任何线索。留着备份，至少下次启动还能再试一次。
     if (ok) {
       // 消费掉备份。它会**回读确认**，删不掉就地作废——见 ConsumeProxyBackup
-      // 的说明（MSIX 形态下删除可能不落地，而写入是落地的）。
+      // 的说明。
       ConsumeProxyBackup();
     }
   } else {
@@ -691,19 +687,16 @@ bool FlutterWindow::OnCreate() {
         } else if (method == "autoStartSupported") {
           // 界面据此决定「开机自动启动」那个开关是可用还是灰着。
           //
-          // 这里必须由原生回答而不是 Dart 猜：同一个 exe 既可能是绿色解压版
-          // （注册表后端总是可用），也可能是 MSIX 包（只有清单里声明了
-          // windows.startupTask 扩展才可用）。这是运行形态的事实，只有原生知道。
-          //
-          // **同步回**：它只创建激活工厂，不等任何异步操作。
+          // 这里由原生回答而不是 Dart 按平台猜：能不能做这件事取决于原生后端
+          // 在当前平台上的实现（Windows 有注册表 Run 键；Linux 尚未落地）。
+          // 这是运行期的事实，只有原生知道。
           result->Success(flutter::EncodableValue(auto_start::IsSupported()));
         } else if (method == "getAutoStart") {
           // 读的是**系统里的真实状态**，不是 Dart 存档里的镜像：用户可能在
-          // 「设置 → 应用 → 启动」里改过，也可能换了安装形态（绿色版→MSIX），
-          // 存档里的值此时已经不对了。
+          // 「任务管理器 → 启动」或「设置 → 应用 → 启动」里改过，存档里的值
+          // 此时已经不对了。
           //
-          // 同步回：未打包形态读注册表即可；打包形态当前不支持（见 auto_start.cc
-          // 里 IsSupported 的说明），因此这里是同步且不会阻塞的。
+          // 同步回：读一个注册表值即可，不会阻塞。
           result->Success(flutter::EncodableValue(auto_start::QueryEnabled()));
         } else if (method == "setAutoStart") {
           const bool* enabled = std::get_if<bool>(call.arguments());

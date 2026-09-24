@@ -164,7 +164,10 @@ class _UpdateCardState extends State<UpdateCard> {
   void _dismissDownload() => _session.dismissDownload();
 
   /// 用户已经在确认步骤里点了「安装更新」——这是唯一的安装入口。
-  Future<void> _install() => _session.install();
+  ///
+  /// [elevate] 为 true 表示用户已在上一步同意用管理员权限完成写入（Windows）。
+  Future<void> _install({bool elevate = false}) =>
+      _session.install(elevate: elevate);
 
   Future<void> _openRelease(UpdateInfo info) async {
     // 与标题栏 GitHub 入口同一套做法：异步前先取 messenger，避免跨 await 用 context。
@@ -484,61 +487,32 @@ class _UpdateCardState extends State<UpdateCard> {
     }
   }
 
-  /// 下载完成后的**确认步骤**。动手之前必须由用户再点一次「安装更新」。
-  List<Widget> _buildConfirmInstall() {
-    // 安装前必须说的那句实话（目前只有「绿色解压版会被装成 MSIX 版」这一种）。
-    // 放在确认步骤里，而不是安装完成之后——配置目录会变，用户得先知道。
-    final String? note = _session.updater.preInstallNote;
-    return <Widget>[
-      _row(
-        badge: RouteTag.green('已下载'),
-        description: '更新包已下载并通过校验。安装会替换当前版本，完成后应用会自动重启。是否继续？',
-        actions: <Widget>[
-          XvButton(
-            label: '安装更新',
-            kind: XvButtonKind.primary,
-            onPressed: _install,
-          ),
-          XvButton(label: '稍后', onPressed: _dismissDownload),
-        ],
-      ),
-      if (note != null)
-        Padding(
-          padding: const EdgeInsets.only(top: 8),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: <Widget>[
-              Icon(Icons.info_outline, size: 13, color: XV.amber),
-              const SizedBox(width: 6),
-              Expanded(
-                child: Text(note, style: XvText.caption),
-              ),
-            ],
-          ),
+  /// 下载完成后的**确认步骤**。替换安装前必须由用户再点一次「安装更新」。
+  List<Widget> _buildConfirmInstall() => <Widget>[
+    _row(
+      badge: RouteTag.green('已下载'),
+      description: '更新包已下载并通过校验。安装会替换当前版本，完成后应用会自动重启。是否继续？',
+      actions: <Widget>[
+        XvButton(
+          label: '安装更新',
+          kind: XvButtonKind.primary,
+          onPressed: _install,
         ),
-      ..._manualInstallSection(),
-    ];
-  }
+        XvButton(label: '稍后', onPressed: _dismissDownload),
+      ],
+    ),
+    ..._manualInstallSection(),
+  ];
 
   /// 安装包落在哪，以及「拿它自己装」的两个动作。
   ///
-  /// 存在的理由是自动安装**不是唯一出路**：它可能因为签名未被信任、杀毒软件或
-  /// 只读目录失败，而这时用户手里已经有一个**校验通过**的安装包——自己装一次，
+  /// 存在的理由是自动替换**不是唯一出路**：它可能因为权限、杀毒软件或只读目录
+  /// 失败，而这时用户手里已经有一个**校验通过**的安装包——解压覆盖安装目录就行，
   /// 或者拷到另一台机器上用。前提是他知道那个文件在哪，因此路径以**可选中的
   /// 明文**呈现，而不是只写进日志文件里让人去翻。
   ///
-  /// 安卓不显示：下载到的是 zip、解出的 APK 落在应用私有缓存（`updates/`，靠
-  /// FileProvider 交给系统安装器），那个路径对用户既没有意义也打不开。
-  ///
-  /// **自己动手的方式两端完全不同**：Windows 的产物是 MSIX 安装包（双击安装，
-  /// 或按发布页说明先信任签名证书），Linux 是解压即覆盖安装目录的 zip。写成同一
-  /// 句话必然把一半用户指错方向。
-  String get _manualInstallHint =>
-      _session.updater.platform == TargetPlatform.windows
-      ? '也可以自行安装：双击上面的安装包即可（未配置正式证书的版本需先按发布页说明信任随包的证书），'
-            '也可以拷贝到另一台机器上使用。'
-      : '也可以自行安装：解压覆盖安装目录，或拷贝到另一台机器上使用。';
-
+  /// 安卓不显示：APK 落在应用私有缓存（`updates/`，靠 FileProvider 交给系统
+  /// 安装器），那个路径对用户既没有意义也打不开。
   List<Widget> _manualInstallSection() {
     final file = _downloadedFile;
     if (file == null || !_isDesktop) return const <Widget>[];
@@ -548,7 +522,7 @@ class _UpdateCardState extends State<UpdateCard> {
       const SizedBox(height: 12),
       Divider(height: 1, thickness: 1, color: XV.line2),
       const SizedBox(height: 10),
-      Text(_manualInstallHint, style: XvText.caption),
+      Text('也可以自行安装：解压覆盖安装目录，或拷贝到另一台机器上使用。', style: XvText.caption),
       const SizedBox(height: 8),
       Container(
         width: double.infinity,
@@ -632,6 +606,31 @@ class _UpdateCardState extends State<UpdateCard> {
               padding: const EdgeInsets.only(top: 6),
               child: Text('日志：$logPath', style: XvText.monoSmall),
             ),
+        ];
+      case UpdateInstallElevationRequired(:final message, :final suggestedDir):
+        // Windows：安装目录受保护。下一步会弹 UAC。这里可以把「取消不会损坏
+        // 任何东西」说死——助手在拿到授权之前一条文件都还没复制。
+        return <Widget>[
+          _row(
+            badge: RouteTag.warn('需要管理员授权'),
+            description: message,
+            actions: <Widget>[
+              XvButton(
+                label: '以管理员身份更新',
+                kind: XvButtonKind.primary,
+                onPressed: () => _install(elevate: true),
+              ),
+            ],
+          ),
+          Padding(
+            padding: const EdgeInsets.only(top: 8),
+            child: Text(
+              '点「以管理员身份更新」后会弹出系统授权窗口；'
+              '取消则不会改动任何文件。'
+              '${suggestedDir == null ? '' : '若想以后不再需要授权，可把幽门解压到 $suggestedDir。'}',
+              style: XvText.caption,
+            ),
+          ),
         ];
       case UpdateInstallPermissionRequired(:final message):
         // 安卓：原生已经把人送去「安装未知应用」设置页。允许在这里重试安装。

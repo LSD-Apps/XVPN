@@ -273,11 +273,11 @@ BSD-3-Clause。
 
 > **本项目自身的分发物已做到第 1、2 条**：`.github/workflows/release.yml` 与
 > `scripts/build-release.ps1` 会把 `LICENSE`、`NOTICE.md` 与
-> `THIRD-PARTY-NOTICES.md` 放进 **MSIX 包内**与 **Linux 压缩包的根目录**；
-> Android 的 APK 内为 `assets/licenses/` 下的同名文件（APK 本身又在发布用的
-> zip 里）。这三份文本**不再**作为 Flutter asset 打进应用，应用内也没有许可
-> 浏览界面（设置页「开源许可」只把用户送到项目主页的许可章节）。
-> 附件命名契约（`XVPN-<ver>-windows-x64.msix` / `-linux-x64.zip` /
-> `-android-arm64.zip` / `SHA256SUMS.txt`，**不直接分发裸 APK**）见
+> `THIRD-PARTY-NOTICES.md` 放进 Windows / Linux 压缩包的**根目录**；Android 的
+> APK 内为 `assets/licenses/` 下的同名文件（APK 本身又在发布用的 zip 里）。
+> 这三份文本**不再**作为 Flutter asset 打进应用，应用内也没有许可浏览界面
+> （设置页「开源许可」只把用户送到项目主页的许可章节）。附件命名契约
+> （`XVPN-<ver>-windows-x64.zip` / `-linux-x64.zip` / `-android-arm64.zip` /
+> `SHA256SUMS.txt`，**不直接分发裸 APK**）见
 > [`docs/RELEASE.md`](docs/RELEASE.md) 5.2。
 > Release 说明也会给出对应 tag 的源码地址。

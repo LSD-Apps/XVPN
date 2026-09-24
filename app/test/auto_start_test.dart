@@ -17,14 +17,14 @@ import 'package:xvpn/theme_controller.dart';
 
 /// 「随系统启动」的两半：**Dart 这一半**的镜像与界面行为。
 ///
-/// 真正把启动项写进系统的是原生（Windows 上是注册表 Run 键或 MSIX 的
-/// StartupTask，见 app/windows/runner/auto_start.cc）。这里锁住的是另外三条容易
-/// 出错的规律：
+/// 真正把启动项写进系统的是原生（Windows 上是
+/// `HKCU\...\CurrentVersion\Run`，见 app/windows/runner/auto_start.cc）。这里锁住
+/// 的是另外三条容易出错的规律：
 ///
 ///   1. **后端能用才显示开关**。拨一个不会有任何效果的开关比没有开关更糟，
 ///      因此原生回答「当前形态用不了」时这一行必须**不渲染**；
-///   2. **系统是事实来源**。用户在「任务管理器 → 启动」里改了它、或者换了安装
-///      形态（绿色版 → MSIX），存档里的镜像就过期了，启动时必须被回读结果校准；
+///   2. **系统是事实来源**。用户在「任务管理器 → 启动」里改了它，存档里的镜像就
+///      过期了，启动时必须被回读结果校准；
 ///   3. **托盘与设置页说的是同一件事**。托盘在原生侧，它改了状态会推回来，
 ///      设置页必须跟上——否则同一个事实在一端显示为开、另一端显示为关。
 /// 让用例跑在「Windows 桌面」这个平台上。
@@ -69,7 +69,7 @@ void main() {
             case 'getAutoStart':
               return nativeEnabled;
             case 'setAutoStart':
-              // 受理了就落到「系统」里，与原生写注册表 / StartupTask 同义。
+              // 受理了就落到「系统」里，与原生写注册表同义。
               if (nativeAcceptsSet) nativeEnabled = call.arguments as bool;
               return nativeAcceptsSet;
             default:

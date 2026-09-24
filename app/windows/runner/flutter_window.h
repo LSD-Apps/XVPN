@@ -47,9 +47,8 @@ class FlutterWindow : public Win32Window {
   /// 应用 Dart 推来的托盘状态（版本 / 状态文案 / 是否已连接 / 更新版本）。
   void ApplyTrayState(const flutter::EncodableMap& state);
 
-  /// 「开机自动启动」这一项由**原生**写进系统（注册表 Run 键，或 MSIX 包内的
-  /// StartupTask），状态也由原生回读后推给 Dart——Dart 那边只存一份供界面显示
-  /// 的镜像。见 auto_start.h。
+  /// 「开机自动启动」这一项由**原生**写进系统（注册表 Run 键），状态也由原生
+  /// 回读后推给 Dart——Dart 那边只存一份供界面显示的镜像。见 auto_start.h。
   ///
   /// 托盘菜单的勾选状态来自 Dart 推送的托盘载荷（见 [ApplyTrayState]）：
   /// 原生不自己去查，否则托盘与设置页会各有一份可能过期的结果。

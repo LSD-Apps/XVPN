@@ -65,16 +65,12 @@ String updatePlatformLabel(UpdatePlatform platform) => switch (platform) {
 /// 发布附件的精确命名（契约，见 `.github/workflows/release.yml` 与
 /// `scripts/build-release.ps1`）。[version] 是 tag 去掉前导 `v`。
 ///
-/// **三端一律只发压缩包（Windows 是 MSIX）**，发布页上不再有裸文件：
-///
-///   * 安卓要的是**装着 APK 的 zip**。系统安装器只接受 APK，因此更新器下载 zip
-///     之后自己把 APK 取出来（`core/zip.dart`，纯 Dart）再交给系统安装器。
-///   * Windows 只有 MSIX 一种形态，更新同样走 MSIX（见
-///     [buildWindowsMsixRelaunchScript]）。
-///   * Linux 与以往一样是 bundle 的 zip，解压即覆盖安装目录。
+/// 三端都是压缩包。安卓要的是**装着 APK 的 zip**：系统安装器只接受 APK 文件，
+/// 而 Dart 标准库没有解压能力，因此更新器自己把 APK 取出来
+/// （`core/zip.dart`）再交给系统安装器。
 String expectedAssetName(UpdatePlatform platform, String version) {
   final suffix = switch (platform) {
-    UpdatePlatform.windows => 'windows-x64.msix',
+    UpdatePlatform.windows => 'windows-x64.zip',
     UpdatePlatform.linux => 'linux-x64.zip',
     UpdatePlatform.android => 'android-arm64.zip',
   };
@@ -415,8 +411,8 @@ class ReleaseInfo {
 /// 版本号的写法，更新器不该立刻失效。返回 null 表示这一版确实没有本平台的包。
 ///
 /// 后缀必须带上完整的 `-<平台>-<架构>.<扩展名>`：只按 `.zip` 之类松散的结尾
-/// 匹配会串台（安卓的 zip 与 Linux 的 zip 同名结尾），而 `.cer`（自签名公钥，
-/// 与 `.msix` 一起发布）更不能被当成安装包下载。
+/// 匹配会串台（安卓的 zip 与 Linux 的 zip 同名结尾，选错的结果是把 Linux 的
+/// 包当成安卓的安装包下下来）。
 ReleaseAsset? selectAsset(
   List<ReleaseAsset> assets,
   UpdatePlatform platform,
@@ -427,9 +423,15 @@ ReleaseAsset? selectAsset(
     if (asset.name == expected) return asset;
   }
   final pattern = switch (platform) {
-    UpdatePlatform.windows => RegExp(r'-windows-x64\.msix$', caseSensitive: false),
+    UpdatePlatform.windows => RegExp(
+      r'-windows-x64\.zip$',
+      caseSensitive: false,
+    ),
     UpdatePlatform.linux => RegExp(r'-linux-x64\.zip$', caseSensitive: false),
-    UpdatePlatform.android => RegExp(r'-android-arm64\.zip$', caseSensitive: false),
+    UpdatePlatform.android => RegExp(
+      r'-android-arm64\.zip$',
+      caseSensitive: false,
+    ),
   };
   for (final asset in assets) {
     if (pattern.hasMatch(asset.name)) return asset;
@@ -655,6 +657,24 @@ class UpdateInstallPermissionRequired extends UpdateInstallResult {
   final String message;
 }
 
+/// 安装目录受保护，需要管理员授权才能写入（仅 Windows 桌面）。
+///
+/// 与安卓的 [UpdateInstallPermissionRequired] 语义相近——都要求用户先授权再
+/// 重试——但触发的动作完全不同：安卓会把人送去系统设置里允许「安装未知应用」，
+/// 这里会弹 Windows 的 UAC 同意框。因此必须是两种结果：合成一种会让界面把
+/// 用户指向一个在本平台并不存在的设置项。
+class UpdateInstallElevationRequired extends UpdateInstallResult {
+  const UpdateInstallElevationRequired(this.message, {this.suggestedDir});
+
+  final String message;
+
+  /// 建议改用的**用户目录**安装位置，见 [suggestedUserInstallDir]。
+  ///
+  /// 提权能让这一次更新成功，但装在受保护目录会让**每一次**更新都要过 UAC。
+  /// 给出这个路径是为了让用户有机会一次性摆脱它。
+  final String? suggestedDir;
+}
+
 /// 安装无法进行，[message] 说明原因与手动替代方案。
 class UpdateInstallFailure extends UpdateInstallResult {
   const UpdateInstallFailure(this.message);
@@ -669,10 +689,13 @@ class UpdateInstallFailure extends UpdateInstallResult {
 abstract class UpdateInstaller {
   const UpdateInstaller();
 
+  /// [elevate] 表示用户已同意用管理员权限完成写入；**只有 Windows 桌面**会
+  /// 用到它，其余实现忽略（安卓的授权走系统安装器，Linux 不自行提权）。
   Future<UpdateInstallResult> install({
     required UpdateInfo info,
     required File archive,
     required Directory stagingDir,
+    bool elevate = false,
   });
 }
 
@@ -714,11 +737,26 @@ class RealProcessStarter implements ProcessStarter {
 /// 重启助手脚本的文件名（不含扩展名）。写在暂存目录里，**不落进安装目录**。
 const String relaunchScriptName = 'xvpn-relaunch';
 
+/// 提权复制脚本的文件名（不含扩展名）。只在安装目录写不进去时才生成。
+const String elevatedCopyScriptName = 'xvpn-elevate-copy';
+
+/// 解压目录。两个 Windows 脚本（助手与提权复制）必须指向同一个地方，因此
+/// 路径只在这里算一次——分头去拼字符串迟早会分叉，而分叉的表现是「提权复制
+/// 报找不到文件」，很难从现象想到原因。
+String _windowsExtractDir(String stagingDir) => '$stagingDir\\extract';
+
 /// PowerShell 单引号字面量。
 ///
 /// 用单引号而不是双引号：PowerShell 的双引号会做变量展开，路径里出现 `$`
 /// 时会被悄悄改写；单引号里只有 `'` 需要转义（写成两个）。
 String _psQuote(String value) => "'${value.replaceAll("'", "''")}'";
+
+/// `Start-Process -ArgumentList` 的一个元素：单引号字面量，里面再套一层双引号。
+///
+/// 这个参数最后是要**拼成命令行**的，因此路径里的空格必须由双引号保护，否则
+/// `C:\Users\Zhang San\AppData\...` 会被拆成两个参数，被启动的 PowerShell 会
+/// 把后半截当成另一个选项。单引号内的双引号是字面量，不必转义。
+String _psQuotedArg(String value) => "'\"${value.replaceAll("'", "''")}\"'";
 
 /// POSIX shell 单引号字面量：`'` 以 `'\''` 脱出。
 String _shQuote(String value) => "'${value.replaceAll("'", "'\\''")}'";
@@ -735,41 +773,55 @@ String _shQuote(String value) => "'${value.replaceAll("'", "'\\''")}'";
 String _psLogWithPath(String prefix, String path) =>
     'Write-Log ("$prefix" + ${_psQuote(path)})';
 
-/// 生成 Windows 更新助手（PowerShell 脚本）——MSIX 覆盖升级。
+/// 生成 Windows 重启助手（PowerShell 脚本）。
 ///
-/// 顺序是硬要求：**等待当前进程退出 → `Add-AppxPackage` 装升级包 → 重新启动**。
-/// 先等待是必须的：MSIX 的部署服务不允许在包正在运行时替换它，会在
-/// `Add-AppxPackage` 上以 0x80073D02 一类错误失败。
+/// 顺序是硬要求：**等待当前进程退出 → 解压到暂存目录 → 确认解压结果里有
+/// 可执行文件 → 覆盖安装目录 → 重新启动**。先等待再替换，是因为运行中的
+/// `xvpn.exe` 被占用时覆盖会失败；先确认再覆盖，是为了解压失败时保持原安装
+/// 完好——绝不能把用户留在一个被替换了一半、无法启动的目录里。
 ///
-/// 这里**不再解压、也不再复制任何文件**。Windows 只有 MSIX 一种分发形态之后，
-/// 升级等于「把新版本的包交给系统部署服务」：它自己写进
-/// `%ProgramFiles%\WindowsApps\`，不需要管理员（同一个发布者的包升级属于常规
-/// 用户级操作），也不会留下半个被覆盖的安装目录——因此这条路上不存在「替换到
-/// 一半」的失败形态，失败时旧版本原封不动。
-///
-/// **重启必须走执行别名**，不能用 [fallbackLaunchPath]：包目录名里带着版本号
-/// （`...\WindowsApps\XVPN_1.4.0.0_x64__<哈希>\`），升级之后旧路径就没了。别名
-/// `%LOCALAPPDATA%\Microsoft\WindowsApps\xvpn.exe` 由清单声明、升级前后都指向
-/// 当前版本。
-///
-/// 别名路径**在脚本里**计算而不是由 Dart 传进来：MSIX 打包应用的 `LOCALAPPDATA`
-/// 环境变量被重定向到包私有目录（`...\Packages\<包家族>\LocalCache\Local`），
-/// 从应用里读出来的是那个假路径。助手是未打包的普通进程，它读到的才是真值。
-String buildWindowsMsixRelaunchScript({
+/// [elevatedCopyScriptPath] 不为 null 时，「覆盖安装目录」那一步改由该脚本以
+/// 管理员身份执行（会弹一次 UAC）。**只有这一步被提权**：助手自身仍是普通
+/// 权限，因此最后重启的 XVPN 也是普通权限。
+String buildWindowsRelaunchScript({
   required int pid,
-  required String msixPath,
+  required String archivePath,
   required String stagingDir,
-  required String fallbackLaunchPath,
+  required String installDir,
+  required String launchPath,
+  String? elevatedCopyScriptPath,
 }) {
   final log = '$stagingDir\\xvpn-update.log';
+  final extract = _windowsExtractDir(stagingDir);
+  // 提权是把整个复制动作交给一个管理员进程，而不是让助手自己变成管理员。
+  //
+  // 这一点是这套流程里最要紧的决定。若反过来让助手以管理员运行，它 `Start-Process`
+  // 出来的 XVPN 也会是管理员：一旦 UAC 是由**另一个**管理员账户确认的（标准用户
+  // + 管理员凭据是常见配置），提权进程读的是那个账户的 `%LOCALAPPDATA%`，用户看
+  // 到的就是「配置与凭据全部不见了」。把权限收窄到一条 `Copy-Item`，这一切都不会
+  // 发生，也顺带不必去用「从提权进程降权启动」那种依赖 explorer 的取巧办法。
+  final String copyStep = elevatedCopyScriptPath == null
+      ? '''
+  ${_psLogWithPath('覆盖安装目录 ', installDir)}
+  Copy-Item -Path (Join-Path ${_psQuote(extract)} '*') -Destination ${_psQuote(installDir)} -Recurse -Force
+'''
+      : '''
+  ${_psLogWithPath('以管理员身份覆盖安装目录 ', installDir)}
+  # -Wait 让助手等到复制真正结束（并拿到退出码）；-PassThru 才能读到它。
+  # 用户点「否」时 Start-Process 会抛异常（\$ErrorActionPreference = 'Stop' 已把
+  # 它变成终止错误），由外层 catch 记进日志并重新拉起旧版本——不会留下一个
+  # 复制到一半的安装目录，因为这时一条文件都还没复制。
+  \$copy = Start-Process -FilePath 'powershell.exe' -Verb RunAs -Wait -PassThru `
+    -ArgumentList @('-NoProfile','-NonInteractive','-WindowStyle','Hidden','-ExecutionPolicy','Bypass','-File',${_psQuotedArg(elevatedCopyScriptPath)})
+  if (\$copy.ExitCode -ne 0) { throw ('以管理员身份复制失败（退出码 ' + \$copy.ExitCode + '）') }
+''';
+
   return '''
-# XVPN 自动更新助手（MSIX）。由应用在运行时生成到暂存目录，仓库里没有这个文件。
+# XVPN 自动更新重启助手。由应用在运行时生成到暂存目录，仓库里没有这个文件。
 \$ErrorActionPreference = 'Stop'
 function Write-Log(\$message) {
   "\$(Get-Date -Format o) \$message" | Out-File -LiteralPath ${_psQuote(log)} -Append -Encoding utf8
 }
-# 清单声明的执行别名。升级前后都指向当前版本，而带版本号的包目录每次升级都会变。
-\$alias = Join-Path \$env:LOCALAPPDATA 'Microsoft\\WindowsApps\\xvpn.exe'
 # 成功与否决定 finally 里清什么。初值 false：任何未走到「重新启动」的路径都按
 # 失败处理——宁可多留一个安装包，也不要让用户以为已经更新好了。
 \$ok = \$false
@@ -778,34 +830,74 @@ try {
   Wait-Process -Id $pid -ErrorAction SilentlyContinue
   Start-Sleep -Milliseconds 400
 
-  Write-Log '安装 MSIX 升级包'
-  Add-AppxPackage -Path ${_psQuote(msixPath)} -ErrorAction Stop
+  Write-Log '解压安装包'
+  if (Test-Path -LiteralPath ${_psQuote(extract)}) {
+    Remove-Item -LiteralPath ${_psQuote(extract)} -Recurse -Force
+  }
+  New-Item -ItemType Directory -Force -Path ${_psQuote(extract)} | Out-Null
+  Expand-Archive -LiteralPath ${_psQuote(archivePath)} -DestinationPath ${_psQuote(extract)} -Force
 
+  if (-not (Test-Path -LiteralPath (Join-Path ${_psQuote(extract)} 'xvpn.exe'))) {
+    throw '解压结果里没有 xvpn.exe，已取消替换'
+  }
+$copyStep
   Write-Log '重新启动'
-  Start-Process -FilePath \$alias
+  Start-Process -FilePath ${_psQuote(launchPath)} -WorkingDirectory ${_psQuote(installDir)}
   \$ok = \$true
 } catch {
   Write-Log "更新失败：\$_"
-  Write-Log '常见原因：安装包的签名未被信任（需先按发布页说明信任随包的 .cer），或系统策略禁止侧载。'
-  # 失败也不能让用户没有程序可用：把**旧版本**重新拉起来。这里用的是新版本
-  # 装不上时依然存在的旧路径（别名此时仍指向旧版本，但显式用旧路径更直白）。
+  # 失败也不能让用户没有程序可用：至少把旧版本重新拉起来。
   try {
-    Start-Process -FilePath ${_psQuote(fallbackLaunchPath)}
+    Start-Process -FilePath ${_psQuote(launchPath)} -WorkingDirectory ${_psQuote(installDir)}
   } catch { }
 } finally {
+  # 解压目录是中间产物，两种结果下都没有保留价值。
+  Remove-Item -LiteralPath ${_psQuote(extract)} -Recurse -Force -ErrorAction SilentlyContinue
   if (\$ok) {
     # 成功：安装包与脚本都已无用。（脚本自己也一并删掉。）
-    Remove-Item -LiteralPath ${_psQuote(msixPath)} -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath ${_psQuote(archivePath)} -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath \$PSCommandPath -Force -ErrorAction SilentlyContinue
   } else {
     # 失败：**保留安装包与日志**。
     #   * 安装包已下载并校验过，用户还能在更新界面点「重试安装」，或按界面显示的
-    #     路径自行安装（见发布页的 install-msix.ps1 说明）——删掉它等于把唯一的
-    #     出路一起删了；
-    #   * 日志是事后唯一能查到原因的入口。
-    ${_psLogWithPath('已保留安装包：', msixPath)}
+    #     路径自行解压覆盖——删掉它等于把唯一的出路一起删了；
+    #   * 日志是事后唯一能查到原因的入口（提权那条路上用户点了「否」时尤其如此）。
+    ${_psLogWithPath('已保留安装包：', archivePath)}
     ${_psLogWithPath('日志：', log)}
   }
+}
+''';
+}
+
+/// 生成 Windows 提权复制脚本（以管理员身份运行）。
+///
+/// 只做一件事：把解压结果覆盖到安装目录。**不重启应用**——重启交给那个非提权的
+/// 助手，这样 XVPN 不会以管理员身份运行（原因见 [buildWindowsRelaunchScript]）。
+///
+/// 失败必须以**非零退出码**收场：助手据此判定「复制没成功」，从而不去假装更新
+/// 成功。
+String buildWindowsElevatedCopyScript({
+  required String stagingDir,
+  required String installDir,
+}) {
+  final log = '$stagingDir\\xvpn-update.log';
+  final extract = _windowsExtractDir(stagingDir);
+  return '''
+# XVPN 提权复制脚本。由更新助手以管理员身份启动（会弹一次 UAC）。
+\$ErrorActionPreference = 'Stop'
+function Write-Log(\$message) {
+  "\$(Get-Date -Format o) \$message" | Out-File -LiteralPath ${_psQuote(log)} -Append -Encoding utf8
+}
+try {
+  ${_psLogWithPath('以管理员身份覆盖安装目录 ', installDir)}
+  # \$ErrorActionPreference = 'Stop' 让单个文件复制失败也中止整步：宁可整体失败
+  # 并报错，也不要留下一个半新半旧的安装目录。
+  Copy-Item -Path (Join-Path ${_psQuote(extract)} '*') -Destination ${_psQuote(installDir)} -Recurse -Force
+  Write-Log '管理员复制完成'
+  exit 0
+} catch {
+  Write-Log "提权复制失败：\$_"
+  exit 1
 }
 ''';
 }
@@ -915,18 +1007,10 @@ List<String> linuxRelaunchCommand(String scriptPath) => <String>[
   scriptPath,
 ];
 
-/// Windows（MSIX 覆盖升级）与 Linux（解压覆盖）的自替换安装。
+/// Windows / Linux 的自替换安装。
 ///
 /// 这里只负责生成并启动助手，**不替代当前进程**：调用方收到
-/// [UpdateInstallStarted] 后应退出应用，助手会等它退出再动手并重启。
-///
-/// 两端共用一条骨架（等待退出 → 安装 → 重启），但「安装」那一步完全不同：
-///
-///   * Windows：把 `.msix` 交给系统部署服务（`Add-AppxPackage`）。不写安装
-///     目录、不需要管理员，也不存在「替换到一半」的中间态。
-///   * Linux：`unzip` 解到暂存目录再 `cp` 覆盖安装目录。因此这里要**先探测
-///     目录是否可写**——写不进去时（`/usr/bin` 之类）必须如实拒绝，而不是留下
-///     一个被覆盖了一半的安装。
+/// [UpdateInstallStarted] 后应退出应用，助手会等它退出再替换并重启。
 class DesktopUpdateInstaller implements UpdateInstaller {
   DesktopUpdateInstaller({
     required this.platform,
@@ -940,12 +1024,10 @@ class DesktopUpdateInstaller implements UpdateInstaller {
   final TargetPlatform platform;
 
   /// 安装目录，取自 `Platform.resolvedExecutable` 的父目录（与内核寻址同一处，
-  /// 见 `singbox_runner.dart`）。**只有 Linux 用得到**：MSIX 升级由系统部署服务
-  /// 写 `%ProgramFiles%\WindowsApps\`，与应用自己的目录无关。
+  /// 见 `singbox_runner.dart`）。
   final Directory installDir;
 
-  /// 重新启动时要拉起的可执行文件路径（Windows 上只作为**失败回退**，见
-  /// [buildWindowsMsixRelaunchScript]）。
+  /// 替换完成后要启动的可执行文件路径。
   final String launchPath;
 
   final ProcessStarter processStarter;
@@ -953,12 +1035,12 @@ class DesktopUpdateInstaller implements UpdateInstaller {
   /// 当前进程号，助手据此等待退出。
   final int hostPid;
 
-  /// 「安装目录是否可写」的探测实现（仅 Linux）。
+  /// 「安装目录是否可写」的探测实现。
   ///
-  /// 抽成注入点是因为它决定用户最终走哪条路（直接更新 / 拒绝），而真实的受保护
-  /// 目录在测试里造不出来：CI 的 Linux runner 不是以 root 跑的，测试用的临时
-  /// 目录又总是可写。测试传 `(_) => true` 表示可写、`(_) => false` 表示装在
-  /// 受保护目录。
+  /// 抽成注入点是因为它决定用户最终走哪条路（直接更新 / 提权更新 / 拒绝），
+  /// 而真实的受保护目录在测试里造不出来：Windows 上要管理员才能改 ACL，CI 的
+  /// Linux runner 也不是以 root 跑的。测试传 `(_) => true` 表示可写、
+  /// `(_) => false` 表示装在受保护目录。
   final bool Function(Directory dir) writabilityProbe;
 
   @override
@@ -966,11 +1048,13 @@ class DesktopUpdateInstaller implements UpdateInstaller {
     required UpdateInfo info,
     required File archive,
     required Directory stagingDir,
+    bool elevate = false,
   }) async {
     if (!archive.existsSync()) {
       return UpdateInstallFailure('更新包不存在：${archive.path}');
     }
-    final UpdateInstallResult? blocked = _preflight();
+    final (blocked: UpdateInstallResult? blocked, elevate: bool elevated) =
+        _preflight(elevate: elevate);
     if (blocked != null) return blocked;
 
     try {
@@ -989,15 +1073,37 @@ class DesktopUpdateInstaller implements UpdateInstaller {
     // 实际路径 `staging/xvpn-relaunch.ps1` 并不存在——CI 上跑双平台测试时抓到。
     final String separator = Platform.pathSeparator;
 
+    // 提权复制脚本只在需要提权时才生成：它存在的意义就是被 Start-Process
+    // -Verb RunAs 拉起来。多写一个用不上的脚本会让人以为提权路径被走过了。
+    File? copyScript;
+    if (elevated && isWindows) {
+      copyScript = File(
+        '${stagingDir.path}$separator$elevatedCopyScriptName.ps1',
+      );
+      // 与主脚本同样的理由要加 UTF-8 BOM：PowerShell 5.1 没有它就会按 ANSI
+      // 读，脚本里的中文日志会变成乱码——而用户要读的正是这些中文。
+      final String copySource = buildWindowsElevatedCopyScript(
+        stagingDir: stagingDir.path,
+        installDir: installDir.path,
+      );
+      try {
+        copyScript.writeAsStringSync('\uFEFF$copySource', flush: true);
+      } on Object catch (e) {
+        return UpdateInstallFailure('无法写入提权复制脚本：$e');
+      }
+    }
+
     final File script = File(
       '${stagingDir.path}$separator$relaunchScriptName.${isWindows ? 'ps1' : 'sh'}',
     );
     final String source = isWindows
-        ? buildWindowsMsixRelaunchScript(
+        ? buildWindowsRelaunchScript(
             pid: hostPid,
-            msixPath: archive.path,
+            archivePath: archive.path,
             stagingDir: stagingDir.path,
-            fallbackLaunchPath: launchPath,
+            installDir: installDir.path,
+            launchPath: launchPath,
+            elevatedCopyScriptPath: copyScript?.path,
           )
         : buildLinuxRelaunchScript(
             pid: hostPid,
@@ -1026,42 +1132,65 @@ class DesktopUpdateInstaller implements UpdateInstaller {
     );
     if (!started) {
       return UpdateInstallFailure(
-        isWindows
-            ? '无法启动更新程序。请手动安装 ${archive.path}（见发布页的安装说明）。'
-            : '无法启动更新程序。请手动解压 ${archive.path} 并覆盖安装目录 ${installDir.path}。',
+        '无法启动更新程序。请手动解压 ${archive.path} 并覆盖安装目录 ${installDir.path}。',
       );
     }
+    // 提权那次要在文案里说清楚「授权才会动手」：脚本确实已经跑起来了，但真正
+    // 的复制要等用户在 UAC 上点「是」——否则用户会以为更新已经在进行。
+    final String message = copyScript == null
+        ? '更新程序已启动。请退出幽门，它会在应用退出后自动替换文件并重新启动。'
+        : '更新程序已启动。请退出幽门；它会在应用退出后弹出一次管理员授权，'
+              '获得授权才会替换文件（取消则不做任何改动），随后自动重新启动。';
     return UpdateInstallStarted(
-      isWindows
-          ? '更新程序已启动。请退出幽门，它会在应用退出后安装新版本并重新启动。'
-          : '更新程序已启动。请退出幽门，它会在应用退出后自动替换文件并重新启动。',
+      message,
       logPath: '${stagingDir.path}${separator}xvpn-update.log',
     );
   }
 
-  /// 安装前的可行性检查。非空表示直接把这个结果回给界面。
+  /// 安装前的可行性检查。
   ///
-  /// Windows 不检查安装目录：MSIX 的升级由系统部署服务写包目录，既不需要安装
-  /// 目录可写，也用不上管理员权限（同一发布者的包做用户级升级是常规操作）。
-  /// 因此 Windows 这条路上没有「需要提权」这一种结果——以前有，是因为升级要往
-  /// 应用自己的目录里复制文件。
-  UpdateInstallResult? _preflight() {
-    if (platform == TargetPlatform.windows) return null;
-
+  /// 返回 `(blocked, elevate)`：`blocked` 非空表示直接把这个结果回给界面；
+  /// 否则继续，并用 `elevate` 决定「覆盖安装目录」这一步是否交给管理员执行。
+  ({UpdateInstallResult? blocked, bool elevate}) _preflight({
+    required bool elevate,
+  }) {
     if (!installDir.existsSync()) {
-      return UpdateInstallFailure(
-        '找不到安装目录（${installDir.path}），无法自动更新。请手动下载新版本解压覆盖。',
+      return (
+        blocked: UpdateInstallFailure(
+          '找不到安装目录（${installDir.path}），无法自动更新。请手动下载新版本解压覆盖。',
+        ),
+        elevate: false,
       );
     }
-    if (writabilityProbe(installDir)) return null;
+    if (writabilityProbe(installDir)) {
+      // 目录可写：即便界面传了 elevate 也不要提权。用户点过一次「以管理员身份
+      // 更新」之后重试，而目录其实已经可写（例如他顺手把安装目录搬到了用户
+      // 目录），这时弹 UAC 是纯粹的打扰。
+      return (blocked: null, elevate: false);
+    }
+
+    if (platform == TargetPlatform.windows) {
+      // 受保护目录 + 用户已同意授权：把复制那一步交给管理员进程。
+      if (elevate) return (blocked: null, elevate: true);
+      return (
+        blocked: UpdateInstallElevationRequired(
+          '当前安装在受保护目录（${installDir.path}），写入它需要管理员权限。',
+          suggestedDir: suggestedUserInstallDir(platform),
+        ),
+        elevate: false,
+      );
+    }
 
     // Linux 不自行提权。`/usr/bin`、`/usr/lib` 这些路径归包管理器所有：绕过
     // dpkg/rpm 直接覆盖文件会破坏包数据库，而且下一次包升级又会把它们改回去。
     // 唯一诚实的做法是拒绝，并给出两条真实可走的路。
-    return UpdateInstallFailure(
-      '当前安装在只读位置（${installDir.path}），自动更新需要写权限。'
-      '请用系统包管理器更新；或把幽门解压到用户目录'
-      '（${suggestedUserInstallDir(platform)}）后即可自动更新。',
+    return (
+      blocked: UpdateInstallFailure(
+        '当前安装在只读位置（${installDir.path}），自动更新需要写权限。'
+        '请用系统包管理器更新；或把幽门解压到用户目录'
+        '（${suggestedUserInstallDir(platform)}）后即可自动更新。',
+      ),
+      elevate: false,
     );
   }
 }
@@ -1099,11 +1228,11 @@ class MethodChannelApkInstallChannel implements ApkInstallChannel {
 
 /// 安卓：更新包是**装着 APK 的 zip**，先把 APK 取出来，再交给系统安装器。
 ///
-/// 为什么发布的是一个 zip 而不是裸 APK：三端的分发形态统一为压缩包（见
-/// `.github/workflows/release.yml`），发布页上不再直接挂 APK。系统安装器只接受
-/// APK 文件，因此「取出 APK」这一步由应用自己完成——`core/zip.dart` 是纯 Dart
-/// 实现，不引入任何第三方依赖，原生侧（MainActivity 的 installApk）仍然只收
-/// APK 路径，契约没有变。
+/// 为什么发布的是一个 zip 而不是裸 APK：发布页上不再直接挂 APK（裸文件会被
+/// 「下载站 / 镜像 / 直链」原样搬运，用户很难判断是不是官方包），三端统一为
+/// 「下载即得一个压缩包」。系统安装器只接受 APK 文件，因此「取出 APK」这一步由
+/// 应用自己做——`core/zip.dart` 是纯 Dart 实现，不引入任何第三方依赖；原生侧
+/// （MainActivity 的 installApk）仍然只收 APK 路径，契约没有变。
 ///
 /// 安装界面由系统弹出，用户仍需确认一次——应用不会、也无法静默安装。
 class AndroidUpdateInstaller implements UpdateInstaller {
@@ -1118,6 +1247,7 @@ class AndroidUpdateInstaller implements UpdateInstaller {
     required UpdateInfo info,
     required File archive,
     required Directory stagingDir,
+    bool elevate = false,
   }) async {
     if (!archive.existsSync()) {
       return UpdateInstallFailure('安装包不存在：${archive.path}');
@@ -1127,9 +1257,7 @@ class AndroidUpdateInstaller implements UpdateInstaller {
     try {
       apk = await extractAndroidApk(archive: archive, version: info.version);
     } on ZipFormatException catch (e) {
-      return UpdateInstallFailure(
-        '更新包无法解出安装文件：$e。请到发布页手动下载安装。',
-      );
+      return UpdateInstallFailure('更新包无法解出安装文件：$e。请到发布页手动下载安装。');
     } on Object catch (e) {
       return UpdateInstallFailure('更新包无法解出安装文件：$e。请到发布页手动下载安装。');
     }
@@ -1196,6 +1324,7 @@ class UnsupportedUpdateInstaller implements UpdateInstaller {
     required UpdateInfo info,
     required File archive,
     required Directory stagingDir,
+    bool elevate = false,
   }) async => const UpdateInstallFailure('当前平台不支持自动安装，请到发布页手动下载。');
 }
 
@@ -1218,29 +1347,6 @@ UpdateInstaller defaultUpdateInstaller(TargetPlatform platform) {
   }
 }
 
-/// 判断这一份安装是不是从 MSIX 包装里跑起来的。
-///
-/// 依据是**包安装位置**：MSIX 的应用装在
-/// `%ProgramFiles%\WindowsApps\<包名>_<版本>_<架构>__<哈希>\` 下，而绿色解压版是
-/// 用户自己挑的目录。刻意不再加一条平台通道去问原生
-/// （`windows/runner/auto_start.cc` 里判断「是否打包」用的是同一个
-/// `GetCurrentPackageFullName`）：这里只需要一个路径判断，多一条通道就多一处要
-/// 两端同步维护的契约。
-bool isMsixInstall(String resolvedExecutable) {
-  final String normalized = resolvedExecutable
-      .replaceAll('/', r'\')
-      .toLowerCase();
-  return normalized.contains(r'\windowsapps\');
-}
-
-/// 见 [Updater.preInstallNote]。
-String? preInstallNoteFor(TargetPlatform platform, String resolvedExecutable) {
-  if (platform != TargetPlatform.windows) return null;
-  if (isMsixInstall(resolvedExecutable)) return null;
-  return '当前是绿色解压版：本次更新会安装为 MSIX 版（系统应用），'
-      '两者配置目录不同，导入的配置与凭据需要重新导入一次；旧的解压目录不会被删除。';
-}
-
 // ---------------------------------------------------------------- 引擎
 
 /// 应用内自动更新引擎。
@@ -1258,11 +1364,9 @@ class Updater {
     this.repoUrl = kRepoUrl,
     this.requestTimeout = const Duration(seconds: 30),
     this.stallTimeout = const Duration(seconds: 60),
-    String? resolvedExecutable,
   }) : _http = http ?? RealUpdateHttpClient(),
        installer = installer ?? defaultUpdateInstaller(platform),
-       stagingRoot = stagingRoot ?? defaultUpdateStagingDir(platform),
-       resolvedExecutable = resolvedExecutable ?? Platform.resolvedExecutable;
+       stagingRoot = stagingRoot ?? defaultUpdateStagingDir(platform);
 
   /// 用当前平台与构建期注入的版本号构造。[currentVersion] 默认取
   /// `app/lib/version.dart` 的 [appVersion]，与设置页显示的是同一个值。
@@ -1272,7 +1376,6 @@ class Updater {
     UpdateInstaller? installer,
     Directory? stagingRoot,
     String repoUrl = kRepoUrl,
-    String? resolvedExecutable,
   }) {
     final TargetPlatform platform = defaultTargetPlatform;
     return Updater(
@@ -1282,7 +1385,6 @@ class Updater {
       installer: installer,
       stagingRoot: stagingRoot,
       repoUrl: repoUrl,
-      resolvedExecutable: resolvedExecutable,
     );
   }
 
@@ -1290,22 +1392,6 @@ class Updater {
   final String currentVersion;
   final String repoUrl;
   final Duration requestTimeout;
-
-  /// 当前可执行文件的路径。用来判断这一份安装是 MSIX 还是绿色解压版，见
-  /// [preInstallNote]。可注入是为了让两种形态都能在开发机上被断言。
-  final String resolvedExecutable;
-
-  /// 安装前必须让用户知道的一句实话；没有要说的就返回 null。
-  ///
-  /// Windows 现在只有 MSIX 一种分发形态，而 1.3.0 及更早的用户装的是绿色解压版。
-  /// 绿色版点「安装更新」装出来的是**并行的** MSIX 版：包身份不同，配置目录也
-  /// 不同（MSIX 打包应用的 `%LOCALAPPDATA%` 被重定向到包私有 LocalCache），等于
-  /// 一次全新安装——导入的配置与凭据要重新导入一次，旧的解压目录也不会被删除。
-  ///
-  /// 这件事必须**在动手之前**说清楚：事后再说，用户看到的是一个配置空空的
-  /// 新版本，只会以为更新把他的数据弄丢了。
-  String? get preInstallNote =>
-      preInstallNoteFor(platform, resolvedExecutable);
 
   /// 两个数据块之间的最长等待。用它兜住「连接建立了但服务器不再发数据」——
   /// 没有它，下载会永远挂在进度条上。
@@ -1534,13 +1620,20 @@ class Updater {
   }
 
   /// 启动安装流程。桌面端会生成重启助手并返回 [UpdateInstallStarted]，
-  /// 调用方收到后应退出应用；安卓端会先取出 APK 再唤起系统安装器。
-  Future<UpdateInstallResult> install(UpdateInfo info, File artifact) =>
-      installer.install(
-        info: info,
-        archive: artifact,
-        stagingDir: stagingRoot,
-      );
+  /// 调用方收到后应退出应用；安卓端会唤起系统安装器。
+  ///
+  /// [elevate] 只在 Windows 桌面有意义：安装目录受保护时，界面会先收到
+  /// [UpdateInstallElevationRequired]，用户确认后再带着 `elevate: true` 重试。
+  Future<UpdateInstallResult> install(
+    UpdateInfo info,
+    File artifact, {
+    bool elevate = false,
+  }) => installer.install(
+    info: info,
+    archive: artifact,
+    stagingDir: stagingRoot,
+    elevate: elevate,
+  );
 
   /// 释放内部 HTTP 客户端。
   ///

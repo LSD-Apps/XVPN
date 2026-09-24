@@ -5,13 +5,12 @@ import '../app_state.dart';
 
 /// 「开机自动启动」的原生桥。
 ///
-/// **这一项的事实只在系统里**，不在应用的存档里：Windows 上它是注册表 Run 键
-/// 下的一项（绿色解压版）或 MSIX 包内的 StartupTask（打包版），用户在
-/// 「任务管理器 → 启动」或「设置 → 应用 → 启动」里随时能改，我们无从得知。
-/// 因此这里的每个方法都直接问原生，而不是读一份自己维护的副本。
+/// **这一项的事实只在系统里**，不在应用的存档里：Windows 上它是
+/// `HKCU\...\CurrentVersion\Run` 下的一项，用户在「任务管理器 → 启动」或
+/// 「设置 → 应用 → 启动」里随时能改，我们无从得知。因此这里的每个方法都直接问
+/// 原生，而不是读一份自己维护的副本。
 ///
-/// Windows 的原生实现在 windows/runner/auto_start.cc，两套后端的存在原因见
-/// 该文件与 [Mode] 的说明——MSIX 包内写 Run 键会被虚拟化，开关会静默失效。
+/// Windows 的原生实现在 `windows/runner/auto_start.cc`。
 ///
 /// 安卓与 Linux 没有这一项：[supported] 为 false，设置页**不显示**这一行。
 /// 显示一个拨了不会有任何效果的开关，比没有这个开关更糟。
@@ -23,8 +22,8 @@ class AutoStartService {
 
   /// 当前平台是否可能支持随系统启动。
   ///
-  /// 这是**平台推断**，原生还可能在运行时否定它（MSIX 包没声明
-  /// windows.startupTask 扩展时正是如此），因此真正的结论要看 [querySupported]。
+  /// 这是**平台推断**，真正的结论要看 [querySupported]——原生会按自己的实现
+  /// 如实回答（Linux 尚未落地）。
   static bool get platformSupported =>
       defaultTargetPlatform == TargetPlatform.windows ||
       defaultTargetPlatform == TargetPlatform.linux;
@@ -58,10 +57,9 @@ class AutoStartService {
 
   /// 请原生写入新状态。返回「请求是否被受理」。
   ///
-  /// 刻意**不把这里的返回值当成最终结果**：MSIX 形态下启用请求是异步的
-  /// （原生侧走 `StartupTask.RequestEnableAsync`，见 windows/runner/
-  /// auto_start.cc），还可能被系统策略拒绝或需要用户去「设置 → 应用 → 启动」
-  /// 放行。最终状态由原生回读后经 `autoStartChanged` 推来
+  /// 刻意**不把这里的返回值当成最终结果**：写进去了也不等于「开机真的会启动」
+  /// ——值可能不指向当前安装路径（见 windows/runner/auto_start.cc 的判据），
+  /// 也可能被系统策略挡住。最终状态由原生回读后经 `autoStartChanged` 推来
   /// （见 [WindowControls.onAutoStartChanged]），调用方应以那条推送为准。
   Future<bool> set(bool enabled) async {
     if (!platformSupported) return false;

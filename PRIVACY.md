@@ -115,7 +115,7 @@ DPAPI 密文、Linux 钥匙串条目与 Android 的 Keystore 密钥都**绑定�
 | `cdn.jsdelivr.net` | **仅当你点击「检查更新」** | 下载规则库 `.srs` 文件 | 更新分流规则库。不点击则不会发生 |
 | **你自己粘贴的订阅地址** | **仅当你导入或刷新该订阅时** | 一次 GET 请求（带 `User-Agent: XVPN`，不带设备标识）；若响应带 `subscription-userinfo` 头则一并记下用量 | 拉取**你自己**提供的节点列表。地址由你提供，我们不内置、不知道也无从推荐 |
 | `api.github.com`（GitHub Releases API） | **每次启动时一次**（设置页也可手动「检查更新」重试） | 仅这一次 HTTPS 请求本身，不带设备标识 | 判断是否有新版本 |
-| `github.com` 的 Release 附件（`XVPN-…-windows-x64.msix` / `-linux-x64.zip` / `-android-arm64.zip` 与 `SHA256SUMS.txt`） | **仅当你选择更新时** | 仅下载请求本身，不带设备标识 | 下载新版本，并用校验文件核对完整性后再安装 |
+| `github.com` 的 Release 附件（`XVPN-…-windows-x64.zip` / `-linux-x64.zip` / `-android-arm64.zip` 与 `SHA256SUMS.txt`） | **仅当你选择更新时** | 仅下载请求本身，不带设备标识 | 下载新版本，并用校验文件核对完整性后再安装 |
 
 补充说明：
 

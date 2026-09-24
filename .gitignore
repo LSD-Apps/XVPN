@@ -32,13 +32,6 @@ app/android/app/src/main/assets/licenses/
 # 内容可由脚本/流水线重新生成，且体积很大（Windows 压缩包约 80 MB），不进球。
 dist/
 
-# MSIX 发行证书的**私钥**材料：scripts/new-msix-cert.ps1 默认把生成的
-# .pfx（含私钥）写在这里，只留本机与 GitHub Secret（MSIX_PFX_BASE64）。
-# 私钥进公开仓库等于把「用 XVPN 的发布者身份签发任意安装包」的能力送出去：
-# 任何人都能签出一个 Windows 信任的升级包。
-# 公钥（.cer）没有这个问题，可以入库、也可以随 Release 分发。
-.secrets/
-
 # 桌面端编译中间件
 *.obj
 *.pdb

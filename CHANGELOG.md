@@ -12,122 +12,46 @@
 
 ### 新增
 
-- **「随系统启动」真的能用了，并且托盘菜单里可以直接开关。** 托盘右键菜单多了
-  一项「开机自动启动」（复选），设置页「启动」卡片里也多了一个同名开关，两处显示
-  同一个状态。
+- **「随系统启动」真的能用了，并且托盘菜单里可以直接开关。** 托盘右键菜单多了一项
+  「开机自动启动」（复选），设置页「启动」卡片里也多了一个同名开关，两处显示同一个
+  状态。
 
-  这一项**此前被移除过**，原因是它只把一个布尔值存进设置文件，从来没有任何代码把
-  它落到系统的启动项里——一个拨了不会有任何反应的开关比没有这个开关更糟。现在后端
-  落地了，因此加了回来，并且区分两种运行形态（见
-  [`app/windows/runner/auto_start.cc`](app/windows/runner/auto_start.cc)）：
-
-  - **绿色解压版**（zip）：写 `HKCU\...\CurrentVersion\Run`，与以往一致；
-  - **MSIX 安装版**：走系统托管的 `Windows.ApplicationModel.StartupTask`。
-    MSIX 包内**写不了** Run 键——写入被重定向到包私有的虚拟存储，而 Windows 不会
-    为虚拟存储里的 Run 项创建登录启动项，于是「开关拨过去了、写注册表也返回成功，
-    下次开机却什么也没发生」，没有任何报错。这是本次改动里最容易被做成静默失效的
-    一处。
+  这一项**此前被移除过**，原因是它只把一个布尔值存进设置文件，从来没有任何代码把它
+  落到系统的启动项里——一个拨了不会有任何反应的开关比没有这个开关更糟。现在后端落地
+  了，写 `HKCU\...\CurrentVersion\Run`（见
+  [`app/windows/runner/auto_start.cc`](app/windows/runner/auto_start.cc)）：值里的
+  可执行文件路径**必须加引号**——路径带空格时不加引号会被拆成「命令 + 参数」，开机时
+  闪一个找不到文件的错误框。
 
   状态的事实来源**在系统里**：用户随时能在「任务管理器 → 启动」或
   「设置 → 应用 → 启动」里改它，因此每次启动都会回读一次并校准界面，而不是信一份
-  自己维护的存档副本。后端在当前形态下不可用时（MSIX 包没声明扩展、通道缺失），
-  设置页**不渲染**这一行、托盘菜单项灰掉，而不是给一个假的开关。
+  自己维护的存档副本。后端在当前平台上不可用时，设置页**不渲染**这一行，而不是给一个
+  假的开关（Linux 尚未落地）。
 
   开启后开机时应用会自动启动并显示主界面；**不会**自动拨号（连接仍由用户或
   「导入后自动连接」那条规则决定）。
 
-- **Windows MSIX 安装包**（`XVPN-<ver>-windows-x64.msix`）。打包脚本
-  [`scripts/package-msix.ps1`](scripts/package-msix.ps1)，安装与桌面快捷方式由
-  [`scripts/install-msix.ps1`](scripts/install-msix.ps1) 完成，两者都接进了
-  [`scripts/build-release.ps1`](scripts/build-release.ps1) 与发布流水线。
-  **自本版起它是 Windows 唯一的产物**——绿色解压版（zip）不再发布，原因见下面
-  「变更」里的分发形态那一条。
+- **发布产物统一为「一个平台一个压缩包」，发布页不再直接挂裸 APK。**
+  Android 的产物是 `XVPN-<ver>-android-arm64.zip`（zip 里装着那份 APK），Windows 与
+  Linux 是「解压即就地覆盖安装目录」的 zip。
 
-  安装后**自动创建桌面快捷方式**。MSIX 没有「安装完成后运行脚本」的标准钩子，而
-  打包进程写 `%USERPROFILE%\Desktop` 会被文件系统虚拟化到包私有目录、写不到真实
-  桌面，因此快捷方式由一个未打包的进程（安装脚本）创建。它的目标指向清单声明的
-  执行别名 `%LOCALAPPDATA%\Microsoft\WindowsApps\xvpn.exe`，而不是
-  `%ProgramFiles%\WindowsApps\XVPN_<版本>_x64__<哈希>\` 下那个带版本号的真实路径
-  ——后者每次升级都会变，指向它的快捷方式升级后就是死链接。
+  发布页上的裸文件会被各种「下载站 / 镜像 / 直链」原样搬运，用户很难判断拿到的是不是
+  官方包；统一之后每个平台都是一个「下载即得」的归档，校验和也只需覆盖这一层。
 
-  许可与第三方声明（`LICENSE` / `NOTICE.md` / `THIRD-PARTY-NOTICES.md`）同样随
-  MSIX 分发，并在流水线里断言它们真的在包内。
+  更新器随之改：下载 zip 之后自己把 APK 取出来再交给系统安装器（系统安装器只接受 APK
+  文件）。解压是纯 Dart 实现（[`app/lib/core/zip.dart`](app/lib/core/zip.dart)，用
+  `dart:io` 的 `ZLibDecoder(raw: true)` 解裸 deflate，流式、解完校验字节数与
+  CRC-32），**没有为此新增任何依赖**——与
+  [`app/lib/core/sha256.dart`](app/lib/core/sha256.dart) 同一条纪律。原生侧
+  （`MainActivity.installApk`）仍然只收 APK 路径，契约没变。
 
-  > **自签名包的安装需要管理员提权一次**。实测踩到并已修：证书放进
-  > `CurrentUser\Root` + `CurrentUser\TrustedPeople` 后 `signtool verify /pa`
-  > 报 0 错误，`Add-AppxPackage` 却仍以 `0x800B0109` 失败——**AppX 部署服务以
-  > SYSTEM 身份运行，不读 CurrentUser 证书存储**，自签名证书必须落到机器级。
-  > `install-msix.ps1` 现在会检测提权状态、写对应作用域的存储，未提权时明确
-  > 说明下一步该做什么，而不是把 HRESULT 甩给用户。另一处实测修正：写
-  > `CurrentUser\Root` 不能用 `Import-Certificate`（报 "UI is not allowed in
-  > this operation"），必须走 .NET 的 `X509Store`。
-
-- [`app/test/msix_packaging_test.dart`](app/test/msix_packaging_test.dart)：守住
-  清单与原生代码之间的文本契约。最贵的一条是 `windows.startupTask` 的 `TaskId`
-  必须与 `auto_start.cc` 里的 `kStartupTaskId` 逐字一致——不一致时
-  `StartupTask.GetAsync` 抛异常、原生按「后端不可用」处理，于是设置页里那一行
-  **悄悄消失**，用户看到的是「这个版本没有开机自启」，而不是任何错误。
+  流水线里加了三条硬断言：`dist` 里出现裸 APK 就直接失败、`SHA256SUMS.txt` 不把 APK
+  算作产物、`gh release upload` 不带 `*.apk`。
 
 ### 变更
 
-- **三端的分发形态统一为压缩包／安装包，发布页不再直接挂裸 APK。**
-  `XVPN-<ver>-android-arm64.zip` 里装着那份 APK，Windows 只发
-  `XVPN-<ver>-windows-x64.msix`，Linux 仍是 `XVPN-<ver>-linux-x64.zip`。
-  发布页上的裸文件会被各种「下载站 / 镜像 / 直链」原样搬运，用户很难判断拿到
-  的是不是官方包；统一之后每个平台都是一个「下载即得」的归档，校验和只需覆盖
-  这一层。发布流水线里加了三条硬断言：`dist` 里出现裸 APK 就直接失败、
-  `SHA256SUMS.txt` 不把 APK 算作产物、`gh release upload` 不带 `*.apk`。
-
-  代价是**两侧的自动更新都得跟着改**，否则用户手里的旧版本会找不到升级包：
-
-  - **Windows 走 `Add-AppxPackage` 覆盖升级。** 助手脚本等主进程退出后调用它，
-    再用清单声明的执行别名（`%LOCALAPPDATA%\Microsoft\WindowsApps\xvpn.exe`）
-    重启——包目录名里带着版本号（`WindowsApps\XVPN_1.4.0.0_x64__<哈希>\`），
-    升级之后旧路径就没了，指过去就是死链接。别名路径在**脚本里**计算而不是由
-    应用传进去：MSIX 打包应用的 `LOCALAPPDATA` 被重定向到包私有目录，从应用里
-    读出来的是那个假路径。
-  - **随之删掉了「以管理员身份更新」那条路。** 升级改由系统部署服务写
-    `%ProgramFiles%\WindowsApps\`，既不需要安装目录可写，也不需要提权——原先
-    那套「探测安装目录是否可写 → 弹出一次 UAC 只提权复制那一步」连同
-    `UpdateInstallElevationRequired`、提权复制脚本一起删除。这也顺带消掉了它
-    唯一能留下的坏形态：把安装目录覆盖到一半。
-  - **安卓下载 zip 之后自己把 APK 取出来**，再交给系统安装器（系统安装器只
-    接受 APK 文件）。解压是纯 Dart 实现
-    （[`app/lib/core/zip.dart`](app/lib/core/zip.dart)，用 `dart:io` 的
-    `ZLibDecoder(raw: true)` 解裸 deflate），**没有为此新增任何依赖**——与
-    `core/sha256.dart` 同一条纪律。原生侧（`MainActivity.installApk`）仍然只收
-    APK 路径，契约没变。解完会校验解出的字节数与 **CRC-32**：整体 SHA-256 只
-    证明下载没被改坏，CRC 才证明**我们解对了**。
-  - **绿色解压版用户会被提示一次。** 他们点「安装更新」装出来的是一个**并行**
-    的 MSIX 版：包身份与配置目录都不同（打包后 `%LOCALAPPDATA%` 被重定向到
-    `Packages\<包家族>\LocalCache\`），等于全新安装。这件事在**动手之前**就说
-    清楚（`updater.dart` 的 `preInstallNote`，依据是可执行文件是否位于
-    `\WindowsApps\`），而不是事后让用户对着一个空配置发愣。
-
-  为这条契约补了 `app/test/release_assets_test.dart`：以
-  `expectedAssetName` 为唯一事实来源，断言 CI、
-  [`scripts/build-release.ps1`](scripts/build-release.ps1) 与
-  [`docs/RELEASE.md`](docs/RELEASE.md) 的附件清单三者一致，且流水线真的产出并
-  上传那三个包。此前「附件名是契约，改动必须三处同步」只写在注释里，没有任何
-  东西拦着它漂移——而漂移的表现是用户看到「最新版本没有适用于本平台的安装包」，
-  看起来像上游没发布。
-
-- **MSIX 的发行签名证书成为发布的硬要求**（Windows 只发 MSIX，缺证书就没有
-  可用的 Windows 产物）。此前缺 `MSIX_PFX_BASE64` 时会退回「现造一张自签名
-  证书」，而那在 CI 上是**每次构建一张新证书**：每个版本的签名链都不一样，已装
-  旧版的用户覆盖升级会失败，只能卸载重装——而卸载会清掉配置。现在缺证书直接
-  失败，与 Android 的 keystore 守卫同一条纪律。
-
-  新增 [`scripts/new-msix-cert.ps1`](scripts/new-msix-cert.ps1)：生成一次代码
-  签名证书（4096 位 RSA、`Code Signing` EKU），打印 `MSIX_PFX_BASE64` 与口令，
-  并默认拒绝覆盖已存在的私钥（换证书的代价同上）。私钥写进已 gitignore 的
-  `.secrets/`，**公钥** `app/packaging/xvpn-msix-LUSIDA.cer` 入库并随 Release
-  分发——自签名场景下用户必须先信任它才装得上。这也意味着自签名只适合自用；
-  公开分发应当用 CA 证书或面向开源项目的签名服务，用法完全相同（换成那把 PFX
-  即可，此时流水线不会再产出 `.cer`）。
-
 - 设置页「启动」卡片由桌面端与移动端各自的写法合并成一个 `_buildStartupCard`，
-  两端展示同一组选项；「随系统启动」只在后端可用时出现。
+  两端展示同一组选项。
 
 - **重做「分流规则 → 域名分流规则」卡片输入行下方的动作区**（桌面与移动端同一处
   代码）。此前它是四行同款灰色文字链接平铺在卡片底部：导出规则包、导入规则包、
@@ -183,30 +107,17 @@
   不抛异常、不影响布局，只是显示成一双不匹配的配色——在亮色主题下开发时完全
   看不出来，只有切到暗色才现形。
 
-- **MSIX 安装版里系统代理从来没有真正设置过——流量全在直连，而界面打勾说
-  「系统代理已自动设置」。** 这是本版最严重的一处，因为它没有任何报错：
+- **系统代理不再只靠写注册表，改用 WinINet 官方接口；并新增看门狗保证「没连接或
+  连接失效时网络一定回正」。** `RegSetValueExW` 返回 `ERROR_SUCCESS` 只说明这次
+  调用被受理，不说明系统里的值真的变了——实测见过「应用自己回读是 1，外部
+  `reg query` 是 0」；而正在运行的程序也不会因此立刻改用新代理（WinINET 把代理配置
+  缓存在进程内）。
 
-      应用自己回读 HKCU\...\Internet Settings\ProxyEnable → 1
-      外部 reg query 同一个键                              → 0x0
-
-  根因是 MSIX 打包应用的注册表写入会被重定向到**包私有的虚拟存储**，而
-  `RegSetValueExW` 在这种情况下照样返回 `ERROR_SUCCESS`。于是「写成功了」是假的：
-  内核在 2080 上听着、代理设置里却什么都没有，用户以为流量走了隧道，实际全部
-  直连。对照验证过：同一份代码的**绿色解压版**写注册表是真正生效的，所以这个
-  缺陷只在 MSIX 形态出现。
-
-  现在接管与还原都改用 **WinINET 官方接口**
-  （`InternetSetOptionW(INTERNET_OPTION_PER_CONNECTION_OPTION)` +
-  `INTERNET_OPTION_SETTINGS_CHANGED`/`INTERNET_OPTION_REFRESH`），并以它的返回值
-  为准——注册表写入只作持久化，不再当作「已生效」的判据。
-
-  同源的一个坑：还原路径原先只写注册表，在 MSIX 下同样不生效，于是**内核已退出、
-  代理还指着死端口**，用户机器上所有走系统代理的程序全部断网。已一并改掉。
-
-- **新增系统代理看门狗，保证「没连接或连接失效时网络一定回正」。**
-  原先有两道防线，各自只覆盖一部分：内核进程退出时撤销代理（内核**自己**死掉
-  能覆盖），以及启动时 `recoverIfNeeded()` 兜底（只在**下一次启动**生效——被强杀
-  之后到下次启动之间，用户的网络一直是坏的）。
+  现在接管与还原都以 `InternetSetOptionW(INTERNET_OPTION_PER_CONNECTION_OPTION)`
+  加 `INTERNET_OPTION_SETTINGS_CHANGED` / `INTERNET_OPTION_REFRESH` 的返回值为准，
+  注册表写入退化为「仅持久化」，不再当作「已生效」的判据。还原那条路尤其要紧：原先
+  只写注册表时会出现**内核已经退出、代理还指着一个死端口**，机器上所有走系统代理的
+  程序全部断网，而且从注册表里看不出是 VPN 干的。
 
   看门狗补的是**运行期的持续对账**，每 5 秒只看两个事实：我们是否接管了代理、
   本地入站端口是否真的在监听。二者不一致就立刻把网络回正。它在接管**之前也查**
@@ -216,8 +127,9 @@
   不是开着」——用户自己设的代理也是开着的，按那个判断就会把用户的设置删掉，而
   用户完全看不出是 VPN 干的。还原失败时保留备份、退避重试、**永不放弃**。
 
-  回归由 `app/test/proxy_watchdog_test.dart` 守住：接管/未接管 × 端口活/死 ×
-  备份有/无 的每一格、还原失败不清备份、重叠对账串行化、端口每次现取不缓存。
+  回归由 [`app/test/proxy_watchdog_test.dart`](app/test/proxy_watchdog_test.dart)
+  守住：接管/未接管 × 端口活/死 × 备份有/无 的每一格、还原失败不清备份、重叠对账
+  串行化、端口每次现取不缓存。
 
 - **托盘菜单的「开机自动启动」勾的是缓存镜像，而这一项的事实只在系统里。**
   于是系统状态被应用之外改过之后（用户在「任务管理器 → 启动」或
@@ -227,47 +139,9 @@
 
   现在弹托盘菜单之前**先回读一次系统**；回读结果与镜像不一致时，顺手把镜像和
   Dart 侧都校准过来，设置页的开关会跟着对齐。这条纪律写进了
-  [`app/test/auto_start_abi_layout_test.dart`](app/test/auto_start_abi_layout_test.dart)
-  （回读必须在 `AppendMenuW` 之前、且不一致时要通知 Dart）。
-
-- **「随系统启动」在 MSIX 安装版里完全不起作用（拨了没反应），而它的根因是一处
-  手写的接口 vtable 写错了。** 绿色解压版一直是好的（写注册表 Run 键）；只有打包
-  形态那条 `Windows.ApplicationModel.StartupTask` 的路是坏的。
-
-  开发时为了「顺手看一眼异步操作的进度」而复述了 `IAsyncOperation<T>` 的 vtable。
-  但 SDK 里它是
-
-  ```cpp
-  template <class TResult>
-  struct IAsyncOperation_impl : IInspectable   // 只继承 IInspectable
-  ```
-
-  并且**只有三个自有方法**：`put_Completed` / `get_Completed` / `GetResults`——
-  **根本没有 `IAsyncInfo` 的 `get_Status`**（出处：
-  `windows.foundation.collections.h`）。于是「按自己以为的顺序去调 `get_Status`」
-  在第一次调用就访问冲突（`0xc0000005`）。改对顺序也没有用，因为顺序本身就不存在。
-
-  这类错误的形态是**编译期零提示**：vtable 错位不会报错，只会在真机上以
-  「访问冲突」或「读到垃圾指针」收场。中间还因此误判过好几次（以为是 STA 不能挂
-  回调、以为是跨线程封送问题、以为是消息泵不对），绕了很远。
-
-  现在的做法是**不再复述异步接口的 ABI**，只用 SDK 给的具体类型
-  （`__FIAsyncOperation_1_...`）、只调确实存在的方法；完成信号一律由
-  `put_Completed` 的回调给出，不再轮询 `get_Status`。
-
-  为防止复发，新增 [`app/test/auto_start_abi_layout_test.dart`](app/test/auto_start_abi_layout_test.dart)：
-  禁止再出现手写的异步 vtable、禁止出现 `get_Status`、要求用 MIDL 生成的类型别名、
-  回调只继承一个接口且不在 `Invoke` 里自我释放、`GetResults` 必须在等到完成之后。
-
-  实测（MSIX 安装版）：开关拨到开会把系统里的 StartupTask 状态从 `Disabled(0)`
-  改成 `Enabled(2)`，关掉回到 `Disabled(0)`，重启后保持；托盘菜单项与设置页开关
-  同步。绿色解压版仍走 Run 键，回归未受影响。
-
-- `scripts/package-msix.ps1` 的**无时间戳回退路径根本执行不到**。代码里本来就有
-  「带时间戳签名失败就改写不带时间戳的签名」，但 `signtool` 把错误写到 **stderr**，
-  而脚本开头设了 `$ErrorActionPreference = 'Stop'`——于是这条**本可以被回退处理**
-  的失败先抛了出去，整个构建白失败。实测：DigiCert 时间戳服务偶发不可达时，
-  包其实完全可用。现在与 `deploy-android.ps1` 一致，临时放宽偏好、只看退出码。
+  [`app/test/auto_start_native_test.dart`](app/test/auto_start_native_test.dart)
+  （回读必须在 `AppendMenuW` 之前、且不一致时要通知 Dart），它同时守着「写入之后
+  必须回读」「路径必须加引号」「读不出来按没开处理」几条。
 
 - `scripts/deploy-android.ps1` 在**构建成功后仍以退出码 1 中止**。原因与脚本自己
   在 `Invoke-Adb` 里已经处理过的那条完全相同，但构建那一步漏了：`flutter build`
@@ -279,26 +153,30 @@
 
   实测踩到：真机部署时脚本以退出码 1 结束，但 APK 已生成且可用。
 
-- **MSIX 安装后桌面快捷方式是一块白板图标。** `install-msix.ps1` 把快捷方式的
-  `IconLocation` 指到了它的**目标**——而那个目标是执行别名
-  `%LOCALAPPDATA%\Microsoft\WindowsApps\xvpn.exe`，一个 **0 字节的重解析点**
-  （属性 `ReparsePoint`），里面没有任何图标资源可提取。实测确认：包内真实的
-  `xvpn.exe` 有图标，别名没有。
+- 版本号 1.3.0 → 1.4.0（本版有新增功能）。四处版本号（`app/pubspec.yaml` /
+  [`app/lib/version.dart`](app/lib/version.dart) / `CITATION.cff` / `index.html`）
+  已同步——流水线会校验 tag 与 pubspec 一致，不一致直接失败。
 
-  也不能把图标指向包内那个带版本号的 exe
-  （`...\WindowsApps\LUSIDA.XVPN_<版本>_x64__<哈希>\xvpn.exe`）——路径每次升级
-  都会变，图标会静默退回白板。
+### 移除
 
-  现在由 `Install-AppIcon` 取一份 .ico 放到稳定位置
-  `%LOCALAPPDATA%\XVPN\app.ico`，快捷方式引用它（**目标仍是执行别名**——那个是
-  稳定的，只有图标需要真实文件）。图标来源按优先级：显式给的 `.ico`（发布包里
-  与 `.msix` 并排）→ 包内 `Assets\` 的 PNG 磁贴现场合成多帧 ico → 从 exe 抽单帧
-  兜底。为此 `package-msix.ps1` 额外产出 `Assets\Icon-256.png`（不被清单引用，
-  只作图标来源；小尺寸从它缩小比从 44 放大清楚得多）。
+- **Windows 的 MSIX 安装包：本版做出来之后放弃，相关文件全部删除。**
+  它曾经做通并接进过发布流水线：`scripts/package-msix.ps1`（makeappx 打包 +
+  signtool 签名）、`scripts/install-msix.ps1`（安装与桌面快捷方式）、
+  `app/packaging/AppxManifest.xml`，以及为「随系统启动」写的一套
+  `Windows.ApplicationModel.StartupTask` 原生后端。
 
-  另外修掉卸载时一处枚举失效：删证书的管道里直接在枚举过程中 `Remove-Item`，
-  集合被改动后枚举器失效，于是打出一句**指纹为空**的「无法移除」——而那张证书
-  其实已经删掉了。改为先物化成数组再遍历。
+  放弃的原因是**装不进门**：MSIX 必须签名，而自签名证书要求每个用户先以管理员信任
+  一次随包的 `.cer`，否则 `Add-AppxPackage` 会以 `0x800B0109` 失败——**AppX 部署
+  服务以 SYSTEM 身份运行，不读 `CurrentUser` 证书存储**，所以这一步无法自动化；
+  换成正式代码签名证书则要给一个开源项目买证书。而它换来的只有「升级不用提权」这
+  一条，绿色解压版装在用户目录时本来就不需要提权。安装门槛明显更低的 zip 因此继续
+  是 Windows 唯一的形态。
+
+  相关的脚本、清单、自签名证书、测试（`msix_packaging_test.dart`、
+  `auto_start_abi_layout_test.dart`）与文档章节已一并删除：
+  `auto_start.cc` 只剩注册表 Run 键这一套后端，判据与回读纪律不变，由
+  [`app/test/auto_start_native_test.dart`](app/test/auto_start_native_test.dart)
+  守着。1.4.0 的第一次发布曾只挂 MSIX，随后撤回重发为本版。
 
 ## [1.3.0] - 2026-09-15
 
